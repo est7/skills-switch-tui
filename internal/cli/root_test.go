@@ -185,6 +185,28 @@ func TestResourcesFlagReplacesPreReleaseSourcesFlag(t *testing.T) {
 	}
 }
 
+func TestInitCommandIsProjectIndependentAndLocalized(t *testing.T) {
+	command := NewRootCommand("test")
+	initCommand, _, err := command.Find([]string{"init"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initCommand == nil || initCommand.Name() != "init" {
+		t.Fatal("init command is not registered")
+	}
+	if initCommand.Flags().Lookup("json") == nil {
+		t.Fatal("init command is missing --json")
+	}
+
+	help, err := execute(t, "--lang", "zh", "init", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(help, []byte("初始化 Agent 资源和内置操作 Skill")) {
+		t.Fatalf("Chinese init help was not localized:\n%s", help)
+	}
+}
+
 func TestChineseLanguageLocalizesHelpAndHumanListHeaders(t *testing.T) {
 	resourceRoot := t.TempDir()
 	sourcesRoot := filepath.Join(resourceRoot, "skills")

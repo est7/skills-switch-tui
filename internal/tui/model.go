@@ -118,7 +118,9 @@ func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Man
 	search.SetStyles(textinput.DefaultDarkStyles())
 	helpModel := help.New()
 	helpModel.ShowAll = false
-	helpModel.SetWidth(100)
+	helpModel.SetWidth(96)
+	theme := newStyles(true)
+	applyHelpStyles(&helpModel, theme)
 	operationContext, cancel := context.WithCancel(context.Background())
 	model := Model{
 		catalog:    loaded,
@@ -132,7 +134,7 @@ func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Man
 		help:       helpModel,
 		keys:       defaultKeyMap(translator),
 		isDark:     true,
-		styles:     newStyles(true),
+		styles:     theme,
 		translator: translator,
 		status:     translator.Text(i18n.Ready),
 		context:    operationContext,
@@ -157,13 +159,14 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BackgroundColorMsg:
 		m.isDark = message.IsDark()
 		m.styles = newStyles(m.isDark)
+		applyHelpStyles(&m.help, m.styles)
 		m.search.SetStyles(textinput.DefaultStyles(m.isDark))
 		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = max(message.Width, 48)
 		m.height = max(message.Height, 16)
-		m.search.SetWidth(min(48, m.width-8))
-		m.help.SetWidth(m.width - 4)
+		m.search.SetWidth(min(48, m.contentWidth()-8))
+		m.help.SetWidth(m.contentWidth())
 		m.clampCursor()
 		return m, nil
 	case updateFinishedMsg:
@@ -236,10 +239,26 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.toggleExpanded()
 	case "space":
 		m.toggleSelection()
+	case "a":
+		m.toggleSkillAllClients()
 	case "u":
 		return m.startUpdate()
+	case "L":
+		m.toggleLanguage()
 	}
 	return m, nil
+}
+
+func (m *Model) toggleLanguage() {
+	language := i18n.Chinese
+	if m.translator.Language() == i18n.Chinese {
+		language = i18n.English
+	}
+	m.translator = i18n.New(language)
+	m.keys = defaultKeyMap(m.translator)
+	m.search.Placeholder = m.translator.Text(i18n.SearchPlaceholder)
+	m.status = m.translator.Text(i18n.Ready)
+	m.err = nil
 }
 
 func (m Model) updateSearch(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -413,6 +432,77 @@ func (m *Model) toggleSkillSelection() {
 		resultKey = i18n.EnabledSkills
 	}
 	m.status = m.translator.Text(resultKey, len(skills), client)
+}
+
+func (m *Model) toggleSkillAllClients() {
+	if m.tab != tabSkills {
+		m.status = m.translator.Text(i18n.AllClientsSkillOnly)
+		return
+	}
+	selected, ok := m.selectedRow()
+	if !ok || selected.kind != skillRow {
+		m.status = m.translator.Text(i18n.SelectSkillForAllClients)
+		return
+	}
+
+	source := m.catalog.Sources[selected.sourceIndex]
+	skill := source.Skills[selected.skillIndex]
+	clients := m.catalog.Clients.IDs()
+	states := make(map[catalog.Client]projection.State, len(clients))
+	enable := false
+	compatibleCount := 0
+	for _, clientID := range clients {
+		state, err := m.projection.State(skill, clientID)
+		if err != nil {
+			m.err = err
+			m.status = m.translator.Text(i18n.InspectProjectFailed)
+			return
+		}
+		states[clientID] = state
+		if !skill.Supports(clientID) {
+			continue
+		}
+		compatibleCount++
+		if state != projection.StateEnabled {
+			enable = true
+		}
+	}
+	if compatibleCount == 0 {
+		m.status = m.translator.Text(i18n.NoCompatibleClients, skill.ID)
+		return
+	}
+	if source.IsArchived() && enable {
+		m.err = errors.New(m.translator.Text(i18n.ArchiveReferenceError, source.ID))
+		m.status = m.translator.Text(i18n.ArchiveCannotEnable)
+		return
+	}
+
+	operations := make([]projection.Operation, 0, len(clients))
+	for _, clientID := range clients {
+		state := states[clientID]
+		if enable {
+			if skill.Supports(clientID) {
+				operations = append(operations, projection.Operation{Skills: []catalog.Skill{skill}, Client: clientID, Enabled: true})
+			} else if state == projection.StateIncompatibleEnabled {
+				operations = append(operations, projection.Operation{Skills: []catalog.Skill{skill}, Client: clientID, Enabled: false})
+			}
+			continue
+		}
+		if state == projection.StateEnabled || state == projection.StateIncompatibleEnabled {
+			operations = append(operations, projection.Operation{Skills: []catalog.Skill{skill}, Client: clientID, Enabled: false})
+		}
+	}
+	if err := m.projection.Apply(operations); err != nil {
+		m.err = err
+		m.status = m.translator.Text(i18n.NoChangesApplied)
+		return
+	}
+	m.err = nil
+	resultKey := i18n.DisabledSkillAllClients
+	if enable {
+		resultKey = i18n.EnabledSkillAllClients
+	}
+	m.status = m.translator.Text(resultKey, skill.Name, compatibleCount)
 }
 
 func (m *Model) toggleMCPSelection() {

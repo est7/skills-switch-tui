@@ -13,32 +13,41 @@ import (
 	"github.com/est7/skills-switch-tui/internal/systemprompt"
 )
 
-const clientColumnWidth = 10
+const (
+	clientColumnWidth     = 9
+	sourceKindColumnWidth = 9
+)
 
 func (m Model) View() tea.View {
 	sections := []string{m.renderHeader(), m.renderTable(), m.renderDetail(), m.renderFooter()}
-	view := tea.NewView(lipgloss.NewStyle().Padding(1, 2).Render(strings.Join(sections, "\n")))
+	view := tea.NewView(lipgloss.NewStyle().Padding(1, m.horizontalPadding()).Render(strings.Join(sections, "\n")))
 	view.AltScreen = true
 	view.WindowTitle = "skills-switch · " + filepath.Base(m.project)
 	return view
 }
 
 func (m Model) renderHeader() string {
-	title := m.styles.title.Render("skills-switch")
 	scopeLabel := i18n.ProjectLabel
 	scopePath := m.project
 	if m.tab == tabSystemPrompts {
 		scopeLabel = i18n.UserLabel
 		scopePath = m.userHome
 	}
-	scope := m.styles.subtle.Render(m.translator.Text(scopeLabel) + "  " + scopePath)
+	brand := m.styles.brandMark.Render("◆") + " " + m.styles.title.Render("skills-switch")
+	if m.contentWidth() >= 72 {
+		brand += "  " + m.styles.subtitle.Render(m.translator.Text(i18n.ProductSubtitle))
+	}
+	brand = alignEdges(brand, m.renderLanguageSelector(), m.contentWidth())
+	scopeWidth := max(12, m.contentWidth()-lipgloss.Width(m.translator.Text(scopeLabel))-3)
+	scope := m.styles.scopeLabel.Render(strings.ToUpper(m.translator.Text(scopeLabel))) + "  " + m.styles.subtle.Render(truncate(scopePath, scopeWidth))
 	tabs := make([]string, 0, int(tabSystemPrompts)+1)
 	for candidate := tabSkills; candidate <= tabSystemPrompts; candidate++ {
-		style := m.styles.filter
+		style := m.styles.tab
 		if candidate == m.tab {
-			style = m.styles.activeFilter
+			style = m.styles.activeTab
 		}
-		tabs = append(tabs, style.Render(m.tabLabel(candidate)))
+		label := fmt.Sprintf("%s  %d", m.tabLabel(candidate), m.tabCount(candidate))
+		tabs = append(tabs, style.Render(label))
 	}
 	filters := make([]string, 0, int(filterArchive)+1)
 	lastFilter := filterIssues
@@ -52,31 +61,33 @@ func (m Model) renderHeader() string {
 		}
 		filters = append(filters, style.Render(m.filterLabel(candidate)))
 	}
-	filterLine := strings.Join(filters, " ")
+	filterLine := m.styles.scopeLabel.Render("VIEW") + "  " + strings.Join(filters, " ")
 	if m.searching || m.search.Value() != "" {
 		filterLine += "  " + m.search.View()
 	}
-	return strings.Join(tabs, " ") + "\n\n" + title + "  " + m.styles.subtle.Render(m.translator.Text(i18n.ProductSubtitle)) + "\n" + scope + "\n\n" + filterLine
+	return strings.Join([]string{brand, scope, strings.Join(tabs, " "), filterLine}, "\n")
 }
 
 func (m Model) renderTable() string {
+	var content string
 	switch m.tab {
 	case tabMCP:
-		return m.renderMCPTable()
+		content = m.renderMCPTable()
 	case tabSystemPrompts:
-		return m.renderPromptTable()
+		content = m.renderPromptTable()
 	default:
-		return m.renderSkillsTable()
+		content = m.renderSkillsTable()
 	}
+	return m.styles.panel.Width(m.contentWidth()).Render(content)
 }
 
 func (m Model) renderSkillsTable() string {
 	clientStart, clientEnd := m.visibleClientRange()
 	visibleClientCount := clientEnd - clientStart
-	tableWidth := max(44, m.width-4)
-	labelWidth := max(18, tableWidth-2-clientColumnWidth*visibleClientCount)
+	tableWidth := m.tableWidth()
+	labelWidth := max(16, tableWidth-2-clientColumnWidth*visibleClientCount)
 	header := m.styles.tableHeader.Width(tableWidth).Render(
-		"  " + lipgloss.NewStyle().Width(labelWidth).Render(m.translator.Text(i18n.SourceSkillHeader)) + m.renderClientHeaders(clientStart, clientEnd),
+		"  " + lipgloss.NewStyle().Width(labelWidth).Render(m.renderSkillHeader()) + m.renderClientHeaders(clientStart, clientEnd),
 	)
 	rows := m.rows()
 	if len(rows) == 0 {
@@ -103,11 +114,11 @@ func (m Model) renderMCPTable() string {
 		}
 		switch state {
 		case "enabled":
-			return "[x]", m.styles.enabled
+			return "●", m.styles.enabled
 		case "disabled":
-			return "[ ]", m.styles.disabled
+			return "○", m.styles.disabled
 		case "incompatible":
-			return "—", m.styles.incompatible
+			return "·", m.styles.incompatible
 		default:
 			return "!", m.styles.issue
 		}
@@ -125,13 +136,13 @@ func (m Model) renderPromptTable() string {
 	return m.renderResourceTable(labels, func(name string, clientID catalog.Client) (string, lipgloss.Style) {
 		row := byID[name]
 		if row.client != clientID {
-			return "—", m.styles.incompatible
+			return "·", m.styles.incompatible
 		}
 		switch row.state {
 		case "enabled":
-			return "[x]", m.styles.enabled
+			return "●", m.styles.enabled
 		case "disabled":
-			return "[ ]", m.styles.disabled
+			return "○", m.styles.disabled
 		case "partial":
 			return "~", m.styles.issue
 		default:
@@ -156,8 +167,8 @@ func (m Model) promptState(group systemprompt.Group) string {
 func (m Model) renderResourceTable(labels []string, cell func(string, catalog.Client) (string, lipgloss.Style)) string {
 	clientStart, clientEnd := m.visibleClientRange()
 	visibleClientCount := clientEnd - clientStart
-	tableWidth := max(44, m.width-4)
-	labelWidth := max(18, tableWidth-2-clientColumnWidth*visibleClientCount)
+	tableWidth := m.tableWidth()
+	labelWidth := max(16, tableWidth-2-clientColumnWidth*visibleClientCount)
 	header := m.styles.tableHeader.Width(tableWidth).Render(
 		"  " + lipgloss.NewStyle().Width(labelWidth).Render(m.translator.Text(i18n.ResourceHeader)) + m.renderClientHeaders(clientStart, clientEnd),
 	)
@@ -172,7 +183,7 @@ func (m Model) renderResourceTable(labels []string, cell func(string, catalog.Cl
 		selected := index == m.cursor
 		cursor := "  "
 		if selected {
-			cursor = m.styles.accent.Render("› ")
+			cursor = m.styles.accent.Render("▌ ")
 		}
 		label := lipgloss.NewStyle().Width(labelWidth).MaxWidth(labelWidth).Render(m.styles.child.Render(labels[index]))
 		var cells strings.Builder
@@ -199,7 +210,7 @@ func (m Model) renderClientHeaders(start, end int) string {
 		client := clients[index]
 		style := m.styles.subtle
 		if index == m.clientIndex {
-			style = m.styles.accent
+			style = m.styles.selectedCell
 		}
 		label := truncate(strings.ToUpper(string(client)), clientColumnWidth-2)
 		if index == start && start > 0 {
@@ -217,7 +228,7 @@ func (m Model) renderRow(item row, selected bool, labelWidth, clientStart, clien
 	source := m.catalog.Sources[item.sourceIndex]
 	cursor := "  "
 	if selected {
-		cursor = m.styles.accent.Render("› ")
+		cursor = m.styles.accent.Render("▌ ")
 	}
 	var label string
 	if item.kind == sourceRow {
@@ -225,16 +236,15 @@ func (m Model) renderRow(item row, selected bool, labelWidth, clientStart, clien
 		if m.expanded[source.ID] || strings.TrimSpace(m.search.Value()) != "" {
 			disclosure = "▾"
 		}
-		archive := ""
-		if source.IsArchived() {
-			archive = "  " + m.translator.Text(i18n.ArchivedLabel)
-		}
-		label = m.styles.group.Render(disclosure+" "+source.ID) + m.styles.subtle.Render(archive)
+		kind := m.styles.scopeLabel.Width(sourceKindColumnWidth).Render(sourceKindLabel(source))
+		nameWidth := max(1, labelWidth-sourceKindColumnWidth-2)
+		name := truncate(sourceDisplayName(source), nameWidth)
+		label = kind + m.styles.group.Render(disclosure+" "+name)
 	} else {
 		skill := source.Skills[item.skillIndex]
-		descriptionWidth := max(0, labelWidth-len([]rune(skill.Name))-6)
+		descriptionWidth := max(0, labelWidth-sourceKindColumnWidth-len([]rune(skill.Name))-6)
 		description := truncate(skill.Description, descriptionWidth)
-		label = m.styles.child.Render("  "+skill.Name) + m.styles.subtle.Render("  "+description)
+		label = strings.Repeat(" ", sourceKindColumnWidth) + m.styles.child.Render("  "+skill.Name) + m.styles.subtle.Render("  "+description)
 	}
 	label = lipgloss.NewStyle().Width(labelWidth).MaxWidth(labelWidth).Render(label)
 
@@ -255,13 +265,56 @@ func (m Model) renderRow(item row, selected bool, labelWidth, clientStart, clien
 	return line
 }
 
+func (m Model) renderSkillHeader() string {
+	source := lipgloss.NewStyle().Width(sourceKindColumnWidth).Render(strings.ToUpper(m.translator.Text(i18n.SourceHeader)))
+	return source + m.translator.Text(i18n.SourceSkillHeader)
+}
+
+func (m Model) renderLanguageSelector() string {
+	english := m.styles.filter
+	chinese := m.styles.filter
+	if m.translator.Language() == i18n.Chinese {
+		chinese = m.styles.activeFilter
+	} else {
+		english = m.styles.activeFilter
+	}
+	return english.Render("EN") + " " + chinese.Render("中")
+}
+
+func sourceKindLabel(source catalog.Source) string {
+	if source.IsArchived() {
+		return "ARCHIVE"
+	}
+	if source.IsVendor() {
+		return "REMOTE"
+	}
+	return "LOCAL"
+}
+
+func sourceDisplayName(source catalog.Source) string {
+	for _, prefix := range []string{"local-", "vendor-", "archived-"} {
+		if display, ok := strings.CutPrefix(source.ID, prefix); ok {
+			return display
+		}
+	}
+	return source.ID
+}
+
+func alignEdges(left, right string, width int) string {
+	spacing := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if spacing < 1 {
+		return left
+	}
+	return left + strings.Repeat(" ", spacing) + right
+}
+
 func (m Model) visibleClientRange() (int, int) {
 	clients := m.catalog.Clients.IDs()
 	if len(clients) == 0 {
 		return 0, 0
 	}
-	innerWidth := max(44, m.width-4)
-	capacity := max(1, (innerWidth-2-18)/clientColumnWidth)
+	innerWidth := m.tableWidth()
+	capacity := max(1, (innerWidth-2-16)/clientColumnWidth)
 	capacity = min(capacity, len(clients))
 	start := m.clientIndex - capacity/2
 	start = max(0, min(start, len(clients)-capacity))
@@ -289,7 +342,7 @@ func (m Model) cell(item row, client catalog.Client) (string, lipgloss.Style) {
 		}
 	}
 	if compatible == 0 {
-		return "—", m.styles.incompatible
+		return "·", m.styles.incompatible
 	}
 	value := fmt.Sprintf("%d/%d", enabled, compatible)
 	if enabled == compatible {
@@ -305,11 +358,11 @@ func (m Model) stateCell(skill catalog.Skill, client catalog.Client) (string, li
 	}
 	switch state {
 	case projection.StateEnabled:
-		return "[x]", m.styles.enabled
+		return "●", m.styles.enabled
 	case projection.StateDisabled:
-		return "[ ]", m.styles.disabled
+		return "○", m.styles.disabled
 	case projection.StateIncompatible:
-		return "—", m.styles.incompatible
+		return "·", m.styles.incompatible
 	case projection.StateIncompatibleEnabled, projection.StateConflict:
 		return "!", m.styles.issue
 	case projection.StateBroken:
@@ -328,7 +381,7 @@ func (m Model) renderDetail() string {
 	}
 	selected, ok := m.selectedRow()
 	if !ok {
-		return m.styles.detail.Width(max(20, m.width-4)).Render(m.translator.Text(i18n.NoSelection))
+		return m.styles.detail.Width(m.contentWidth()).Render(m.translator.Text(i18n.NoSelection))
 	}
 	source := m.catalog.Sources[selected.sourceIndex]
 	lines := make([]string, 0, 3)
@@ -344,11 +397,11 @@ func (m Model) renderDetail() string {
 			kind = m.translator.Text(i18n.ArchiveReference)
 		}
 		lines = append(lines, m.styles.accent.Render(source.ID)+"  "+m.styles.subtle.Render(kind))
-		lines = append(lines, m.styles.subtle.Render(source.Path))
+		lines = append(lines, m.styles.subtle.Render(truncate(source.Path, m.detailTextWidth())))
 	} else {
 		skill := source.Skills[selected.skillIndex]
 		lines = append(lines, m.styles.accent.Render(skill.Name)+"  "+m.styles.subtle.Render(skill.ID))
-		lines = append(lines, truncate(skill.Description, max(20, m.width-8)))
+		lines = append(lines, truncate(skill.Description, m.detailTextWidth()))
 		targets := make([]string, 0, len(m.catalog.Clients.IDs()))
 		for _, client := range m.catalog.Clients.IDs() {
 			if skill.Supports(client) {
@@ -364,13 +417,13 @@ func (m Model) renderDetail() string {
 		}
 		lines = append(lines, m.styles.subtle.Render(compatibility))
 	}
-	return m.styles.detail.Width(max(20, m.width-4)).Render(strings.Join(lines, "\n"))
+	return m.styles.detail.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
 }
 
 func (m Model) renderMCPDetail() string {
 	names := m.mcpNames()
 	if len(names) == 0 || m.cursor >= len(names) {
-		return m.styles.detail.Width(max(20, m.width-4)).Render(m.translator.Text(i18n.NoSelection))
+		return m.styles.detail.Width(m.contentWidth()).Render(m.translator.Text(i18n.NoSelection))
 	}
 	server, _ := m.mcpCatalog.Server(names[m.cursor])
 	endpoint := server.Command
@@ -379,22 +432,22 @@ func (m Model) renderMCPDetail() string {
 	}
 	lines := []string{
 		m.styles.accent.Render(server.Name) + "  " + m.styles.subtle.Render(string(server.Transport)),
-		m.styles.subtle.Render(endpoint),
+		m.styles.subtle.Render(truncate(endpoint, m.detailTextWidth())),
 	}
-	return m.styles.detail.Width(max(20, m.width-4)).Render(strings.Join(lines, "\n"))
+	return m.styles.detail.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
 }
 
 func (m Model) renderPromptDetail() string {
 	groups := m.promptGroups()
 	if len(groups) == 0 || m.cursor >= len(groups) {
-		return m.styles.detail.Width(max(20, m.width-4)).Render(m.translator.Text(i18n.NoSelection))
+		return m.styles.detail.Width(m.contentWidth()).Render(m.translator.Text(i18n.NoSelection))
 	}
 	group := groups[m.cursor]
 	lines := []string{
 		m.styles.accent.Render(group.ID) + "  " + m.styles.subtle.Render(string(group.Client)),
-		m.styles.subtle.Render(m.translator.Text(i18n.PromptFileSummary, len(group.Files), group.Path)),
+		m.styles.subtle.Render(truncate(m.translator.Text(i18n.PromptFileSummary, len(group.Files), group.Path), m.detailTextWidth())),
 	}
-	return m.styles.detail.Width(max(20, m.width-4)).Render(strings.Join(lines, "\n"))
+	return m.styles.detail.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
 }
 
 func (m Model) tabLabel(tab resourceTab) string {
@@ -426,14 +479,53 @@ func (m Model) filterLabel(filter filterMode) string {
 func (m Model) renderFooter() string {
 	statusStyle := m.styles.status
 	status := m.status
+	icon := m.styles.accent.Render("●")
 	if m.err != nil {
 		statusStyle = m.styles.error
 		status += ": " + m.err.Error()
+		icon = m.styles.error.Render("!")
 	}
 	if m.updating {
-		status = "◌ " + status
+		icon = m.styles.accent.Render("◌")
 	}
-	return statusStyle.Render(status) + "\n" + m.styles.help.Render(m.help.View(m.keys))
+	statusLine := m.styles.statusBar.Width(m.contentWidth()).Render(icon + "  " + statusStyle.Render(status))
+	return statusLine + "\n" + m.help.View(m.keys)
+}
+
+func (m Model) tabCount(tab resourceTab) int {
+	switch tab {
+	case tabMCP:
+		return len(m.mcpCatalog.Servers)
+	case tabSystemPrompts:
+		return len(m.prompts.Groups)
+	default:
+		count := 0
+		for _, source := range m.catalog.Sources {
+			if !source.IsArchived() {
+				count += len(source.Skills)
+			}
+		}
+		return count
+	}
+}
+
+func (m Model) horizontalPadding() int {
+	if m.width < 72 {
+		return 1
+	}
+	return 2
+}
+
+func (m Model) contentWidth() int {
+	return max(40, m.width-2*m.horizontalPadding())
+}
+
+func (m Model) tableWidth() int {
+	return max(38, m.contentWidth()-2)
+}
+
+func (m Model) detailTextWidth() int {
+	return max(18, m.contentWidth()-4)
 }
 
 func truncate(value string, width int) string {

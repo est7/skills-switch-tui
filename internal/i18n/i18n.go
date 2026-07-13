@@ -38,10 +38,12 @@ const (
 	HelpResource              Key = "help_resource"
 	HelpClient                Key = "help_client"
 	HelpToggle                Key = "help_toggle"
+	HelpToggleAll             Key = "help_toggle_all"
 	HelpExpand                Key = "help_expand"
 	HelpSearch                Key = "help_search"
 	HelpFilter                Key = "help_filter"
 	HelpUpdate                Key = "help_update"
+	HelpLanguage              Key = "help_language"
 	HelpMore                  Key = "help_more"
 	HelpQuit                  Key = "help_quit"
 	TargetSelected            Key = "target_selected"
@@ -56,6 +58,11 @@ const (
 	NoChangesApplied          Key = "no_changes_applied"
 	EnabledSkills             Key = "enabled_skills"
 	DisabledSkills            Key = "disabled_skills"
+	EnabledSkillAllClients    Key = "enabled_skill_all_clients"
+	DisabledSkillAllClients   Key = "disabled_skill_all_clients"
+	SelectSkillForAllClients  Key = "select_skill_for_all_clients"
+	AllClientsSkillOnly       Key = "all_clients_skill_only"
+	NoCompatibleClients       Key = "no_compatible_clients"
 	EnabledResource           Key = "enabled_resource"
 	DisabledResource          Key = "disabled_resource"
 	ResourceIncompatible      Key = "resource_incompatible"
@@ -96,6 +103,9 @@ const (
 	DisabledResult            Key = "disabled_result"
 	VersionShort              Key = "version_short"
 	TUIShort                  Key = "tui_short"
+	InitShort                 Key = "init_short"
+	InitializedResources      Key = "initialized_resources"
+	ResourcesAlreadyReady     Key = "resources_already_ready"
 	ShowShort                 Key = "show_short"
 	StatusShort               Key = "status_short"
 	SourceCommandShort        Key = "source_command_short"
@@ -180,7 +190,7 @@ var messages = map[Language]map[Key]string{
 		FilterArchive:             "archive",
 		FilterSelected:            "Filter: %s",
 		SearchPlaceholder:         "filter sources and skills",
-		SourceSkillHeader:         "SOURCE / SKILL",
+		SourceSkillHeader:         "NAME / SKILL",
 		ResourceHeader:            "RESOURCE",
 		NoSkillsMatch:             "No skills match this view.",
 		NoResourcesMatch:          "No resources match this view.",
@@ -189,10 +199,12 @@ var messages = map[Language]map[Key]string{
 		HelpResource:              "resource",
 		HelpClient:                "client",
 		HelpToggle:                "toggle",
+		HelpToggleAll:             "all clients",
 		HelpExpand:                "expand",
 		HelpSearch:                "search",
 		HelpFilter:                "filter",
 		HelpUpdate:                "update",
+		HelpLanguage:              "language",
 		HelpMore:                  "more",
 		HelpQuit:                  "quit",
 		TargetSelected:            "Target: %s",
@@ -207,6 +219,11 @@ var messages = map[Language]map[Key]string{
 		NoChangesApplied:          "No changes applied",
 		EnabledSkills:             "Enabled %d skill(s) for %s",
 		DisabledSkills:            "Disabled %d skill(s) for %s",
+		EnabledSkillAllClients:    "Enabled %s for all %d compatible clients",
+		DisabledSkillAllClients:   "Disabled %s for all %d compatible clients",
+		SelectSkillForAllClients:  "Select a Skill to toggle all clients",
+		AllClientsSkillOnly:       "All-client toggle is available for Skills only",
+		NoCompatibleClients:       "%s has no compatible clients",
 		EnabledResource:           "Enabled %s for %s",
 		DisabledResource:          "Disabled %s for %s",
 		ResourceIncompatible:      "%s is unavailable for %s",
@@ -247,6 +264,9 @@ var messages = map[Language]map[Key]string{
 		DisabledResult:            "disabled %d skill(s) for %s\n",
 		VersionShort:              "Print version information",
 		TUIShort:                  "Open the interactive terminal UI",
+		InitShort:                 "Initialize agent resources and the bundled operator Skill",
+		InitializedResources:      "initialized %s and added %s\n",
+		ResourcesAlreadyReady:     "%s is ready; %s is available\n",
 		ShowShort:                 "Show one skill and its project projections",
 		StatusShort:               "Summarize project projection state by client",
 		SourceCommandShort:        "Manage catalog source repositories",
@@ -325,7 +345,7 @@ var messages = map[Language]map[Key]string{
 		FilterArchive:             "归档",
 		FilterSelected:            "筛选：%s",
 		SearchPlaceholder:         "筛选来源与 Skills",
-		SourceSkillHeader:         "来源 / SKILL",
+		SourceSkillHeader:         "名称 / SKILL",
 		ResourceHeader:            "资源",
 		NoSkillsMatch:             "当前视图没有匹配的 Skills。",
 		NoResourcesMatch:          "当前视图没有匹配的资源。",
@@ -334,10 +354,12 @@ var messages = map[Language]map[Key]string{
 		HelpResource:              "资源",
 		HelpClient:                "客户端",
 		HelpToggle:                "开关",
+		HelpToggleAll:             "全部客户端",
 		HelpExpand:                "展开",
 		HelpSearch:                "搜索",
 		HelpFilter:                "筛选",
 		HelpUpdate:                "更新",
+		HelpLanguage:              "语言",
 		HelpMore:                  "更多",
 		HelpQuit:                  "退出",
 		TargetSelected:            "目标：%s",
@@ -352,6 +374,11 @@ var messages = map[Language]map[Key]string{
 		NoChangesApplied:          "未应用任何变更",
 		EnabledSkills:             "已启用 %d 个 Skill（%s）",
 		DisabledSkills:            "已停用 %d 个 Skill（%s）",
+		EnabledSkillAllClients:    "已在全部 %2$d 个兼容客户端启用 %1$s",
+		DisabledSkillAllClients:   "已在全部 %2$d 个兼容客户端停用 %1$s",
+		SelectSkillForAllClients:  "请选择一个 Skill，再切换全部客户端",
+		AllClientsSkillOnly:       "全部客户端切换仅适用于 Skills",
+		NoCompatibleClients:       "%s 没有兼容的客户端",
 		EnabledResource:           "已为 %[2]s 启用 %[1]s",
 		DisabledResource:          "已为 %[2]s 停用 %[1]s",
 		ResourceIncompatible:      "%s 不适用于 %s",
@@ -392,6 +419,9 @@ var messages = map[Language]map[Key]string{
 		DisabledResult:            "已停用 %d 个 Skill（%s）\n",
 		VersionShort:              "输出版本信息",
 		TUIShort:                  "打开交互式终端界面",
+		InitShort:                 "初始化 Agent 资源和内置操作 Skill",
+		InitializedResources:      "已初始化 %s，并添加 %s\n",
+		ResourcesAlreadyReady:     "%s 已就绪；%s 可用\n",
 		ShowShort:                 "查看一个 Skill 及其项目投影",
 		StatusShort:               "按客户端汇总项目投影状态",
 		SourceCommandShort:        "管理目录来源仓库",

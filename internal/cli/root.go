@@ -80,6 +80,7 @@ func NewRootCommand(version string) *cobra.Command {
 	command.AddCommand(newEnableCommand(options, false))
 	command.AddCommand(newShowCommand(options))
 	command.AddCommand(newStatusCommand(options))
+	command.AddCommand(newInitCommand(options))
 	command.AddCommand(newSourceCommand(options))
 	command.AddCommand(newMCPCommand(options))
 	command.AddCommand(newPromptCommand(options))
@@ -449,6 +450,9 @@ func localizeCommandTree(root *cobra.Command, translator i18n.Translator) {
 			localizeOutputFlags(command, translator)
 		case "status":
 			command.Short = translator.Text(i18n.StatusShort)
+			localizeOutputFlags(command, translator)
+		case "init":
+			command.Short = translator.Text(i18n.InitShort)
 			localizeOutputFlags(command, translator)
 		case "doctor":
 			command.Short = translator.Text(i18n.DoctorShort)

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/est7/skills-switch-tui/internal/catalog"
 	"github.com/est7/skills-switch-tui/internal/client"
 	"github.com/est7/skills-switch-tui/internal/i18n"
@@ -41,6 +42,78 @@ func TestSourceRowToggleEnablesEveryCompatibleSkill(t *testing.T) {
 	}
 }
 
+func TestSkillToggleAllClientsEnablesAndDisablesEveryCompatibleProjection(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+	model = selectFirstSkill(model)
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("enable all clients: %v", model.err)
+	}
+
+	for _, target := range []string{
+		filepath.Join(projectRoot, ".agents", "skills", "portable"),
+		filepath.Join(projectRoot, ".claude", "skills", "portable"),
+		filepath.Join(projectRoot, ".gemini", "skills", "portable"),
+	} {
+		if _, err := os.Readlink(target); err != nil {
+			t.Fatalf("all-client toggle did not enable %s: %v", target, err)
+		}
+	}
+
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("disable all clients: %v", model.err)
+	}
+	for _, target := range []string{
+		filepath.Join(projectRoot, ".agents", "skills", "portable"),
+		filepath.Join(projectRoot, ".claude", "skills", "portable"),
+		filepath.Join(projectRoot, ".gemini", "skills", "portable"),
+	} {
+		assertNotExist(t, target)
+	}
+}
+
+func TestSkillToggleAllClientsPreflightsEveryClientAtomically(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflict := filepath.Join(projectRoot, ".claude", "skills", "portable")
+	if err := os.MkdirAll(filepath.Dir(conflict), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(conflict, []byte("user owned\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+	model = selectFirstSkill(model)
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	model = updated.(Model)
+	if model.err == nil {
+		t.Fatal("all-client toggle succeeded despite an unmanaged client conflict")
+	}
+	assertNotExist(t, filepath.Join(projectRoot, ".agents", "skills", "portable"))
+	assertNotExist(t, filepath.Join(projectRoot, ".gemini", "skills", "portable"))
+	data, err := os.ReadFile(conflict)
+	if err != nil || string(data) != "user owned\n" {
+		t.Fatalf("conflict was not preserved: %q, %v", data, err)
+	}
+}
+
 func TestViewKeepsSourceGroupsCollapsedUntilExpanded(t *testing.T) {
 	sourcesRoot := t.TempDir()
 	projectRoot := t.TempDir()
@@ -52,7 +125,7 @@ func TestViewKeepsSourceGroupsCollapsedUntilExpanded(t *testing.T) {
 
 	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
 	view := model.View().Content
-	for _, fragment := range []string{"SOURCE / SKILL", "CODEX", "CLAUDE", "GEMINI", "vendor-shared/worktrunk"} {
+	for _, fragment := range []string{"NAME / SKILL", "CODEX", "CLAUDE", "GEMINI", "shared/worktrunk"} {
 		if !strings.Contains(view, fragment) {
 			t.Fatalf("collapsed view does not contain %q:\n%s", fragment, view)
 		}
@@ -65,6 +138,57 @@ func TestViewKeepsSourceGroupsCollapsedUntilExpanded(t *testing.T) {
 	view = updated.(Model).View().Content
 	if !strings.Contains(view, "Manage worktrunk") {
 		t.Fatalf("expanded view does not render child skill:\n%s", view)
+	}
+}
+
+func TestSourceRowsUseComparableKindAndNameColumns(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "android-skills", "skills", "android-cli"), "android-cli")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+	view := model.View().Content
+	for _, fragment := range []string{"SOURCE", "NAME / SKILL", "LOCAL", "REMOTE", "shared/android-skills"} {
+		if !strings.Contains(view, fragment) {
+			t.Fatalf("source table does not contain %q:\n%s", fragment, view)
+		}
+	}
+}
+
+func TestLanguageSelectorIsVisibleAndTogglesTheWholeTUI(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+	view := model.View().Content
+	for _, option := range []string{"EN", "中"} {
+		if !strings.Contains(view, option) {
+			t.Fatalf("language selector does not contain %q:\n%s", option, view)
+		}
+	}
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'L', Text: "L"})
+	model = updated.(Model)
+	view = model.View().Content
+	for _, translated := range []string{"全部", "来源", "就绪"} {
+		if !strings.Contains(view, translated) {
+			t.Fatalf("language toggle did not render %q:\n%s", translated, view)
+		}
+	}
+
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'L', Text: "L"})
+	if view = updated.(Model).View().Content; !strings.Contains(view, "all") {
+		t.Fatalf("second language toggle did not restore English:\n%s", view)
 	}
 }
 
@@ -106,7 +230,7 @@ func TestViewUsesSharedChineseTranslations(t *testing.T) {
 
 	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.Chinese))
 	view := model.View().Content
-	for _, fragment := range []string{"项目资源 · 用户级系统提示词", "来源 / SKILL", "就绪"} {
+	for _, fragment := range []string{"项目资源 · 用户级系统提示词", "名称 / SKILL", "就绪"} {
 		if !strings.Contains(view, fragment) {
 			t.Fatalf("Chinese view does not contain %q:\n%s", fragment, view)
 		}
@@ -114,6 +238,35 @@ func TestViewUsesSharedChineseTranslations(t *testing.T) {
 	model.tab = tabMCP
 	if view := model.View().Content; !strings.Contains(view, "资源") {
 		t.Fatalf("Chinese MCP view does not localize the resource header:\n%s", view)
+	}
+}
+
+func TestPolishedViewFitsNarrowTerminalAndSurfacesAllClientAction(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+	model = selectFirstSkill(model)
+	resized, _ := model.Update(tea.WindowSizeMsg{Width: 48, Height: 24})
+	view := resized.(Model).View().Content
+	for _, fragment := range []string{"◆", "╭", "╰", "▌", "○", "all clients"} {
+		if !strings.Contains(view, fragment) {
+			t.Fatalf("polished view does not contain %q:\n%s", fragment, view)
+		}
+	}
+	if width := lipgloss.Width(view); width > 48 {
+		t.Fatalf("narrow view width = %d, want <= 48:\n%s", width, view)
+	}
+	if height := lipgloss.Height(view); height > 24 {
+		t.Fatalf("narrow view height = %d, want <= 24:\n%s", height, view)
+	}
+	if description := defaultKeyMap(i18n.New(i18n.Chinese)).ToggleAll.Help().Desc; description != "全部客户端" {
+		t.Fatalf("Chinese all-client help = %q", description)
 	}
 }
 
@@ -226,7 +379,7 @@ func TestResourceTabsToggleMCPAndSystemPrompts(t *testing.T) {
 
 	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	model = updated.(Model)
-	if view := model.View().Content; !strings.Contains(view, userHome) || strings.Contains(view, projectRoot) {
+	if view := model.View().Content; !strings.Contains(view, "USER") || strings.Contains(view, "PROJECT  ") {
 		t.Fatalf("System Prompts tab did not render the user-global scope:\n%s", view)
 	}
 	updated, _ = model.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
@@ -256,6 +409,12 @@ func writeSkill(t *testing.T, dir, name string) {
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func selectFirstSkill(model Model) Model {
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, _ = updated.(Model).Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	return updated.(Model)
 }
 
 func assertNotExist(t *testing.T, path string) {

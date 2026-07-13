@@ -88,7 +88,10 @@ Install the released binary from the third-party Homebrew tap:
 
 ```sh
 brew install est7/tap/skills-switch
+skills-switch init
 ```
+
+`skills-switch init` is an idempotent bootstrap. It creates the default `~/.agents/resources` skeleton, initializes `~/.agents` as the catalog Git repository when needed, and registers this repository as `vendor-shared/skills-switch-tui`. Its bundled `skills/skills-switch` operator Skill then becomes discoverable without copying it into user-owned `local/shared`. Re-running `init` preserves existing catalogs and configuration.
 
 For local development, Go 1.25 or newer is required:
 
@@ -154,6 +157,13 @@ skills-switch source add https://github.com/mattpocock/skills.git \
 
 Use `--sparse` only for additional non-Skill paths that must remain in the working tree. Manifest metadata and registered Skill paths are derived automatically.
 
+This repository publishes its own `skills-switch` operator Skill through `.agents/plugins/marketplace.json`. Registering the repository makes natural-language Skill, MCP, prompt, and source management workflows available to compatible agents:
+
+```sh
+skills-switch source add https://github.com/est7/skills-switch-tui.git \
+  --name skills-switch-tui
+```
+
 Inspect and explicitly update vendor sources:
 
 ```sh
@@ -212,15 +222,17 @@ skills-switch source list --archive
 | `Tab` / `Shift+Tab` | Switch Skills, MCP, and System Prompts |
 | `↑` / `↓`, `j` / `k` | Navigate resource rows |
 | `←` / `→`, `h` / `l` | Select a client column |
-| `Space` | Toggle the selected resource or Skill source group atomically |
+| `Space` | Toggle the selected resource or Skill source group for the selected client |
+| `a` | Toggle the selected Skill for every compatible client atomically |
 | `Enter` | Expand or collapse a Skill source |
 | `/` | Search the active resource tab |
 | `f` | Cycle all, enabled, issues, and Skill archive views |
 | `u` | Update the selected Skill vendor source |
+| `L` | Switch the TUI language between English and Chinese |
 | `?` | Toggle full help |
 | `q` | Quit |
 
-Keyboard actions render immediately and intentionally have no decorative animation.
+Keyboard actions render immediately and intentionally have no decorative animation. Dark and light themes use separate terminal palettes; informational text and state colors are contrast-tested against their rendered backgrounds.
 
 ## Language
 

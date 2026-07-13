@@ -1,15 +1,22 @@
 package tui
 
 import (
+	"charm.land/bubbles/v2/help"
 	"charm.land/lipgloss/v2"
 )
 
 type styles struct {
+	brandMark    lipgloss.Style
 	title        lipgloss.Style
+	subtitle     lipgloss.Style
 	subtle       lipgloss.Style
 	accent       lipgloss.Style
+	scopeLabel   lipgloss.Style
+	tab          lipgloss.Style
+	activeTab    lipgloss.Style
 	filter       lipgloss.Style
 	activeFilter lipgloss.Style
+	panel        lipgloss.Style
 	tableHeader  lipgloss.Style
 	group        lipgloss.Style
 	child        lipgloss.Style
@@ -20,39 +27,68 @@ type styles struct {
 	incompatible lipgloss.Style
 	issue        lipgloss.Style
 	detail       lipgloss.Style
+	statusBar    lipgloss.Style
 	status       lipgloss.Style
 	error        lipgloss.Style
-	help         lipgloss.Style
+	helpKey      lipgloss.Style
+	helpDesc     lipgloss.Style
+	helpSep      lipgloss.Style
 }
 
 func newStyles(isDark bool) styles {
 	choose := lipgloss.LightDark(isDark)
-	foreground := choose(lipgloss.Color("#20212B"), lipgloss.Color("#E7E5F2"))
-	muted := choose(lipgloss.Color("#6F7080"), lipgloss.Color("#8B8A9C"))
-	accent := choose(lipgloss.Color("#5B4FD8"), lipgloss.Color("#B4A0FF"))
-	accentSoft := choose(lipgloss.Color("#ECE9FF"), lipgloss.Color("#2C2647"))
-	border := choose(lipgloss.Color("#D8D5E2"), lipgloss.Color("#3B3947"))
-	green := choose(lipgloss.Color("#177245"), lipgloss.Color("#63D69A"))
-	red := choose(lipgloss.Color("#B42318"), lipgloss.Color("#FF8A80"))
+	foreground := choose(lipgloss.Color("#201D29"), lipgloss.Color("#F6F3FA"))
+	muted := choose(lipgloss.Color("#625D6B"), lipgloss.Color("#B4ADBF"))
+	accent := choose(lipgloss.Color("#5B34C4"), lipgloss.Color("#C4B0FF"))
+	accentStrong := choose(lipgloss.Color("#5B32B4"), lipgloss.Color("#7048C8"))
+	accentContrast := lipgloss.Color("#FFFFFF")
+	accentSoft := choose(lipgloss.Color("#ECE5FF"), lipgloss.Color("#322746"))
+	panel := choose(lipgloss.Color("#FCFBFE"), lipgloss.Color("#18151F"))
+	panelRaised := choose(lipgloss.Color("#F0ECF5"), lipgloss.Color("#27222F"))
+	border := choose(lipgloss.Color("#BEB6C8"), lipgloss.Color("#5A5065"))
+	green := choose(lipgloss.Color("#08783F"), lipgloss.Color("#6DE0A5"))
+	red := choose(lipgloss.Color("#B4233A"), lipgloss.Color("#FF8999"))
 
 	return styles{
-		title:        lipgloss.NewStyle().Bold(true).Foreground(accent),
+		brandMark:    lipgloss.NewStyle().Foreground(accent).Bold(true),
+		title:        lipgloss.NewStyle().Foreground(foreground).Bold(true),
+		subtitle:     lipgloss.NewStyle().Foreground(muted),
 		subtle:       lipgloss.NewStyle().Foreground(muted),
 		accent:       lipgloss.NewStyle().Foreground(accent).Bold(true),
+		scopeLabel:   lipgloss.NewStyle().Foreground(accent).Bold(true),
+		tab:          lipgloss.NewStyle().Foreground(muted).Background(panelRaised).Padding(0, 1),
+		activeTab:    lipgloss.NewStyle().Foreground(accentContrast).Background(accentStrong).Bold(true).Padding(0, 1),
 		filter:       lipgloss.NewStyle().Foreground(muted).Padding(0, 1),
 		activeFilter: lipgloss.NewStyle().Foreground(accent).Background(accentSoft).Bold(true).Padding(0, 1),
-		tableHeader:  lipgloss.NewStyle().Foreground(muted).Bold(true).BorderBottom(true).BorderForeground(border),
+		panel:        lipgloss.NewStyle().Background(panel).Border(lipgloss.RoundedBorder()).BorderForeground(border),
+		tableHeader:  lipgloss.NewStyle().Foreground(muted).Background(panelRaised).Bold(true),
 		group:        lipgloss.NewStyle().Foreground(foreground).Bold(true),
 		child:        lipgloss.NewStyle().Foreground(foreground),
 		selected:     lipgloss.NewStyle().Foreground(foreground).Background(accentSoft),
-		selectedCell: lipgloss.NewStyle().Foreground(accent).Background(accentSoft).Bold(true),
+		selectedCell: lipgloss.NewStyle().Foreground(accentContrast).Background(accentStrong).Bold(true),
 		enabled:      lipgloss.NewStyle().Foreground(green).Bold(true),
 		disabled:     lipgloss.NewStyle().Foreground(muted),
-		incompatible: lipgloss.NewStyle().Foreground(muted).Faint(true),
+		incompatible: lipgloss.NewStyle().Foreground(muted),
 		issue:        lipgloss.NewStyle().Foreground(red).Bold(true),
-		detail:       lipgloss.NewStyle().Foreground(foreground).BorderTop(true).BorderForeground(border).PaddingTop(1),
-		status:       lipgloss.NewStyle().Foreground(muted),
-		error:        lipgloss.NewStyle().Foreground(red),
-		help:         lipgloss.NewStyle().Foreground(muted),
+		detail: lipgloss.NewStyle().Foreground(foreground).
+			Border(lipgloss.ThickBorder(), false, false, false, true).
+			BorderForeground(accent).
+			PaddingLeft(1),
+		statusBar: lipgloss.NewStyle().Background(panelRaised).Padding(0, 1),
+		status:    lipgloss.NewStyle().Foreground(foreground),
+		error:     lipgloss.NewStyle().Foreground(red).Bold(true),
+		helpKey:   lipgloss.NewStyle().Foreground(accent).Bold(true),
+		helpDesc:  lipgloss.NewStyle().Foreground(muted),
+		helpSep:   lipgloss.NewStyle().Foreground(border),
 	}
+}
+
+func applyHelpStyles(model *help.Model, theme styles) {
+	model.Styles.ShortKey = theme.helpKey
+	model.Styles.ShortDesc = theme.helpDesc
+	model.Styles.ShortSeparator = theme.helpSep
+	model.Styles.FullKey = theme.helpKey
+	model.Styles.FullDesc = theme.helpDesc
+	model.Styles.FullSeparator = theme.helpSep
+	model.Styles.Ellipsis = theme.helpDesc
 }

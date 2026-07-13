@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skills Switch"
+  short_description: "Manage project Skills, MCP servers, and source repos"
+  default_prompt: "Use $skills-switch to manage this project’s Agent Skills or MCP servers."
