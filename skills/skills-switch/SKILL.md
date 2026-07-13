@@ -1,6 +1,6 @@
 ---
 name: skills-switch
-description: Manage Agent Skill source repositories, project-level Skill projections, project-level MCP servers, and user-global system prompts through the skills-switch CLI. Use when the user asks to add, register, update, query, or remove a GitHub Skill repository; enable or disable a Skill or source for one or all registered clients in the current project; enable or disable a project MCP server; or manage a client system prompt. Trigger on requests such as "add this GitHub skill for all clients", "delete this skill repo", "disable this skill in this project", "turn off this MCP here", "更新 skills", or equivalent Chinese requests.
+description: Manage Agent Skill source repositories, project-level Skill projections, project-level MCP servers, and user-global system prompts through the skills-switch CLI. Use when the user asks to add, register, update, query, or remove a GitHub Skill repository; enable or disable a Skill or source for one or all registered clients in the current project; add, remove, enable, or disable a project MCP server; delete a local Skill or group from the resource catalog; or manage a client system prompt. Trigger on requests such as "add this GitHub skill for all clients", "delete this skill repo", "disable this skill in this project", "delete this local skill", "add this MCP server", "remove this MCP server", "turn off this MCP here", "更新 skills", or equivalent Chinese requests.
 ---
 
 # Skills Switch
@@ -129,6 +129,25 @@ skills-switch --project "$PROJECT" mcp enable <server> \
 
 Do not edit `.mcp.json`, `.codex/config.toml`, or another client config directly. The CLI appends or removes only its managed server entry and preserves unrelated project configuration.
 
+Register a new server definition in the catalog SSOT. Transport is inferred from whether you pass a command or a URL; pass `--transport` only to override:
+
+```bash
+# stdio server
+skills-switch mcp add <server> \
+  --command <exe> --arg <a1> --arg <a2> --env KEY=VALUE --cwd <dir>
+
+# http server
+skills-switch mcp add <server> --url https://<host>/mcp --header KEY=VALUE
+```
+
+Remove a server definition from the catalog. This first clears its enabled projection from every registered client, then deletes the catalog entry. Adding is catalog-level, so it takes no `--client`; removing cleans the current `--project`:
+
+```bash
+skills-switch --project "$PROJECT" mcp remove <server>
+```
+
+Interpret “add/register this MCP server” as `mcp add` (catalog definition) and “enable it here” as a subsequent `mcp enable ... --client`. Interpret “remove this MCP server” as `mcp remove` (deletes the definition); interpret “turn it off here” as `mcp disable` (projection only).
+
 ## Update, Query, or Remove Sources
 
 Preview and then update one vendor source:
@@ -148,6 +167,28 @@ skills-switch source remove <source-id>
 
 This removes the clean vendor submodule and its catalog policy. Before removal, report that projects outside the current one may still reference the source; disable known projections first when the user includes them in scope. Never force-remove a dirty source.
 
+## Delete Local Skills or Groups
+
+Local sources are authored in place, not vendored. Each directory under `local/<scope>/` is a distinct group source (for example `local-shared/core`), and the Skills inside it carry ids like `local-shared/core/<skill>`. Deletion here removes files from the resource SSOT, so it is destructive and irreversible; it is separate from `disable`, which only removes a project projection.
+
+Choose the operation by ownership:
+
+- Vendor source (a submodule): `source remove <source-id>`.
+- Local group or a single local Skill: `skills delete <id> --yes`.
+
+```bash
+# resolve ids first
+skills-switch skills list --json
+
+# delete one local Skill (keeps its group and siblings)
+skills-switch --project "$PROJECT" skills delete local-<scope>/<group>/<skill> --yes
+
+# delete an entire local group
+skills-switch --project "$PROJECT" skills delete local-<scope>/<group> --yes
+```
+
+`skills delete` refuses to run without `--yes`, and rejects vendor sources (use `source remove`), read-only vendor Skills, archived references, and unknown ids. It first clears the target's projections across every registered client in `--project`, then removes the directory. Confirm the exact user intent before deleting, since the Skill source cannot be restored except from version control.
+
 ## Manage User-global System Prompts
 
 System prompt operations are user-global, unlike Skills and MCP servers:
@@ -165,7 +206,8 @@ State that scope explicitly before mutation when the request could be mistaken f
 Run the nearest read command after each change:
 
 - Skill or source projection: `skills-switch --project "$PROJECT" list --json`
-- MCP server: `skills-switch --project "$PROJECT" mcp list --json`
+- Local Skill or group deletion: `skills-switch skills list --json` (the id is gone)
+- MCP server projection or definition: `skills-switch --project "$PROJECT" mcp list --json`
 - Source repository: `skills-switch source list --json`
 - System prompt: `skills-switch prompt list --json`
 
