@@ -20,6 +20,10 @@ const (
 	DiscoveryCodexPlugin       DiscoveryStrategy = "codex-plugin"
 	DiscoveryClaudePlugin      DiscoveryStrategy = "claude-plugin"
 	DiscoverySkillsDir         DiscoveryStrategy = "skills-dir"
+	// DiscoveryRootWalk is the terminal fallback used by managed sources that
+	// opt into fallbackToRoot: no manifest declared discoverable skills, so the
+	// source root itself is walked as the skill tree. It is not user-selectable.
+	DiscoveryRootWalk DiscoveryStrategy = "root-walk"
 )
 
 var defaultVendorDiscoveryPriority = []DiscoveryStrategy{
@@ -116,7 +120,14 @@ func PlanVendorDiscovery(root string, configuredPriority []DiscoveryStrategy, sk
 	return DiscoveryPlan{}, nil
 }
 
-func discoverVendorSource(
+// discoverManagedSource resolves a single managed source rooted at root using
+// the shared manifest-discovery pipeline. Vendor repositories call it with
+// fallbackToRoot=false, preserving their behavior of yielding an empty source
+// when no manifest matches. Local groups call it with fallbackToRoot=true so a
+// group without a recognized manifest (or with a manifest that declares no
+// discoverable skills) is walked from its root, matching the historical local
+// "collect every SKILL.md" behavior.
+func discoverManagedSource(
 	id string,
 	root string,
 	configuredPriority []DiscoveryStrategy,
@@ -124,6 +135,7 @@ func discoverVendorSource(
 	defaults map[Client]bool,
 	overrides map[string]overrideConfig,
 	clients client.Registry,
+	fallbackToRoot bool,
 ) (Source, error) {
 	if len(skillPaths) > 0 {
 		if len(configuredPriority) > 0 {
@@ -156,8 +168,21 @@ func discoverVendorSource(
 		if err != nil {
 			return Source{}, err
 		}
+		if fallbackToRoot && len(source.Skills) == 0 {
+			// A manifest matched but declared no discoverable skills; fall back
+			// to treating the group root itself as the skill tree.
+			break
+		}
 		source.DiscoveryStrategy = strategy
 		source.DiscoveryPriority = priority
+		return source, nil
+	}
+	if fallbackToRoot {
+		source, err := discoverSourceRoots(id, root, []string{root}, defaults, overrides, clients, false)
+		if err != nil {
+			return Source{}, err
+		}
+		source.DiscoveryStrategy = DiscoveryRootWalk
 		return source, nil
 	}
 	return Source{ID: id, Path: root, DiscoveryPriority: priority}, nil

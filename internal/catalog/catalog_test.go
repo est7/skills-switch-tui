@@ -11,7 +11,7 @@ import (
 
 func TestLoadDiscoversSourceGroupsAndAppliesCompatibilityOverrides(t *testing.T) {
 	sourcesRoot := t.TempDir()
-	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "codex-dynamic-workflows"), `---
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "codex-tools", "codex-dynamic-workflows"), `---
 name: codex-dynamic-workflows
 description: Run Codex-native workflows.
 ---
@@ -31,7 +31,7 @@ description: Create and switch worktrees.
 defaults:
   targets: [codex, claude, gemini]
 overrides:
-  local-shared/codex-dynamic-workflows:
+  local-shared/codex-tools/codex-dynamic-workflows:
     targets: [codex]
     reason: Requires Codex goal and collaboration tools.
 `
@@ -56,7 +56,7 @@ overrides:
 		t.Fatalf("worktrunk targets = %v, want all clients", worktrunk.Targets)
 	}
 
-	dynamic, ok := loaded.Skill("local-shared/codex-dynamic-workflows")
+	dynamic, ok := loaded.Skill("local-shared/codex-tools/codex-dynamic-workflows")
 	if !ok {
 		t.Fatal("codex-dynamic-workflows skill was not discovered")
 	}
@@ -70,17 +70,17 @@ overrides:
 
 func TestLoadDiscoversSharedAndClientOnlyLocalSources(t *testing.T) {
 	sourcesRoot := t.TempDir()
-	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), `---
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "base", "portable"), `---
 name: portable
 description: Runs in every registered client.
 ---
 `)
-	writeSkill(t, filepath.Join(sourcesRoot, "local", "codex", "codex-workflow"), `---
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "codex", "tools", "codex-workflow"), `---
 name: codex-workflow
 description: Uses Codex-native workflow APIs.
 ---
 `)
-	writeSkill(t, filepath.Join(sourcesRoot, "local", "pi", "pi-workflow"), `---
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "pi", "tools", "pi-workflow"), `---
 name: pi-workflow
 description: Uses Pi-native workflow APIs.
 ---
@@ -98,7 +98,7 @@ description: Uses Pi-native workflow APIs.
 		t.Fatalf("Load() error = %v", err)
 	}
 
-	portable, ok := loaded.Skill("local-shared/portable")
+	portable, ok := loaded.Skill("local-shared/base/portable")
 	if !ok {
 		t.Fatal("shared local skill was not discovered")
 	}
@@ -108,7 +108,7 @@ description: Uses Pi-native workflow APIs.
 		}
 	}
 
-	codexWorkflow, ok := loaded.Skill("local-codex-only/codex-workflow")
+	codexWorkflow, ok := loaded.Skill("local-codex-only/tools/codex-workflow")
 	if !ok {
 		t.Fatal("Codex-only local skill was not discovered")
 	}
@@ -116,7 +116,7 @@ description: Uses Pi-native workflow APIs.
 		t.Fatalf("codex-workflow targets = %v, want codex only", codexWorkflow.Targets)
 	}
 
-	piWorkflow, ok := loaded.Skill("local-pi-only/pi-workflow")
+	piWorkflow, ok := loaded.Skill("local-pi-only/tools/pi-workflow")
 	if !ok {
 		t.Fatal("Pi-only local skill was not discovered")
 	}
@@ -124,12 +124,69 @@ description: Uses Pi-native workflow APIs.
 		t.Fatalf("pi-workflow targets = %v, want pi only", piWorkflow.Targets)
 	}
 
-	piSource, ok := loaded.Source("local-pi-only")
+	piSource, ok := loaded.Source("local-pi-only/tools")
 	if !ok {
-		t.Fatal("logical local-pi-only source was not discovered")
+		t.Fatal("logical local-pi-only/tools source was not discovered")
 	}
 	if piSource.Kind != SourceLocal || piSource.Scope != "pi" {
 		t.Fatalf("pi source = kind %q scope %q", piSource.Kind, piSource.Scope)
+	}
+}
+
+func TestLoadDiscoversLocalGroupsAsSeparateSources(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	// Nested group: skills live one level under the group directory.
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "core", "design"), `---
+name: design
+description: Design philosophy.
+---
+`)
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "core", "discipline"), `---
+name: discipline
+description: Coding discipline.
+---
+`)
+	// Bare-root group: the group directory is itself a single skill, so the
+	// trailing segment doubles, matching vendor root-level skills.
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "make-goal"), `---
+name: make-goal
+description: A standalone skill group.
+---
+`)
+	// Manifest-registered group: a .claude-plugin/plugin.json marks the group;
+	// skills stay flat under the group root and are still discovered by the
+	// root-walk fallback.
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "android", "compose"), `---
+name: compose
+description: Compose component generator.
+---
+`)
+	writeJSON(t, filepath.Join(sourcesRoot, "local", "shared", "android", ".claude-plugin", "plugin.json"), `{"name": "android"}`)
+
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	for _, id := range []string{"local-shared/core", "local-shared/make-goal", "local-shared/android"} {
+		source, ok := loaded.Source(id)
+		if !ok {
+			t.Fatalf("local group source %q was not discovered", id)
+		}
+		if source.Kind != SourceLocal || source.Scope != "shared" {
+			t.Fatalf("source %q = kind %q scope %q, want local/shared", id, source.Kind, source.Scope)
+		}
+	}
+
+	for _, id := range []string{
+		"local-shared/core/design",
+		"local-shared/core/discipline",
+		"local-shared/make-goal/make-goal",
+		"local-shared/android/compose",
+	} {
+		if _, ok := loaded.Skill(id); !ok {
+			t.Fatalf("skill %q was not discovered", id)
+		}
 	}
 }
 
@@ -196,7 +253,7 @@ description: Invalid local source fixture.
 
 func TestLoadDegradesMalformedArchivedFrontmatterWithoutBlockingCatalog(t *testing.T) {
 	sourcesRoot := t.TempDir()
-	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "healthy"), `---
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "active", "healthy"), `---
 name: healthy
 description: Active Skill remains available.
 ---
@@ -211,7 +268,7 @@ description: invalid: unquoted colon
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if _, ok := loaded.Skill("local-shared/healthy"); !ok {
+	if _, ok := loaded.Skill("local-shared/active/healthy"); !ok {
 		t.Fatal("healthy active Skill was not discovered")
 	}
 	broken, ok := loaded.Skill("archived-shared/legacy/broken")
@@ -635,7 +692,7 @@ sources:
 
 func TestLoadRegistersConfiguredClientAndIncludesItInDefaultTargets(t *testing.T) {
 	sourcesRoot := t.TempDir()
-	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), `---
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "base", "portable"), `---
 name: portable
 description: Works with every registered client.
 ---
@@ -654,7 +711,7 @@ description: Works with every registered client.
 	if !loaded.Clients.Has(Client("pi")) {
 		t.Fatal("configured pi client was not registered")
 	}
-	skill, ok := loaded.Skill("local-shared/portable")
+	skill, ok := loaded.Skill("local-shared/base/portable")
 	if !ok {
 		t.Fatal("portable skill was not discovered")
 	}

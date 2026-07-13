@@ -104,7 +104,7 @@ func TestEnableThenListReportsProjectState(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	skillDir := filepath.Join(sourcesRoot, "local", "shared", "worktrunk")
+	skillDir := filepath.Join(sourcesRoot, "local", "shared", "demo", "worktrunk")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestEnableThenListReportsProjectState(t *testing.T) {
 	if _, err := execute(t,
 		"--resources", resourceRoot,
 		"--project", projectRoot,
-		"enable", "local-shared/worktrunk",
+		"enable", "local-shared/demo/worktrunk",
 		"--client", "codex",
 	); err != nil {
 		t.Fatalf("enable command: %v", err)
@@ -141,7 +141,7 @@ func TestEnableThenListReportsProjectState(t *testing.T) {
 	if got, want := len(result.Skills), 1; got != want {
 		t.Fatalf("skill count = %d, want %d", got, want)
 	}
-	if got, want := result.Skills[0].ID, "local-shared/worktrunk"; got != want {
+	if got, want := result.Skills[0].ID, "local-shared/demo/worktrunk"; got != want {
 		t.Fatalf("skill id = %q, want %q", got, want)
 	}
 	if got, want := result.Skills[0].Clients["codex"], "enabled"; got != want {
@@ -156,7 +156,7 @@ func TestConfiguredClientCanBeEnabledWithoutCodeChanges(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "shared", "base", "portable"), "portable")
 	config := "version: 1\nclients:\n  pi:\n    projectSkillsDir: .pi/skills\n"
 	if err := os.WriteFile(filepath.Join(resourceRoot, "registry.yaml"), []byte(config), 0o644); err != nil {
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestConfiguredClientCanBeEnabledWithoutCodeChanges(t *testing.T) {
 	if _, err := execute(t,
 		"--resources", resourceRoot,
 		"--project", projectRoot,
-		"enable", "local-shared/portable",
+		"enable", "local-shared/base/portable",
 		"--client", "pi",
 	); err != nil {
 		t.Fatalf("enable pi: %v", err)
@@ -214,7 +214,7 @@ func TestChineseLanguageLocalizesHelpAndHumanListHeaders(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "shared", "base", "portable"), "portable")
 
 	help, err := execute(t, "--lang", "zh", "--help")
 	if err != nil {
@@ -364,13 +364,13 @@ func TestShowStatusAndDoctorExposeStableJSON(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "shared", "base", "portable"), "portable")
 	base := []string{"--resources", resourceRoot, "--project", projectRoot}
-	if _, err := execute(t, append(base, "enable", "local-shared/portable", "--client", "codex")...); err != nil {
+	if _, err := execute(t, append(base, "enable", "local-shared/base/portable", "--client", "codex")...); err != nil {
 		t.Fatal(err)
 	}
 
-	show, err := execute(t, append(base, "show", "local-shared/portable", "--json")...)
+	show, err := execute(t, append(base, "show", "local-shared/base/portable", "--json")...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +402,7 @@ func TestMultiClientEnableIsAtomicAcrossClientDirectories(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "shared", "base", "portable"), "portable")
 	conflict := filepath.Join(projectRoot, ".claude", "skills", "portable")
 	if err := os.MkdirAll(conflict, 0o755); err != nil {
 		t.Fatal(err)
@@ -411,7 +411,7 @@ func TestMultiClientEnableIsAtomicAcrossClientDirectories(t *testing.T) {
 	_, err := execute(t,
 		"--resources", resourceRoot,
 		"--project", projectRoot,
-		"enable", "local-shared/portable",
+		"enable", "local-shared/base/portable",
 		"--client", "codex",
 		"--client", "claude",
 	)

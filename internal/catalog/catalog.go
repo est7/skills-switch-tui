@@ -308,27 +308,34 @@ func Load(root string, clients client.Registry) (Catalog, error) {
 
 func discoverLocalSources(root string, defaults map[Client]bool, overrides map[string]overrideConfig, clients client.Registry) ([]Source, error) {
 	localRoot := filepath.Join(root, string(SourceLocal))
-	entries, err := readDirectories(localRoot, "local scopes")
+	scopeEntries, err := readDirectories(localRoot, "local scopes")
 	if err != nil {
 		return nil, err
 	}
 	sources := make([]Source, 0)
-	for _, entry := range entries {
-		scope := entry.Name()
+	for _, scopeEntry := range scopeEntries {
+		scope := scopeEntry.Name()
 		targets, err := targetsForScope(scope, defaults, clients)
 		if err != nil {
 			return nil, fmt.Errorf("local scope: %w", err)
 		}
-		id := ScopedSourceID(SourceLocal, scope, "")
-		path := filepath.Join(localRoot, scope)
-		source, discoverErr := discoverSource(id, path, targets, overrides, clients)
-		if discoverErr != nil {
-			return nil, discoverErr
+		scopeRoot := filepath.Join(localRoot, scope)
+		groups, err := readDirectories(scopeRoot, "local groups")
+		if err != nil {
+			return nil, err
 		}
-		if len(source.Skills) > 0 {
-			source.Kind = SourceLocal
-			source.Scope = scope
-			sources = append(sources, source)
+		for _, group := range groups {
+			id := ScopedSourceID(SourceLocal, scope, group.Name())
+			path := filepath.Join(scopeRoot, group.Name())
+			source, discoverErr := discoverManagedSource(id, path, nil, nil, targets, overrides, clients, true)
+			if discoverErr != nil {
+				return nil, discoverErr
+			}
+			if len(source.Skills) > 0 {
+				source.Kind = SourceLocal
+				source.Scope = scope
+				sources = append(sources, source)
+			}
 		}
 	}
 	return sources, nil
@@ -356,7 +363,7 @@ func discoverVendorSources(root string, defaults map[Client]bool, config configF
 			id := ScopedSourceID(SourceVendor, scope, repository.Name())
 			path := filepath.Join(scopeRoot, repository.Name())
 			policy := config.Sources[id]
-			source, discoverErr := discoverVendorSource(id, path, policy.DiscoveryPriority, policy.SkillPaths, targets, config.Overrides, clients)
+			source, discoverErr := discoverManagedSource(id, path, policy.DiscoveryPriority, policy.SkillPaths, targets, config.Overrides, clients, false)
 			if discoverErr != nil {
 				return nil, discoverErr
 			}
@@ -468,10 +475,6 @@ func ScopedSourceID(kind SourceKind, scope, name string) string {
 		return namespace
 	}
 	return namespace + "/" + name
-}
-
-func discoverSource(id, root string, defaults map[Client]bool, overrides map[string]overrideConfig, clients client.Registry) (Source, error) {
-	return discoverSourceRoots(id, root, []string{root}, defaults, overrides, clients, false)
 }
 
 func discoverArchivedSource(id, root string, defaults map[Client]bool, overrides map[string]overrideConfig, clients client.Registry) (Source, error) {
