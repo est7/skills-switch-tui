@@ -73,22 +73,40 @@ const (
 	deleteVendorSource deletionKind = iota
 	deleteLocalSource
 	deleteLocalSkill
+	deleteMCPServer
 )
 
 // deletionPlan captures a delete request awaiting confirmation. skills lists
 // the projections to clear before removal; path is the local directory to
 // remove and is empty for vendor sources, which are removed as submodules.
+// server names the MCP catalog entry to remove for deleteMCPServer.
 type deletionPlan struct {
 	kind   deletionKind
 	source catalog.Source
 	skills []catalog.Skill
 	path   string
+	server string
 	label  string
 }
 
 type deleteFinishedMsg struct {
 	plan deletionPlan
 	err  error
+}
+
+type mcpFormStep int
+
+const (
+	mcpFormName mcpFormStep = iota
+	mcpFormEndpoint
+)
+
+// mcpForm is the two-step inline form for adding an MCP server: first the name,
+// then the endpoint (a command for stdio or an http/https URL).
+type mcpForm struct {
+	step  mcpFormStep
+	name  string
+	input textinput.Model
 }
 
 type Model struct {
@@ -117,6 +135,7 @@ type Model struct {
 	updating      bool
 	deleting      bool
 	pendingDelete *deletionPlan
+	mcpForm       *mcpForm
 	isDark        bool
 	styles        styles
 	translator    i18n.Translator
@@ -245,8 +264,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		resultKey := i18n.DeletedSource
-		if message.plan.kind == deleteLocalSkill {
+		switch message.plan.kind {
+		case deleteLocalSkill:
 			resultKey = i18n.DeletedSkill
+		case deleteMCPServer:
+			resultKey = i18n.DeletedMCPServer
 		}
 		m.status = m.translator.Text(resultKey, message.plan.label)
 		return m, nil
@@ -262,6 +284,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.searching {
 		return m.updateSearch(key)
+	}
+	if m.mcpForm != nil {
+		return m.updateMCPForm(key)
 	}
 	if m.pendingDelete != nil {
 		return m.updateConfirm(key)
@@ -304,6 +329,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m.startUpdate(true)
 	case "d":
 		m.requestDelete()
+	case "n":
+		return m.startMCPForm()
 	case "L":
 		m.toggleLanguage()
 	}
@@ -325,11 +352,15 @@ func (m Model) updateConfirm(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // confirmation. Vendor sources are removable whole (read-only skills are not);
 // local groups, their skills, and standalone local skills are all removable.
 func (m *Model) requestDelete() {
-	if m.tab != tabSkills {
-		m.status = m.translator.Text(i18n.DeleteUnavailable)
+	if m.deleting || m.updating {
 		return
 	}
-	if m.deleting || m.updating {
+	if m.tab == tabMCP {
+		m.requestMCPDelete()
+		return
+	}
+	if m.tab != tabSkills {
+		m.status = m.translator.Text(i18n.DeleteUnavailable)
 		return
 	}
 	selected, ok := m.selectedRow()
@@ -389,8 +420,31 @@ func (m Model) executeDelete() (tea.Model, tea.Cmd) {
 	m.err = nil
 	m.status = m.translator.Text(i18n.Deleting, plan.label)
 
-	proj := m.projection
 	clients := m.catalog.Clients.IDs()
+	if plan.kind == deleteMCPServer {
+		mcpManager := m.mcpManager
+		catalogPath := m.mcpCatalog.Path
+		return m, func() tea.Msg {
+			operations := make([]mcp.Operation, 0, len(clients))
+			for _, clientID := range clients {
+				state, err := mcpManager.State(plan.server, clientID)
+				if err != nil {
+					return deleteFinishedMsg{plan: plan, err: fmt.Errorf("inspect MCP projection: %w", err)}
+				}
+				if state == mcp.StateEnabled {
+					operations = append(operations, mcp.Operation{Server: plan.server, Client: clientID, Enabled: false})
+				}
+			}
+			if len(operations) > 0 {
+				if err := mcpManager.Apply(operations); err != nil {
+					return deleteFinishedMsg{plan: plan, err: fmt.Errorf("clear MCP projections before delete: %w", err)}
+				}
+			}
+			return deleteFinishedMsg{plan: plan, err: mcp.RemoveServer(catalogPath, plan.server)}
+		}
+	}
+
+	proj := m.projection
 	root := m.catalog.Root
 	ctx := m.context
 	updater := m.updater
@@ -419,11 +473,119 @@ func (m *Model) reloadCatalog() error {
 	}
 	m.catalog = reloaded
 	m.projection = projection.New(m.project, reloaded)
+	if m.mcpCatalog.Path != "" {
+		mcpReloaded, err := mcp.LoadCatalog(m.mcpCatalog.Path)
+		if err != nil {
+			return err
+		}
+		m.mcpCatalog = mcpReloaded
+		m.mcpManager = mcp.NewManager(m.project, mcpReloaded, reloaded.Clients)
+	}
 	if clients := m.catalog.Clients.IDs(); m.clientIndex >= len(clients) {
 		m.clientIndex = max(0, len(clients)-1)
 	}
 	m.clampCursor()
 	return nil
+}
+
+// requestMCPDelete resolves the selected MCP server into a pending deletion.
+func (m *Model) requestMCPDelete() {
+	names := m.mcpNames()
+	if len(names) == 0 || m.cursor >= len(names) {
+		m.status = m.translator.Text(i18n.NoSelection)
+		return
+	}
+	name := names[m.cursor]
+	m.pendingDelete = &deletionPlan{kind: deleteMCPServer, server: name, label: name}
+}
+
+func (m Model) startMCPForm() (tea.Model, tea.Cmd) {
+	if m.tab != tabMCP {
+		m.status = m.translator.Text(i18n.AddMCPUnavailable)
+		return m, nil
+	}
+	if m.deleting || m.updating {
+		return m, nil
+	}
+	if m.mcpCatalog.Path == "" {
+		m.status = m.translator.Text(i18n.AddMCPUnavailable)
+		return m, nil
+	}
+	input := textinput.New()
+	input.Prompt = "> "
+	input.CharLimit = 200
+	input.SetWidth(min(48, m.contentWidth()-8))
+	input.SetVirtualCursor(true)
+	input.SetStyles(textinput.DefaultStyles(m.isDark))
+	input.Placeholder = m.translator.Text(i18n.MCPFormNamePrompt)
+	m.mcpForm = &mcpForm{step: mcpFormName, input: input}
+	m.err = nil
+	m.status = m.translator.Text(i18n.MCPFormTitle)
+	return m, m.mcpForm.input.Focus()
+}
+
+func (m Model) updateMCPForm(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "esc":
+		m.mcpForm = nil
+		m.status = m.translator.Text(i18n.Ready)
+		return m, nil
+	case "enter":
+		value := strings.TrimSpace(m.mcpForm.input.Value())
+		if m.mcpForm.step == mcpFormName {
+			if value == "" {
+				m.err = errors.New(m.translator.Text(i18n.MCPNameRequired))
+				return m, nil
+			}
+			if _, exists := m.mcpCatalog.Server(value); exists {
+				m.err = errors.New(m.translator.Text(i18n.MCPServerExists, value))
+				return m, nil
+			}
+			m.mcpForm.name = value
+			m.mcpForm.step = mcpFormEndpoint
+			m.mcpForm.input.Reset()
+			m.mcpForm.input.Placeholder = m.translator.Text(i18n.MCPFormEndpointPrompt)
+			m.err = nil
+			return m, nil
+		}
+		if value == "" {
+			m.err = errors.New(m.translator.Text(i18n.MCPEndpointRequired))
+			return m, nil
+		}
+		return m.commitMCPForm(m.mcpForm.name, value)
+	}
+	var command tea.Cmd
+	m.mcpForm.input, command = m.mcpForm.input.Update(key)
+	return m, command
+}
+
+func (m Model) commitMCPForm(name, endpoint string) (tea.Model, tea.Cmd) {
+	server := mcp.Server{Name: name}
+	if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+		server.Transport = mcp.TransportHTTP
+		server.URL = endpoint
+	} else {
+		fields := strings.Fields(endpoint)
+		server.Transport = mcp.TransportStdio
+		server.Command = fields[0]
+		if len(fields) > 1 {
+			server.Args = fields[1:]
+		}
+	}
+	if err := mcp.AddServer(m.mcpCatalog.Path, server); err != nil {
+		m.err = err
+		m.status = m.translator.Text(i18n.NoChangesApplied)
+		return m, nil
+	}
+	m.mcpForm = nil
+	if err := m.reloadCatalog(); err != nil {
+		m.err = err
+		m.status = m.translator.Text(i18n.UpdateReloadFailed)
+		return m, nil
+	}
+	m.err = nil
+	m.status = m.translator.Text(i18n.MCPServerAdded, name)
+	return m, nil
 }
 
 func (m *Model) toggleLanguage() {

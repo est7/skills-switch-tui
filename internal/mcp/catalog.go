@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -91,6 +92,97 @@ func LoadCatalog(path string) (Catalog, error) {
 		loaded.Servers[name] = server
 	}
 	return loaded, nil
+}
+
+// AddServer registers a new server in the catalog file at path, preserving all
+// other entries and any unknown fields. It fails if the server already exists.
+func AddServer(path string, server Server) error {
+	if err := validateServer(server); err != nil {
+		return err
+	}
+	return mutateCatalogServers(path, func(servers map[string]any) error {
+		if _, exists := servers[server.Name]; exists {
+			return fmt.Errorf("MCP server already exists: %s", server.Name)
+		}
+		entry, err := serverEntry(server)
+		if err != nil {
+			return err
+		}
+		servers[server.Name] = entry
+		return nil
+	})
+}
+
+// RemoveServer deletes a server from the catalog file at path, preserving all
+// other entries. It fails if the server does not exist.
+func RemoveServer(path, name string) error {
+	return mutateCatalogServers(path, func(servers map[string]any) error {
+		if _, exists := servers[name]; !exists {
+			return fmt.Errorf("MCP server does not exist: %s", name)
+		}
+		delete(servers, name)
+		return nil
+	})
+}
+
+func serverEntry(server Server) (map[string]any, error) {
+	raw := rawServer{
+		Type:    string(server.Transport),
+		Command: server.Command,
+		Args:    server.Args,
+		Env:     server.Env,
+		CWD:     server.CWD,
+		URL:     server.URL,
+		Headers: server.Headers,
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("encode MCP server %q: %w", server.Name, err)
+	}
+	entry := map[string]any{}
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return nil, fmt.Errorf("encode MCP server %q: %w", server.Name, err)
+	}
+	return entry, nil
+}
+
+func mutateCatalogServers(path string, mutate func(map[string]any) error) error {
+	data, exists, mode, err := readConfig(path)
+	if err != nil {
+		return fmt.Errorf("read MCP catalog %s: %w", path, err)
+	}
+	document := map[string]any{}
+	if exists {
+		if err := json.Unmarshal(data, &document); err != nil {
+			return fmt.Errorf("parse MCP catalog %s: %w", path, err)
+		}
+	} else {
+		document["version"] = 1
+	}
+	servers := map[string]any{}
+	if existing, ok := document["mcpServers"]; ok && existing != nil {
+		typed, ok := existing.(map[string]any)
+		if !ok {
+			return fmt.Errorf("MCP catalog %s mcpServers is not an object", path)
+		}
+		servers = typed
+	}
+	if err := mutate(servers); err != nil {
+		return err
+	}
+	document["mcpServers"] = servers
+	encoded, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode MCP catalog %s: %w", path, err)
+	}
+	encoded = append(encoded, '\n')
+	if mode == 0 {
+		mode = 0o644
+	}
+	if _, err := ensureParentDirectory(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("prepare MCP catalog directory: %w", err)
+	}
+	return atomicWrite(path, encoded, mode)
 }
 
 func normalizeServer(name string, raw rawServer) (Server, error) {

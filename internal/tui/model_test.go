@@ -750,6 +750,96 @@ func TestDeleteVendorSourceRowBuildsAWholeSourcePlan(t *testing.T) {
 	}
 }
 
+func TestMCPDeleteRemovesServerAfterConfirmation(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "demo", "alpha"), "alpha")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpPath := filepath.Join(t.TempDir(), "mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(`{"version":1,"mcpServers":{"context7":{"command":"npx"},"grafana":{"url":"https://x"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mcpCatalog, err := mcp.LoadCatalog(mcpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English), Resources{
+		MCPCatalog: mcpCatalog,
+		MCPManager: mcp.NewManager(projectRoot, mcpCatalog, loaded.Clients),
+	})
+	model.tab = tabMCP
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'd', Text: "d"}) // cursor 0 = context7 (sorted)
+	model = updated.(Model)
+	if model.pendingDelete == nil || model.pendingDelete.kind != deleteMCPServer || model.pendingDelete.server != "context7" {
+		t.Fatalf("expected pending mcp delete of context7, got %#v", model.pendingDelete)
+	}
+	updated, command := model.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	model = updated.(Model)
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("delete failed: %v", model.err)
+	}
+	if _, ok := model.mcpCatalog.Server("context7"); ok {
+		t.Fatal("deleted MCP server still present in reloaded catalog")
+	}
+	if _, ok := model.mcpCatalog.Server("grafana"); !ok {
+		t.Fatal("unrelated MCP server was removed")
+	}
+}
+
+func TestMCPAddServerViaFormWritesTheCatalog(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "demo", "alpha"), "alpha")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpPath := filepath.Join(t.TempDir(), "mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(`{"version":1,"mcpServers":{"context7":{"command":"npx"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mcpCatalog, err := mcp.LoadCatalog(mcpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English), Resources{
+		MCPCatalog: mcpCatalog,
+		MCPManager: mcp.NewManager(projectRoot, mcpCatalog, loaded.Clients),
+	})
+	model.tab = tabMCP
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	model = updated.(Model)
+	if model.mcpForm == nil || model.mcpForm.step != mcpFormName {
+		t.Fatalf("add form did not open at the name step: %#v", model.mcpForm)
+	}
+	model.mcpForm.input.SetValue("grafana")
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = updated.(Model)
+	if model.mcpForm == nil || model.mcpForm.step != mcpFormEndpoint {
+		t.Fatalf("add form did not advance to the endpoint step: %#v", model.mcpForm)
+	}
+	model.mcpForm.input.SetValue("https://mcp.example.com")
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("add failed: %v", model.err)
+	}
+	if model.mcpForm != nil {
+		t.Fatal("form should close after a successful add")
+	}
+	server, ok := model.mcpCatalog.Server("grafana")
+	if !ok || server.Transport != mcp.TransportHTTP || server.URL != "https://mcp.example.com" {
+		t.Fatalf("added server missing or incorrect: %#v", server)
+	}
+}
+
 func writeSkill(t *testing.T, dir, name string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {

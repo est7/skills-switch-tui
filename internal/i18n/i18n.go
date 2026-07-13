@@ -185,6 +185,18 @@ const (
 	DeleteReadOnlySkill       Key = "delete_read_only_skill"
 	DeleteArchivedUnsupported Key = "delete_archived_unsupported"
 	DeleteUnavailable         Key = "delete_unavailable"
+	DeleteConfirmMCP          Key = "delete_confirm_mcp"
+	DeletedMCPServer          Key = "deleted_mcp_server"
+	HelpAddMCP                Key = "help_add_mcp"
+	AddMCPUnavailable         Key = "add_mcp_unavailable"
+	MCPFormTitle              Key = "mcp_form_title"
+	MCPFormNamePrompt         Key = "mcp_form_name_prompt"
+	MCPFormEndpointPrompt     Key = "mcp_form_endpoint_prompt"
+	MCPFormHint               Key = "mcp_form_hint"
+	MCPNameRequired           Key = "mcp_name_required"
+	MCPEndpointRequired       Key = "mcp_endpoint_required"
+	MCPServerExists           Key = "mcp_server_exists"
+	MCPServerAdded            Key = "mcp_server_added"
 )
 
 type Translator struct {
@@ -362,6 +374,18 @@ var messages = map[Language]map[Key]string{
 		DeleteReadOnlySkill:       "Read-only source: delete the whole source or disable the skill; individual skills cannot be removed",
 		DeleteArchivedUnsupported: "Archived references cannot be deleted here",
 		DeleteUnavailable:         "Deletion is only available for skill sources",
+		DeleteConfirmMCP:          "Remove MCP server %s from the catalog. This cannot be undone.",
+		DeletedMCPServer:          "Removed MCP server %s",
+		HelpAddMCP:                "add MCP",
+		AddMCPUnavailable:         "Adding servers is only available on the MCP tab",
+		MCPFormTitle:              "Add MCP server",
+		MCPFormNamePrompt:         "server name",
+		MCPFormEndpointPrompt:     "command (stdio) or http(s) URL",
+		MCPFormHint:               "[enter] next/confirm   [esc] cancel",
+		MCPNameRequired:           "server name is required",
+		MCPEndpointRequired:       "command or URL is required",
+		MCPServerExists:           "MCP server already exists: %s",
+		MCPServerAdded:            "Added MCP server %s",
 	},
 	Chinese: {
 		Ready:                     "就绪",
@@ -533,6 +557,18 @@ var messages = map[Language]map[Key]string{
 		DeleteReadOnlySkill:       "只读来源:请删除整个来源或 disable 技能,不能单独删除其中的技能",
 		DeleteArchivedUnsupported: "归档引用不能在此删除",
 		DeleteUnavailable:         "仅技能来源支持删除",
+		DeleteConfirmMCP:          "将从目录删除 MCP 服务器 %s,不可撤销。",
+		DeletedMCPServer:          "已删除 MCP 服务器 %s",
+		HelpAddMCP:                "添加 MCP",
+		AddMCPUnavailable:         "仅 MCP 标签页支持添加服务器",
+		MCPFormTitle:              "添加 MCP 服务器",
+		MCPFormNamePrompt:         "服务器名称",
+		MCPFormEndpointPrompt:     "命令(stdio)或 http(s) URL",
+		MCPFormHint:               "[enter] 下一步/确认   [esc] 取消",
+		MCPNameRequired:           "需要服务器名称",
+		MCPEndpointRequired:       "需要命令或 URL",
+		MCPServerExists:           "MCP 服务器已存在:%s",
+		MCPServerAdded:            "已添加 MCP 服务器 %s",
 	},
 }
 

@@ -22,6 +22,9 @@ const (
 
 func (m Model) View() tea.View {
 	detail := m.renderDetail()
+	if m.mcpForm != nil {
+		detail = m.renderMCPForm()
+	}
 	if m.pendingDelete != nil {
 		detail = m.renderConfirm()
 	}
@@ -451,14 +454,33 @@ func (m Model) renderDetail() string {
 
 func (m Model) renderConfirm() string {
 	plan := m.pendingDelete
-	body := m.translator.Text(i18n.DeleteConfirmSource, plan.label, len(plan.skills))
-	if plan.kind == deleteLocalSkill {
+	var body string
+	switch plan.kind {
+	case deleteLocalSkill:
 		body = m.translator.Text(i18n.DeleteConfirmSkill, plan.label)
+	case deleteMCPServer:
+		body = m.translator.Text(i18n.DeleteConfirmMCP, plan.label)
+	default:
+		body = m.translator.Text(i18n.DeleteConfirmSource, plan.label, len(plan.skills))
 	}
 	lines := []string{
 		m.styles.error.Render(m.translator.Text(i18n.DeleteConfirmTitle)),
 		truncate(body, m.detailTextWidth()),
 		m.styles.subtle.Render(m.translator.Text(i18n.DeleteConfirmHint)),
+	}
+	return m.styles.detail.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) renderMCPForm() string {
+	prompt := m.translator.Text(i18n.MCPFormNamePrompt)
+	if m.mcpForm.step == mcpFormEndpoint {
+		prompt = m.translator.Text(i18n.MCPFormEndpointPrompt) + "  ·  " + m.mcpForm.name
+	}
+	lines := []string{
+		m.styles.accent.Render(m.translator.Text(i18n.MCPFormTitle)),
+		m.styles.subtle.Render(truncate(prompt, m.detailTextWidth())),
+		m.mcpForm.input.View(),
+		m.styles.subtle.Render(m.translator.Text(i18n.MCPFormHint)),
 	}
 	return m.styles.detail.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
 }
