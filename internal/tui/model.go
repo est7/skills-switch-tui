@@ -1,0 +1,520 @@
+package tui
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"github.com/est7/skills-switch-tui/internal/catalog"
+	"github.com/est7/skills-switch-tui/internal/i18n"
+	"github.com/est7/skills-switch-tui/internal/projection"
+	"github.com/est7/skills-switch-tui/internal/source"
+)
+
+type filterMode int
+
+const (
+	filterAll filterMode = iota
+	filterEnabled
+	filterIssues
+	filterArchive
+)
+
+func (f filterMode) String() string {
+	switch f {
+	case filterAll:
+		return "all"
+	case filterEnabled:
+		return "enabled"
+	case filterIssues:
+		return "issues"
+	case filterArchive:
+		return "archive"
+	default:
+		return "unknown"
+	}
+}
+
+type rowKind int
+
+const (
+	sourceRow rowKind = iota
+	skillRow
+)
+
+type row struct {
+	kind        rowKind
+	sourceIndex int
+	skillIndex  int
+}
+
+type updateFinishedMsg struct {
+	results []source.UpdateResult
+	err     error
+}
+
+type Model struct {
+	catalog     catalog.Catalog
+	project     string
+	projection  projection.Manager
+	updater     *source.Manager
+	clientIndex int
+	cursor      int
+	offset      int
+	width       int
+	height      int
+	expanded    map[string]bool
+	filter      filterMode
+	searching   bool
+	search      textinput.Model
+	help        help.Model
+	keys        keyMap
+	showHelp    bool
+	updating    bool
+	isDark      bool
+	styles      styles
+	translator  i18n.Translator
+	status      string
+	err         error
+	context     context.Context
+	cancel      context.CancelFunc
+}
+
+func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Manager, updater *source.Manager, translator i18n.Translator) Model {
+	search := textinput.New()
+	search.Prompt = "/ "
+	search.Placeholder = translator.Text(i18n.SearchPlaceholder)
+	search.CharLimit = 120
+	search.SetWidth(36)
+	search.SetVirtualCursor(true)
+	search.SetStyles(textinput.DefaultDarkStyles())
+	helpModel := help.New()
+	helpModel.ShowAll = false
+	helpModel.SetWidth(100)
+	operationContext, cancel := context.WithCancel(context.Background())
+	return Model{
+		catalog:    loaded,
+		project:    projectRoot,
+		projection: manager,
+		updater:    updater,
+		width:      100,
+		height:     30,
+		expanded:   make(map[string]bool),
+		search:     search,
+		help:       helpModel,
+		keys:       defaultKeyMap(translator),
+		isDark:     true,
+		styles:     newStyles(true),
+		translator: translator,
+		status:     translator.Text(i18n.Ready),
+		context:    operationContext,
+		cancel:     cancel,
+	}
+}
+
+func (m Model) Init() tea.Cmd {
+	return tea.RequestBackgroundColor
+}
+
+func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	switch message := message.(type) {
+	case tea.BackgroundColorMsg:
+		m.isDark = message.IsDark()
+		m.styles = newStyles(m.isDark)
+		m.search.SetStyles(textinput.DefaultStyles(m.isDark))
+		return m, nil
+	case tea.WindowSizeMsg:
+		m.width = max(message.Width, 48)
+		m.height = max(message.Height, 16)
+		m.search.SetWidth(min(48, m.width-8))
+		m.help.SetWidth(m.width - 4)
+		m.clampCursor()
+		return m, nil
+	case updateFinishedMsg:
+		m.updating = false
+		if message.err != nil {
+			m.err = message.err
+			m.status = m.translator.Text(i18n.UpdateFailed)
+			return m, nil
+		}
+		changed := 0
+		for _, result := range message.results {
+			if result.Changed {
+				changed++
+			}
+		}
+		if reloaded, err := catalog.Load(m.catalog.Root); err != nil {
+			m.err = fmt.Errorf("reload catalog after update: %w", err)
+			m.status = m.translator.Text(i18n.UpdateReloadFailed)
+			return m, nil
+		} else {
+			m.catalog = reloaded
+		}
+		if clients := m.catalog.Clients.IDs(); m.clientIndex >= len(clients) {
+			m.clientIndex = max(0, len(clients)-1)
+		}
+		m.err = nil
+		m.status = m.translator.Text(i18n.UpdatedSources, len(message.results), changed)
+		m.clampCursor()
+		return m, nil
+	}
+
+	key, ok := message.(tea.KeyPressMsg)
+	if !ok {
+		return m, nil
+	}
+	if key.String() == "ctrl+c" {
+		m.cancel()
+		return m, tea.Quit
+	}
+	if m.searching {
+		return m.updateSearch(key)
+	}
+	m.err = nil
+
+	switch key.String() {
+	case "q":
+		m.cancel()
+		return m, tea.Quit
+	case "?":
+		m.showHelp = !m.showHelp
+		m.help.ShowAll = m.showHelp
+	case "/":
+		m.searching = true
+		return m, m.search.Focus()
+	case "tab":
+		m.cycleFilter(1)
+	case "shift+tab":
+		m.cycleFilter(-1)
+	case "up", "k":
+		m.moveCursor(-1)
+	case "down", "j":
+		m.moveCursor(1)
+	case "left", "h":
+		m.moveClient(-1)
+	case "right", "l":
+		m.moveClient(1)
+	case "enter":
+		m.toggleExpanded()
+	case "space":
+		m.toggleSelection()
+	case "u":
+		return m.startUpdate()
+	}
+	return m, nil
+}
+
+func (m Model) updateSearch(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "esc":
+		m.searching = false
+		m.search.Blur()
+		m.search.Reset()
+		m.cursor = 0
+		m.offset = 0
+		return m, nil
+	case "enter":
+		m.searching = false
+		m.search.Blur()
+		m.cursor = 0
+		m.offset = 0
+		return m, nil
+	}
+	var command tea.Cmd
+	m.search, command = m.search.Update(key)
+	m.cursor = 0
+	m.offset = 0
+	return m, command
+}
+
+func (m *Model) cycleFilter(delta int) {
+	count := int(filterArchive) + 1
+	next := (int(m.filter) + delta + count) % count
+	m.filter = filterMode(next)
+	m.cursor = 0
+	m.offset = 0
+	m.status = m.translator.Text(i18n.FilterSelected, m.filterLabel(m.filter))
+}
+
+func (m *Model) moveCursor(delta int) {
+	rows := m.rows()
+	if len(rows) == 0 {
+		m.cursor = 0
+		return
+	}
+	m.cursor = (m.cursor + delta + len(rows)) % len(rows)
+	m.ensureCursorVisible(len(rows))
+}
+
+func (m *Model) moveClient(delta int) {
+	clients := m.catalog.Clients.IDs()
+	m.clientIndex = (m.clientIndex + delta + len(clients)) % len(clients)
+	m.status = m.translator.Text(i18n.TargetSelected, m.currentClient())
+}
+
+func (m *Model) toggleExpanded() {
+	selected, ok := m.selectedRow()
+	if !ok || selected.kind != sourceRow {
+		return
+	}
+	source := m.catalog.Sources[selected.sourceIndex]
+	m.expanded[source.ID] = !m.expanded[source.ID]
+	m.clampCursor()
+}
+
+func (m *Model) toggleSelection() {
+	selected, ok := m.selectedRow()
+	if !ok {
+		m.status = m.translator.Text(i18n.NoMatchingSkills)
+		return
+	}
+	source := m.catalog.Sources[selected.sourceIndex]
+	client := m.currentClient()
+	var skills []catalog.Skill
+	enable := false
+	if selected.kind == sourceRow {
+		compatible := compatibleSkills(source.Skills, client)
+		staleIncompatibleLink := false
+		for _, skill := range source.Skills {
+			state, err := m.projection.State(skill, client)
+			if err != nil {
+				m.err = err
+				m.status = m.translator.Text(i18n.InspectProjectFailed)
+				return
+			}
+			if state == projection.StateIncompatibleEnabled {
+				staleIncompatibleLink = true
+			}
+		}
+		if staleIncompatibleLink {
+			skills = source.Skills
+		} else {
+			if len(compatible) == 0 {
+				m.status = m.translator.Text(i18n.NoCompatibleSkills, client)
+				return
+			}
+			skills = compatible
+			for _, skill := range compatible {
+				state, err := m.projection.State(skill, client)
+				if err != nil {
+					m.err = err
+					m.status = m.translator.Text(i18n.InspectProjectFailed)
+					return
+				}
+				if state != projection.StateEnabled {
+					enable = true
+					break
+				}
+			}
+			if !enable {
+				skills = source.Skills
+			}
+		}
+	} else {
+		skill := source.Skills[selected.skillIndex]
+		state, err := m.projection.State(skill, client)
+		if err != nil {
+			m.err = err
+			m.status = m.translator.Text(i18n.InspectProjectFailed)
+			return
+		}
+		if !skill.Supports(client) && state != projection.StateIncompatibleEnabled {
+			reason := skill.CompatibilityReason
+			if reason == "" {
+				reason = m.translator.Text(i18n.CatalogCompatibility)
+			}
+			m.err = errors.New(m.translator.Text(i18n.UnavailableForClient, skill.ID, client, reason))
+			m.status = m.translator.Text(i18n.IncompatibleSkill)
+			return
+		}
+		skills = []catalog.Skill{skill}
+		enable = state != projection.StateEnabled && state != projection.StateIncompatibleEnabled
+	}
+	if source.Archived && enable {
+		m.err = errors.New(m.translator.Text(i18n.ArchiveReferenceError, source.ID))
+		m.status = m.translator.Text(i18n.ArchiveCannotEnable)
+		return
+	}
+	if err := m.projection.SetEnabled(skills, client, enable); err != nil {
+		m.err = err
+		m.status = m.translator.Text(i18n.NoChangesApplied)
+		return
+	}
+	m.err = nil
+	resultKey := i18n.DisabledSkills
+	if enable {
+		resultKey = i18n.EnabledSkills
+	}
+	m.status = m.translator.Text(resultKey, len(skills), client)
+}
+
+func (m Model) startUpdate() (tea.Model, tea.Cmd) {
+	if m.updating {
+		return m, nil
+	}
+	if m.updater == nil {
+		m.status = m.translator.Text(i18n.UpdatesUnavailable)
+		return m, nil
+	}
+	selected, ok := m.selectedRow()
+	if !ok {
+		m.status = m.translator.Text(i18n.NoSourceSelected)
+		return m, nil
+	}
+	selectedSource := m.catalog.Sources[selected.sourceIndex]
+	if selectedSource.Archived || !strings.HasPrefix(selectedSource.ID, "vendor/") {
+		m.status = m.translator.Text(i18n.VendorOnlyUpdate)
+		return m, nil
+	}
+	m.updating = true
+	m.err = nil
+	m.status = m.translator.Text(i18n.UpdatingSource, selectedSource.ID)
+	updater := *m.updater
+	return m, func() tea.Msg {
+		results, err := updater.Update(m.context, []catalog.Source{selectedSource}, false)
+		return updateFinishedMsg{results: results, err: err}
+	}
+}
+
+func (m Model) currentClient() catalog.Client {
+	return m.catalog.Clients.IDs()[m.clientIndex]
+}
+
+func (m Model) selectedRow() (row, bool) {
+	rows := m.rows()
+	if len(rows) == 0 || m.cursor < 0 || m.cursor >= len(rows) {
+		return row{}, false
+	}
+	return rows[m.cursor], true
+}
+
+func (m *Model) clampCursor() {
+	rows := m.rows()
+	if len(rows) == 0 {
+		m.cursor = 0
+		m.offset = 0
+		return
+	}
+	if m.cursor >= len(rows) {
+		m.cursor = len(rows) - 1
+	}
+	m.ensureCursorVisible(len(rows))
+}
+
+func (m *Model) ensureCursorVisible(rowCount int) {
+	visible := m.visibleRowCount()
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	}
+	if m.cursor >= m.offset+visible {
+		m.offset = m.cursor - visible + 1
+	}
+	maximumOffset := max(0, rowCount-visible)
+	if m.offset > maximumOffset {
+		m.offset = maximumOffset
+	}
+}
+
+func (m Model) visibleRowCount() int {
+	reserved := 13
+	if m.showHelp {
+		reserved = 17
+	}
+	return max(3, m.height-reserved)
+}
+
+func (m Model) rows() []row {
+	query := strings.ToLower(strings.TrimSpace(m.search.Value()))
+	rows := make([]row, 0)
+	for sourceIndex, source := range m.catalog.Sources {
+		if m.filter == filterArchive {
+			if !source.Archived {
+				continue
+			}
+		} else if source.Archived {
+			continue
+		}
+
+		matchingSkills := make([]int, 0, len(source.Skills))
+		for skillIndex, skill := range source.Skills {
+			if !m.skillMatchesFilter(skill) {
+				continue
+			}
+			if query != "" && !containsFold(skill.ID+" "+skill.Name+" "+skill.Description, query) {
+				continue
+			}
+			matchingSkills = append(matchingSkills, skillIndex)
+		}
+		sourceMatchesQuery := query == "" || containsFold(source.ID, query)
+		if !sourceMatchesQuery && len(matchingSkills) == 0 {
+			continue
+		}
+		if query == "" && !m.sourceMatchesFilter(source) {
+			continue
+		}
+
+		rows = append(rows, row{kind: sourceRow, sourceIndex: sourceIndex, skillIndex: -1})
+		if m.expanded[source.ID] || query != "" {
+			if sourceMatchesQuery && query != "" && len(matchingSkills) == 0 {
+				for skillIndex, skill := range source.Skills {
+					if m.skillMatchesFilter(skill) {
+						matchingSkills = append(matchingSkills, skillIndex)
+					}
+				}
+			}
+			for _, skillIndex := range matchingSkills {
+				rows = append(rows, row{kind: skillRow, sourceIndex: sourceIndex, skillIndex: skillIndex})
+			}
+		}
+	}
+	return rows
+}
+
+func (m Model) sourceMatchesFilter(source catalog.Source) bool {
+	if m.filter == filterAll || m.filter == filterArchive {
+		return true
+	}
+	for _, skill := range source.Skills {
+		if m.skillMatchesFilter(skill) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m Model) skillMatchesFilter(skill catalog.Skill) bool {
+	if m.filter == filterAll || m.filter == filterArchive {
+		return true
+	}
+	for _, client := range m.catalog.Clients.IDs() {
+		state, err := m.projection.State(skill, client)
+		if err != nil {
+			return m.filter == filterIssues
+		}
+		if m.filter == filterEnabled && state == projection.StateEnabled {
+			return true
+		}
+		if m.filter == filterIssues && (state == projection.StateConflict || state == projection.StateBroken || state == projection.StateIncompatibleEnabled) {
+			return true
+		}
+	}
+	return false
+}
+
+func compatibleSkills(skills []catalog.Skill, client catalog.Client) []catalog.Skill {
+	compatible := make([]catalog.Skill, 0, len(skills))
+	for _, skill := range skills {
+		if skill.Supports(client) {
+			compatible = append(compatible, skill)
+		}
+	}
+	return compatible
+}
+
+func containsFold(value, lowerQuery string) bool {
+	return strings.Contains(strings.ToLower(value), lowerQuery)
+}
