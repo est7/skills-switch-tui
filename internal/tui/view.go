@@ -21,7 +21,11 @@ const (
 )
 
 func (m Model) View() tea.View {
-	sections := []string{m.renderHeader(), m.renderTable(), m.renderDetail(), m.renderFooter()}
+	detail := m.renderDetail()
+	if m.pendingDelete != nil {
+		detail = m.renderConfirm()
+	}
+	sections := []string{m.renderHeader(), m.renderTable(), detail, m.renderFooter()}
 	canvas := lipgloss.NewStyle().
 		Width(m.width).
 		Height(m.height).
@@ -445,6 +449,20 @@ func (m Model) renderDetail() string {
 	return m.styles.detail.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
 }
 
+func (m Model) renderConfirm() string {
+	plan := m.pendingDelete
+	body := m.translator.Text(i18n.DeleteConfirmSource, plan.label, len(plan.skills))
+	if plan.kind == deleteLocalSkill {
+		body = m.translator.Text(i18n.DeleteConfirmSkill, plan.label)
+	}
+	lines := []string{
+		m.styles.error.Render(m.translator.Text(i18n.DeleteConfirmTitle)),
+		truncate(body, m.detailTextWidth()),
+		m.styles.subtle.Render(m.translator.Text(i18n.DeleteConfirmHint)),
+	}
+	return m.styles.detail.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
+}
+
 func (m Model) renderMCPDetail() string {
 	names := m.mcpNames()
 	if len(names) == 0 || m.cursor >= len(names) {
@@ -512,7 +530,7 @@ func (m Model) renderFooter() string {
 		status += ": " + m.err.Error()
 		icon = m.styles.error.Background(barBackground).Render("!")
 	}
-	if m.updating {
+	if m.updating || m.deleting {
 		icon = m.styles.accent.Background(barBackground).Render("◌")
 	}
 	statusLine := m.styles.statusBar.Width(m.contentWidth()).Render(icon + gap + statusStyle.Render(status))

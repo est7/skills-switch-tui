@@ -190,6 +190,53 @@ description: Compose component generator.
 	}
 }
 
+func TestRemoveLocalResourceDeletesGroupAndSkillButGuardsScopeRoot(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "core", "design"), `---
+name: design
+description: Design philosophy.
+---
+`)
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "core", "discipline"), `---
+name: discipline
+description: Coding discipline.
+---
+`)
+
+	// Removing a single skill leaves the group and its siblings intact.
+	skillDir := filepath.Join(sourcesRoot, "local", "shared", "core", "design")
+	if err := RemoveLocalResource(sourcesRoot, skillDir); err != nil {
+		t.Fatalf("remove local skill: %v", err)
+	}
+	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
+		t.Fatalf("skill directory still present: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sourcesRoot, "local", "shared", "core", "discipline", "SKILL.md")); err != nil {
+		t.Fatalf("sibling skill was removed: %v", err)
+	}
+
+	// Removing the group removes the whole directory.
+	groupDir := filepath.Join(sourcesRoot, "local", "shared", "core")
+	if err := RemoveLocalResource(sourcesRoot, groupDir); err != nil {
+		t.Fatalf("remove local group: %v", err)
+	}
+	if _, err := os.Stat(groupDir); !os.IsNotExist(err) {
+		t.Fatalf("group directory still present: %v", err)
+	}
+
+	// A scope root and any path outside the local tree are refused.
+	scopeRoot := filepath.Join(sourcesRoot, "local", "shared")
+	if err := RemoveLocalResource(sourcesRoot, scopeRoot); err == nil {
+		t.Fatal("removing a scope root must be refused")
+	}
+	if _, err := os.Stat(scopeRoot); err != nil {
+		t.Fatalf("scope root was removed despite guard: %v", err)
+	}
+	if err := RemoveLocalResource(sourcesRoot, filepath.Join(sourcesRoot, "vendor", "shared", "x")); err == nil {
+		t.Fatal("removing a vendor path must be refused")
+	}
+}
+
 func TestLoadDiscoversClientScopedVendorSource(t *testing.T) {
 	sourcesRoot := t.TempDir()
 	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "pi", "pi-tools", "skills", "pi-tool"), `---

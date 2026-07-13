@@ -239,6 +239,42 @@ func UnregisterSource(root, id string) error {
 	return nil
 }
 
+// RemoveLocalResource deletes a local group or Skill directory rooted under
+// <root>/local. It refuses any target outside the local tree and refuses to
+// remove a scope root (e.g. local/shared), which would drop an entire client
+// scope. Vendor and archived sources are managed elsewhere and are never
+// removable through this path.
+func RemoveLocalResource(root, target string) error {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve sources root: %w", err)
+	}
+	localRoot := filepath.Join(absRoot, string(SourceLocal))
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return fmt.Errorf("resolve delete target: %w", err)
+	}
+	relative, err := filepath.Rel(localRoot, absTarget)
+	if err != nil {
+		return fmt.Errorf("resolve delete target: %w", err)
+	}
+	relative = filepath.ToSlash(relative)
+	if relative == "." || relative == ".." || strings.HasPrefix(relative, "../") {
+		return fmt.Errorf("refusing to remove path outside local resources: %s", target)
+	}
+	if len(strings.Split(relative, "/")) < 2 {
+		return fmt.Errorf("refusing to remove local scope root: %s", target)
+	}
+	info, err := os.Lstat(absTarget)
+	if err != nil {
+		return fmt.Errorf("inspect delete target: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("delete target is not a directory: %s", target)
+	}
+	return os.RemoveAll(absTarget)
+}
+
 func validateVendorSourceID(id string) error {
 	namespace, name, found := strings.Cut(id, "/")
 	if !found || name == "" || !strings.HasPrefix(namespace, "vendor-") {

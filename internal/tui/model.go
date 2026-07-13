@@ -67,37 +67,63 @@ type updateFinishedMsg struct {
 	err     error
 }
 
+type deletionKind int
+
+const (
+	deleteVendorSource deletionKind = iota
+	deleteLocalSource
+	deleteLocalSkill
+)
+
+// deletionPlan captures a delete request awaiting confirmation. skills lists
+// the projections to clear before removal; path is the local directory to
+// remove and is empty for vendor sources, which are removed as submodules.
+type deletionPlan struct {
+	kind   deletionKind
+	source catalog.Source
+	skills []catalog.Skill
+	path   string
+	label  string
+}
+
+type deleteFinishedMsg struct {
+	plan deletionPlan
+	err  error
+}
+
 type Model struct {
-	catalog     catalog.Catalog
-	project     string
-	userHome    string
-	projection  projection.Manager
-	mcpCatalog  mcp.Catalog
-	mcpManager  mcp.Manager
-	prompts     systemprompt.Catalog
-	promptMgr   systemprompt.Manager
-	updater     *source.Manager
-	tab         resourceTab
-	clientIndex int
-	cursor      int
-	offset      int
-	width       int
-	height      int
-	expanded    map[string]bool
-	filter      filterMode
-	searching   bool
-	search      textinput.Model
-	help        help.Model
-	keys        keyMap
-	showHelp    bool
-	updating    bool
-	isDark      bool
-	styles      styles
-	translator  i18n.Translator
-	status      string
-	err         error
-	context     context.Context
-	cancel      context.CancelFunc
+	catalog       catalog.Catalog
+	project       string
+	userHome      string
+	projection    projection.Manager
+	mcpCatalog    mcp.Catalog
+	mcpManager    mcp.Manager
+	prompts       systemprompt.Catalog
+	promptMgr     systemprompt.Manager
+	updater       *source.Manager
+	tab           resourceTab
+	clientIndex   int
+	cursor        int
+	offset        int
+	width         int
+	height        int
+	expanded      map[string]bool
+	filter        filterMode
+	searching     bool
+	search        textinput.Model
+	help          help.Model
+	keys          keyMap
+	showHelp      bool
+	updating      bool
+	deleting      bool
+	pendingDelete *deletionPlan
+	isDark        bool
+	styles        styles
+	translator    i18n.Translator
+	status        string
+	err           error
+	context       context.Context
+	cancel        context.CancelFunc
 }
 
 type Resources struct {
@@ -202,6 +228,28 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.status = m.translator.Text(i18n.UpdatedSources, len(message.results), changed)
 		return m, nil
+	case deleteFinishedMsg:
+		m.deleting = false
+		reloadErr := m.reloadCatalog()
+		if message.err != nil {
+			m.err = message.err
+			if reloadErr != nil {
+				m.err = errors.Join(m.err, reloadErr)
+			}
+			m.status = m.translator.Text(i18n.DeleteFailed)
+			return m, nil
+		}
+		if reloadErr != nil {
+			m.err = reloadErr
+			m.status = m.translator.Text(i18n.UpdateReloadFailed)
+			return m, nil
+		}
+		resultKey := i18n.DeletedSource
+		if message.plan.kind == deleteLocalSkill {
+			resultKey = i18n.DeletedSkill
+		}
+		m.status = m.translator.Text(resultKey, message.plan.label)
+		return m, nil
 	}
 
 	key, ok := message.(tea.KeyPressMsg)
@@ -214,6 +262,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.searching {
 		return m.updateSearch(key)
+	}
+	if m.pendingDelete != nil {
+		return m.updateConfirm(key)
 	}
 	m.err = nil
 
@@ -251,10 +302,128 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m.startUpdate(false)
 	case "U":
 		return m.startUpdate(true)
+	case "d":
+		m.requestDelete()
 	case "L":
 		m.toggleLanguage()
 	}
 	return m, nil
+}
+
+func (m Model) updateConfirm(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "y", "Y":
+		return m.executeDelete()
+	default:
+		m.pendingDelete = nil
+		m.status = m.translator.Text(i18n.Ready)
+		return m, nil
+	}
+}
+
+// requestDelete resolves the selected row into a pending deletion awaiting
+// confirmation. Vendor sources are removable whole (read-only skills are not);
+// local groups, their skills, and standalone local skills are all removable.
+func (m *Model) requestDelete() {
+	if m.tab != tabSkills {
+		m.status = m.translator.Text(i18n.DeleteUnavailable)
+		return
+	}
+	if m.deleting || m.updating {
+		return
+	}
+	selected, ok := m.selectedRow()
+	if !ok {
+		m.status = m.translator.Text(i18n.NoSelection)
+		return
+	}
+	source := m.catalog.Sources[selected.sourceIndex]
+	if source.IsArchived() {
+		m.status = m.translator.Text(i18n.DeleteArchivedUnsupported)
+		return
+	}
+	if source.IsVendor() {
+		if selected.kind == skillRow {
+			m.status = m.translator.Text(i18n.DeleteReadOnlySkill)
+			return
+		}
+		if m.updater == nil {
+			m.status = m.translator.Text(i18n.DeleteUnavailable)
+			return
+		}
+		m.pendingDelete = &deletionPlan{
+			kind:   deleteVendorSource,
+			source: source,
+			skills: source.Skills,
+			label:  source.ID,
+		}
+		return
+	}
+	if selected.kind == sourceRow {
+		m.pendingDelete = &deletionPlan{
+			kind:   deleteLocalSource,
+			source: source,
+			skills: source.Skills,
+			path:   source.Path,
+			label:  source.ID,
+		}
+		return
+	}
+	skill := source.Skills[selected.skillIndex]
+	m.pendingDelete = &deletionPlan{
+		kind:   deleteLocalSkill,
+		source: source,
+		skills: []catalog.Skill{skill},
+		path:   skill.Path,
+		label:  skill.ID,
+	}
+}
+
+func (m Model) executeDelete() (tea.Model, tea.Cmd) {
+	if m.pendingDelete == nil {
+		return m, nil
+	}
+	plan := *m.pendingDelete
+	m.pendingDelete = nil
+	m.deleting = true
+	m.err = nil
+	m.status = m.translator.Text(i18n.Deleting, plan.label)
+
+	proj := m.projection
+	clients := m.catalog.Clients.IDs()
+	root := m.catalog.Root
+	ctx := m.context
+	updater := m.updater
+	return m, func() tea.Msg {
+		operations := make([]projection.Operation, 0, len(clients))
+		for _, clientID := range clients {
+			operations = append(operations, projection.Operation{Skills: plan.skills, Client: clientID, Enabled: false})
+		}
+		if err := proj.Apply(operations); err != nil {
+			return deleteFinishedMsg{plan: plan, err: fmt.Errorf("clear projections before delete: %w", err)}
+		}
+		var err error
+		if plan.kind == deleteVendorSource {
+			err = updater.Remove(ctx, plan.source)
+		} else {
+			err = catalog.RemoveLocalResource(root, plan.path)
+		}
+		return deleteFinishedMsg{plan: plan, err: err}
+	}
+}
+
+func (m *Model) reloadCatalog() error {
+	reloaded, err := catalog.Load(m.catalog.Root, m.catalog.Clients)
+	if err != nil {
+		return err
+	}
+	m.catalog = reloaded
+	m.projection = projection.New(m.project, reloaded)
+	if clients := m.catalog.Clients.IDs(); m.clientIndex >= len(clients) {
+		m.clientIndex = max(0, len(clients)-1)
+	}
+	m.clampCursor()
+	return nil
 }
 
 func (m *Model) toggleLanguage() {

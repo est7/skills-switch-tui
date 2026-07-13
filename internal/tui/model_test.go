@@ -616,6 +616,140 @@ func (g *tuiSourceGit) called(expected string) bool {
 	return false
 }
 
+func TestDeleteLocalSkillClearsProjectionThenRemovesItAfterConfirmation(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "demo", "alpha"), "alpha")
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "demo", "beta"), "beta")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+	model = selectFirstSkill(model) // expand demo, select alpha
+	// Enable alpha for the current client so a projection exists to clean up.
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	model = updated.(Model)
+	skill, ok := loaded.Skill("local-shared/demo/alpha")
+	if !ok {
+		t.Fatal("alpha skill missing from catalog")
+	}
+	link, err := projection.New(projectRoot, loaded).TargetPath(skill, model.currentClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Readlink(link); err != nil {
+		t.Fatalf("alpha projection was not enabled: %v", err)
+	}
+
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
+	model = updated.(Model)
+	if model.pendingDelete == nil || model.pendingDelete.kind != deleteLocalSkill {
+		t.Fatalf("expected pending local skill deletion, got %#v", model.pendingDelete)
+	}
+	updated, command := model.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("expected a delete command on confirmation")
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("delete failed: %v", model.err)
+	}
+
+	assertNotExist(t, link)
+	assertNotExist(t, filepath.Join(sourcesRoot, "local", "shared", "demo", "alpha"))
+	if _, err := os.Stat(filepath.Join(sourcesRoot, "local", "shared", "demo", "beta", "SKILL.md")); err != nil {
+		t.Fatalf("sibling skill was removed: %v", err)
+	}
+	if _, ok := model.catalog.Skill("local-shared/demo/alpha"); ok {
+		t.Fatal("deleted skill still present in reloaded catalog")
+	}
+}
+
+func TestDeleteLocalGroupRemovesTheWholeDirectory(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "demo", "alpha"), "alpha")
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "keep", "gamma"), "gamma")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'd', Text: "d"}) // cursor 0 = first source (local-shared/demo)
+	model = updated.(Model)
+	if model.pendingDelete == nil || model.pendingDelete.kind != deleteLocalSource {
+		t.Fatalf("expected pending local group deletion, got %#v", model.pendingDelete)
+	}
+	updated, command := model.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	model = updated.(Model)
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("delete failed: %v", model.err)
+	}
+
+	assertNotExist(t, filepath.Join(sourcesRoot, "local", "shared", "demo"))
+	if _, err := os.Stat(filepath.Join(sourcesRoot, "local", "shared", "keep", "gamma", "SKILL.md")); err != nil {
+		t.Fatalf("unrelated group was removed: %v", err)
+	}
+}
+
+func TestDeleteVendorSkillRowIsRejectedAsReadOnly(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "worktrunk", "skills", "worktrunk"), "worktrunk")
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "worktrunk", "skills", "wt-switch-create"), "wt-switch-create")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), &source.Manager{}, i18n.New(i18n.English))
+	model = selectFirstSkill(model) // expand worktrunk, select a skill row
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
+	model = updated.(Model)
+	if model.pendingDelete != nil {
+		t.Fatal("individual vendor skills must not be deletable")
+	}
+	if got := model.status; got != i18n.New(i18n.English).Text(i18n.DeleteReadOnlySkill) {
+		t.Fatalf("status = %q, want read-only skill message", got)
+	}
+}
+
+func TestDeleteVendorSourceRowBuildsAWholeSourcePlan(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "worktrunk", "skills", "worktrunk"), "worktrunk")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), &source.Manager{}, i18n.New(i18n.English))
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'd', Text: "d"}) // cursor 0 = vendor source row
+	model = updated.(Model)
+	if model.pendingDelete == nil || model.pendingDelete.kind != deleteVendorSource {
+		t.Fatalf("expected pending vendor source deletion, got %#v", model.pendingDelete)
+	}
+	if view := model.View().Content; !strings.Contains(view, i18n.New(i18n.English).Text(i18n.DeleteConfirmTitle)) {
+		t.Fatal("confirmation panel is not rendered while a deletion is pending")
+	}
+	// Cancelling leaves the source in place.
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	model = updated.(Model)
+	if model.pendingDelete != nil {
+		t.Fatal("cancel should clear the pending deletion")
+	}
+	if _, err := os.Stat(filepath.Join(sourcesRoot, "vendor", "shared", "worktrunk")); err != nil {
+		t.Fatalf("vendor source removed after cancel: %v", err)
+	}
+}
+
 func writeSkill(t *testing.T, dir, name string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {

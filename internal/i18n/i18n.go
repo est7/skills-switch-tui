@@ -173,6 +173,18 @@ const (
 	MoreInformationHint       Key = "more_information_hint"
 	HelpFlag                  Key = "help_flag"
 	HelpCommandShort          Key = "help_command_short"
+	HelpDelete                Key = "help_delete"
+	DeleteConfirmTitle        Key = "delete_confirm_title"
+	DeleteConfirmSource       Key = "delete_confirm_source"
+	DeleteConfirmSkill        Key = "delete_confirm_skill"
+	DeleteConfirmHint         Key = "delete_confirm_hint"
+	Deleting                  Key = "deleting"
+	DeletedSource             Key = "deleted_source"
+	DeletedSkill              Key = "deleted_skill"
+	DeleteFailed              Key = "delete_failed"
+	DeleteReadOnlySkill       Key = "delete_read_only_skill"
+	DeleteArchivedUnsupported Key = "delete_archived_unsupported"
+	DeleteUnavailable         Key = "delete_unavailable"
 )
 
 type Translator struct {
@@ -338,6 +350,18 @@ var messages = map[Language]map[Key]string{
 		MoreInformationHint:       "Use \"%s [command] --help\" for more information about a command.",
 		HelpFlag:                  "help for this command",
 		HelpCommandShort:          "Help about any command",
+		HelpDelete:                "delete",
+		DeleteConfirmTitle:        "Confirm deletion",
+		DeleteConfirmSource:       "Remove source %s and all %d skills from disk. This cannot be undone.",
+		DeleteConfirmSkill:        "Remove skill %s from disk. This cannot be undone.",
+		DeleteConfirmHint:         "[y] delete   [n/esc] cancel",
+		Deleting:                  "Deleting %s…",
+		DeletedSource:             "Removed source %s",
+		DeletedSkill:              "Removed skill %s",
+		DeleteFailed:              "Deletion failed",
+		DeleteReadOnlySkill:       "Read-only source: delete the whole source or disable the skill; individual skills cannot be removed",
+		DeleteArchivedUnsupported: "Archived references cannot be deleted here",
+		DeleteUnavailable:         "Deletion is only available for skill sources",
 	},
 	Chinese: {
 		Ready:                     "就绪",
@@ -497,6 +521,18 @@ var messages = map[Language]map[Key]string{
 		MoreInformationHint:       "使用 \"%s [command] --help\" 查看命令详情。",
 		HelpFlag:                  "显示当前命令帮助",
 		HelpCommandShort:          "查看任意命令的帮助",
+		HelpDelete:                "删除",
+		DeleteConfirmTitle:        "确认删除",
+		DeleteConfirmSource:       "将从磁盘删除来源 %s 及其全部 %d 个技能,不可撤销。",
+		DeleteConfirmSkill:        "将从磁盘删除技能 %s,不可撤销。",
+		DeleteConfirmHint:         "[y] 删除   [n/esc] 取消",
+		Deleting:                  "正在删除 %s…",
+		DeletedSource:             "已删除来源 %s",
+		DeletedSkill:              "已删除技能 %s",
+		DeleteFailed:              "删除失败",
+		DeleteReadOnlySkill:       "只读来源:请删除整个来源或 disable 技能,不能单独删除其中的技能",
+		DeleteArchivedUnsupported: "归档引用不能在此删除",
+		DeleteUnavailable:         "仅技能来源支持删除",
 	},
 }
 
