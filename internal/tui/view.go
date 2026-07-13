@@ -10,6 +10,7 @@ import (
 	"github.com/est7/skills-switch-tui/internal/catalog"
 	"github.com/est7/skills-switch-tui/internal/i18n"
 	"github.com/est7/skills-switch-tui/internal/projection"
+	"github.com/est7/skills-switch-tui/internal/systemprompt"
 )
 
 const clientColumnWidth = 10
@@ -24,9 +25,27 @@ func (m Model) View() tea.View {
 
 func (m Model) renderHeader() string {
 	title := m.styles.title.Render("skills-switch")
-	project := m.styles.subtle.Render(m.translator.Text(i18n.ProjectLabel) + "  " + m.project)
+	scopeLabel := i18n.ProjectLabel
+	scopePath := m.project
+	if m.tab == tabSystemPrompts {
+		scopeLabel = i18n.UserLabel
+		scopePath = m.userHome
+	}
+	scope := m.styles.subtle.Render(m.translator.Text(scopeLabel) + "  " + scopePath)
+	tabs := make([]string, 0, int(tabSystemPrompts)+1)
+	for candidate := tabSkills; candidate <= tabSystemPrompts; candidate++ {
+		style := m.styles.filter
+		if candidate == m.tab {
+			style = m.styles.activeFilter
+		}
+		tabs = append(tabs, style.Render(m.tabLabel(candidate)))
+	}
 	filters := make([]string, 0, int(filterArchive)+1)
-	for candidate := filterAll; candidate <= filterArchive; candidate++ {
+	lastFilter := filterIssues
+	if m.tab == tabSkills {
+		lastFilter = filterArchive
+	}
+	for candidate := filterAll; candidate <= lastFilter; candidate++ {
 		style := m.styles.filter
 		if candidate == m.filter {
 			style = m.styles.activeFilter
@@ -37,10 +56,21 @@ func (m Model) renderHeader() string {
 	if m.searching || m.search.Value() != "" {
 		filterLine += "  " + m.search.View()
 	}
-	return title + "  " + m.styles.subtle.Render(m.translator.Text(i18n.ProductSubtitle)) + "\n" + project + "\n\n" + filterLine
+	return strings.Join(tabs, " ") + "\n\n" + title + "  " + m.styles.subtle.Render(m.translator.Text(i18n.ProductSubtitle)) + "\n" + scope + "\n\n" + filterLine
 }
 
 func (m Model) renderTable() string {
+	switch m.tab {
+	case tabMCP:
+		return m.renderMCPTable()
+	case tabSystemPrompts:
+		return m.renderPromptTable()
+	default:
+		return m.renderSkillsTable()
+	}
+}
+
+func (m Model) renderSkillsTable() string {
 	clientStart, clientEnd := m.visibleClientRange()
 	visibleClientCount := clientEnd - clientStart
 	tableWidth := max(44, m.width-4)
@@ -60,6 +90,104 @@ func (m Model) renderTable() string {
 	}
 	if end < len(rows) {
 		lines = append(lines, m.styles.subtle.Render("  "+m.translator.Text(i18n.MoreRows, len(rows)-end)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderMCPTable() string {
+	names := m.mcpNames()
+	return m.renderResourceTable(names, func(name string, clientID catalog.Client) (string, lipgloss.Style) {
+		state, err := m.mcpManager.State(name, clientID)
+		if err != nil {
+			return "!", m.styles.issue
+		}
+		switch state {
+		case "enabled":
+			return "[x]", m.styles.enabled
+		case "disabled":
+			return "[ ]", m.styles.disabled
+		case "incompatible":
+			return "—", m.styles.incompatible
+		default:
+			return "!", m.styles.issue
+		}
+	})
+}
+
+func (m Model) renderPromptTable() string {
+	groups := m.promptGroups()
+	labels := make([]string, len(groups))
+	byID := make(map[string]systemPromptRow, len(groups))
+	for index, group := range groups {
+		labels[index] = group.ID
+		byID[group.ID] = systemPromptRow{client: group.Client, state: m.promptState(group)}
+	}
+	return m.renderResourceTable(labels, func(name string, clientID catalog.Client) (string, lipgloss.Style) {
+		row := byID[name]
+		if row.client != clientID {
+			return "—", m.styles.incompatible
+		}
+		switch row.state {
+		case "enabled":
+			return "[x]", m.styles.enabled
+		case "disabled":
+			return "[ ]", m.styles.disabled
+		case "partial":
+			return "~", m.styles.issue
+		default:
+			return "!", m.styles.issue
+		}
+	})
+}
+
+type systemPromptRow struct {
+	client catalog.Client
+	state  string
+}
+
+func (m Model) promptState(group systemprompt.Group) string {
+	state, err := m.promptMgr.State(group)
+	if err != nil {
+		return "error"
+	}
+	return string(state)
+}
+
+func (m Model) renderResourceTable(labels []string, cell func(string, catalog.Client) (string, lipgloss.Style)) string {
+	clientStart, clientEnd := m.visibleClientRange()
+	visibleClientCount := clientEnd - clientStart
+	tableWidth := max(44, m.width-4)
+	labelWidth := max(18, tableWidth-2-clientColumnWidth*visibleClientCount)
+	header := m.styles.tableHeader.Width(tableWidth).Render(
+		"  " + lipgloss.NewStyle().Width(labelWidth).Render(m.translator.Text(i18n.ResourceHeader)) + m.renderClientHeaders(clientStart, clientEnd),
+	)
+	if len(labels) == 0 {
+		return header + "\n" + m.styles.subtle.Padding(1, 2).Render(m.translator.Text(i18n.NoResourcesMatch))
+	}
+	start := min(m.offset, len(labels)-1)
+	end := min(len(labels), start+m.visibleRowCount())
+	lines := []string{header}
+	clients := m.catalog.Clients.IDs()
+	for index := start; index < end; index++ {
+		selected := index == m.cursor
+		cursor := "  "
+		if selected {
+			cursor = m.styles.accent.Render("› ")
+		}
+		label := lipgloss.NewStyle().Width(labelWidth).MaxWidth(labelWidth).Render(m.styles.child.Render(labels[index]))
+		var cells strings.Builder
+		for clientIndex := clientStart; clientIndex < clientEnd; clientIndex++ {
+			value, style := cell(labels[index], clients[clientIndex])
+			if selected && clientIndex == m.clientIndex {
+				style = m.styles.selectedCell
+			}
+			cells.WriteString(style.Width(clientColumnWidth).Align(lipgloss.Center).Render(value))
+		}
+		line := cursor + label + cells.String()
+		if selected {
+			line = m.styles.selected.Width(tableWidth).Render(line)
+		}
+		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -98,7 +226,7 @@ func (m Model) renderRow(item row, selected bool, labelWidth, clientStart, clien
 			disclosure = "▾"
 		}
 		archive := ""
-		if source.Archived {
+		if source.IsArchived() {
 			archive = "  " + m.translator.Text(i18n.ArchivedLabel)
 		}
 		label = m.styles.group.Render(disclosure+" "+source.ID) + m.styles.subtle.Render(archive)
@@ -192,6 +320,12 @@ func (m Model) stateCell(skill catalog.Skill, client catalog.Client) (string, li
 }
 
 func (m Model) renderDetail() string {
+	switch m.tab {
+	case tabMCP:
+		return m.renderMCPDetail()
+	case tabSystemPrompts:
+		return m.renderPromptDetail()
+	}
 	selected, ok := m.selectedRow()
 	if !ok {
 		return m.styles.detail.Width(max(20, m.width-4)).Render(m.translator.Text(i18n.NoSelection))
@@ -200,13 +334,13 @@ func (m Model) renderDetail() string {
 	lines := make([]string, 0, 3)
 	if selected.kind == sourceRow {
 		kind := m.translator.Text(i18n.LocalSource)
-		if strings.HasPrefix(source.ID, "vendor/") {
+		if source.IsVendor() {
 			kind = m.translator.Text(i18n.VendorBranch, source.Branch)
 			if source.DiscoveryStrategy != "" {
 				kind += " · " + m.translator.Text(i18n.DiscoveryLabel, source.DiscoveryStrategy)
 			}
 		}
-		if source.Archived {
+		if source.IsArchived() {
 			kind = m.translator.Text(i18n.ArchiveReference)
 		}
 		lines = append(lines, m.styles.accent.Render(source.ID)+"  "+m.styles.subtle.Render(kind))
@@ -225,9 +359,53 @@ func (m Model) renderDetail() string {
 		if skill.CompatibilityReason != "" {
 			compatibility += " · " + skill.CompatibilityReason
 		}
+		if skill.MetadataIssue != "" {
+			compatibility += " · " + m.translator.Text(i18n.MetadataIssueLabel) + ": " + skill.MetadataIssue
+		}
 		lines = append(lines, m.styles.subtle.Render(compatibility))
 	}
 	return m.styles.detail.Width(max(20, m.width-4)).Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) renderMCPDetail() string {
+	names := m.mcpNames()
+	if len(names) == 0 || m.cursor >= len(names) {
+		return m.styles.detail.Width(max(20, m.width-4)).Render(m.translator.Text(i18n.NoSelection))
+	}
+	server, _ := m.mcpCatalog.Server(names[m.cursor])
+	endpoint := server.Command
+	if server.URL != "" {
+		endpoint = server.URL
+	}
+	lines := []string{
+		m.styles.accent.Render(server.Name) + "  " + m.styles.subtle.Render(string(server.Transport)),
+		m.styles.subtle.Render(endpoint),
+	}
+	return m.styles.detail.Width(max(20, m.width-4)).Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) renderPromptDetail() string {
+	groups := m.promptGroups()
+	if len(groups) == 0 || m.cursor >= len(groups) {
+		return m.styles.detail.Width(max(20, m.width-4)).Render(m.translator.Text(i18n.NoSelection))
+	}
+	group := groups[m.cursor]
+	lines := []string{
+		m.styles.accent.Render(group.ID) + "  " + m.styles.subtle.Render(string(group.Client)),
+		m.styles.subtle.Render(m.translator.Text(i18n.PromptFileSummary, len(group.Files), group.Path)),
+	}
+	return m.styles.detail.Width(max(20, m.width-4)).Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) tabLabel(tab resourceTab) string {
+	switch tab {
+	case tabMCP:
+		return m.translator.Text(i18n.TabMCP)
+	case tabSystemPrompts:
+		return m.translator.Text(i18n.TabSystemPrompts)
+	default:
+		return m.translator.Text(i18n.TabSkills)
+	}
 }
 
 func (m Model) filterLabel(filter filterMode) string {

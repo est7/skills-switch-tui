@@ -5,16 +5,106 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
+func TestDefaultResourcesRootUsesResourceFirstHierarchy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SKILLS_SWITCH_RESOURCES", "")
+
+	got, err := resolveResourcesRoot("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".agents", "resources")
+	if got != want {
+		t.Fatalf("resolveResourcesRoot() = %q, want %q", got, want)
+	}
+}
+
+func TestMCPCommandsAppendAndRemoveOnlyManagedServer(t *testing.T) {
+	resourceRoot := t.TempDir()
+	sourcesRoot := filepath.Join(resourceRoot, "skills")
+	projectRoot := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(filepath.Join(sourcesRoot, "local", "shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mcpDir := filepath.Join(resourceRoot, "mcp")
+	if err := os.MkdirAll(mcpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mcpDir, "mcp.json"), []byte(`{"mcpServers":{"context7":{"command":"npx"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	projectConfig := filepath.Join(projectRoot, ".mcp.json")
+	if err := os.WriteFile(projectConfig, []byte(`{"mcpServers":{"project-owned":{"command":"keep"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "mcp", "enable", "context7", "--client", "claude"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(projectConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"project-owned"`)) || !bytes.Contains(data, []byte(`"context7"`)) {
+		t.Fatalf("MCP enable did not merge entries: %s", data)
+	}
+
+	if _, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "mcp", "disable", "context7", "--client", "claude"); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(projectConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"project-owned"`)) || bytes.Contains(data, []byte(`"context7"`)) {
+		t.Fatalf("MCP disable removed the wrong entry: %s", data)
+	}
+}
+
+func TestPromptCommandsUseUserGlobalRecursiveClientGroupWithoutGitProject(t *testing.T) {
+	resourceRoot := t.TempDir()
+	sourcesRoot := filepath.Join(resourceRoot, "skills")
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	if err := os.MkdirAll(filepath.Join(sourcesRoot, "local", "shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range []string{"CLAUDE.md", filepath.Join("rules", "core.md")} {
+		path := filepath.Join(resourceRoot, "system-prompts", "claude-prompt", relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("# Prompt\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := execute(t, "--resources", resourceRoot, "--project", filepath.Join(t.TempDir(), "not-a-git-project"), "prompt", "enable", "claude-prompt"); err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range []string{"CLAUDE.md", filepath.Join("rules", "core.md")} {
+		if _, err := os.Readlink(filepath.Join(userHome, ".claude", relative)); err != nil {
+			t.Fatalf("prompt file %s was not projected: %v", relative, err)
+		}
+	}
+}
+
 func TestEnableThenListReportsProjectState(t *testing.T) {
-	sourcesRoot := t.TempDir()
+	resourceRoot := t.TempDir()
+	sourcesRoot := filepath.Join(resourceRoot, "skills")
 	projectRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	skillDir := filepath.Join(sourcesRoot, "local", "worktrunk")
+	skillDir := filepath.Join(sourcesRoot, "local", "shared", "worktrunk")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -23,16 +113,16 @@ func TestEnableThenListReportsProjectState(t *testing.T) {
 	}
 
 	if _, err := execute(t,
-		"--sources", sourcesRoot,
+		"--resources", resourceRoot,
 		"--project", projectRoot,
-		"enable", "local/worktrunk",
+		"enable", "local-shared/worktrunk",
 		"--client", "codex",
 	); err != nil {
 		t.Fatalf("enable command: %v", err)
 	}
 
 	output, err := execute(t,
-		"--sources", sourcesRoot,
+		"--resources", resourceRoot,
 		"--project", projectRoot,
 		"list", "--json",
 	)
@@ -51,7 +141,7 @@ func TestEnableThenListReportsProjectState(t *testing.T) {
 	if got, want := len(result.Skills), 1; got != want {
 		t.Fatalf("skill count = %d, want %d", got, want)
 	}
-	if got, want := result.Skills[0].ID, "local/worktrunk"; got != want {
+	if got, want := result.Skills[0].ID, "local-shared/worktrunk"; got != want {
 		t.Fatalf("skill id = %q, want %q", got, want)
 	}
 	if got, want := result.Skills[0].Clients["codex"], "enabled"; got != want {
@@ -60,21 +150,22 @@ func TestEnableThenListReportsProjectState(t *testing.T) {
 }
 
 func TestConfiguredClientCanBeEnabledWithoutCodeChanges(t *testing.T) {
-	sourcesRoot := t.TempDir()
+	resourceRoot := t.TempDir()
+	sourcesRoot := filepath.Join(resourceRoot, "skills")
 	projectRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "portable"), "portable")
+	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
 	config := "version: 1\nclients:\n  pi:\n    projectSkillsDir: .pi/skills\n"
-	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(resourceRoot, "registry.yaml"), []byte(config), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := execute(t,
-		"--sources", sourcesRoot,
+		"--resources", resourceRoot,
 		"--project", projectRoot,
-		"enable", "local/portable",
+		"enable", "local-shared/portable",
 		"--client", "pi",
 	); err != nil {
 		t.Fatalf("enable pi: %v", err)
@@ -84,25 +175,36 @@ func TestConfiguredClientCanBeEnabledWithoutCodeChanges(t *testing.T) {
 	}
 }
 
+func TestResourcesFlagReplacesPreReleaseSourcesFlag(t *testing.T) {
+	command := NewRootCommand("test")
+	if command.PersistentFlags().Lookup("resources") == nil {
+		t.Fatal("--resources flag is missing")
+	}
+	if command.PersistentFlags().Lookup("sources") != nil {
+		t.Fatal("pre-release --sources compatibility unexpectedly remains")
+	}
+}
+
 func TestChineseLanguageLocalizesHelpAndHumanListHeaders(t *testing.T) {
-	sourcesRoot := t.TempDir()
+	resourceRoot := t.TempDir()
+	sourcesRoot := filepath.Join(resourceRoot, "skills")
 	projectRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "portable"), "portable")
+	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
 
 	help, err := execute(t, "--lang", "zh", "--help")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(help, []byte("切换项目级 Agent Skills")) {
+	if !bytes.Contains(help, []byte("管理项目资源和用户级系统提示词")) {
 		t.Fatalf("Chinese help was not localized:\n%s", help)
 	}
 
 	output, err := execute(t,
 		"--lang", "zh",
-		"--sources", sourcesRoot,
+		"--resources", resourceRoot,
 		"--project", projectRoot,
 		"list",
 	)
@@ -119,11 +221,47 @@ func TestChineseLanguageLocalizesHelpAndHumanListHeaders(t *testing.T) {
 	if !bytes.Contains(sourceHelp, []byte("来源发现策略优先级")) {
 		t.Fatalf("Chinese discovery priority flag was not localized:\n%s", sourceHelp)
 	}
+	for _, want := range []string{"将整个来源限制为一个已注册客户端", "权威 Skill 目录路径"} {
+		if !bytes.Contains(sourceHelp, []byte(want)) {
+			t.Fatalf("Chinese source add help omitted %q:\n%s", want, sourceHelp)
+		}
+	}
+}
+
+func TestChineseLanguageLocalizesResourceSelectionErrors(t *testing.T) {
+	resourceRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(resourceRoot, "mcp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(resourceRoot, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(resourceRoot, "mcp", "mcp.json"), []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := execute(t, "--lang", "zh", "--resources", resourceRoot, "--project", projectRoot, "mcp", "enable", "missing", "--client", "claude")
+	if err == nil || !strings.Contains(err.Error(), "未知 MCP server") {
+		t.Fatalf("MCP error = %v, want Chinese unknown-server error", err)
+	}
+	_, err = execute(t, "--lang", "zh", "--resources", resourceRoot, "prompt", "enable", "missing")
+	if err == nil || !strings.Contains(err.Error(), "未知系统提示词组") {
+		t.Fatalf("prompt error = %v, want Chinese unknown-group error", err)
+	}
+	_, err = execute(t, "--lang", "zh", "--resources", resourceRoot, "source", "add", "https://example.invalid/repo.git", "--name", "repo", "--client", "pi")
+	if err == nil || !strings.Contains(err.Error(), "未知客户端") {
+		t.Fatalf("source error = %v, want Chinese unknown-client error", err)
+	}
 }
 
 func TestSourceListReportsResolvedDiscoveryStrategy(t *testing.T) {
-	sourcesRoot := t.TempDir()
-	vendorRoot := filepath.Join(sourcesRoot, "vendor", "curated")
+	resourceRoot := t.TempDir()
+	sourcesRoot := filepath.Join(resourceRoot, "skills")
+	vendorRoot := filepath.Join(sourcesRoot, "vendor", "shared", "curated")
 	writeCLISkill(t, filepath.Join(vendorRoot, "skills", "registered"), "registered")
 	manifestPath := filepath.Join(vendorRoot, ".claude-plugin", "plugin.json")
 	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
@@ -137,14 +275,14 @@ func TestSourceListReportsResolvedDiscoveryStrategy(t *testing.T) {
 	}
 	config := `version: 1
 sources:
-  vendor/curated:
+  vendor-shared/curated:
     discoveryPriority: [claude-plugin, skills-dir]
 `
 	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	output, err := execute(t, "--sources", sourcesRoot, "source", "list", "--json")
+	output, err := execute(t, "--resources", resourceRoot, "source", "list", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,35 +292,39 @@ sources:
 	if !bytes.Contains(output, []byte(`"discoveryPriority"`)) {
 		t.Fatalf("source JSON omitted discovery priority: %s", output)
 	}
+	if !bytes.Contains(output, []byte(`"scope": "shared"`)) {
+		t.Fatalf("source JSON omitted physical scope: %s", output)
+	}
 }
 
 func TestArchivedSkillsRequireExplicitListingAndCannotBeEnabled(t *testing.T) {
-	sourcesRoot := t.TempDir()
+	resourceRoot := t.TempDir()
+	sourcesRoot := filepath.Join(resourceRoot, "skills")
 	projectRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeCLISkill(t, filepath.Join(sourcesRoot, "archive", "waza", "read"), "waza-read")
+	writeCLISkill(t, filepath.Join(sourcesRoot, "archived", "shared", "waza", "read"), "waza-read")
 
-	withoutArchive, err := execute(t, "--sources", sourcesRoot, "--project", projectRoot, "list", "--json")
+	withoutArchive, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "list", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	withArchive, err := execute(t, "--sources", sourcesRoot, "--project", projectRoot, "list", "--archive", "--json")
+	withArchive, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "list", "--archive", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(withoutArchive, []byte("archive/waza/read")) {
+	if bytes.Contains(withoutArchive, []byte("archived-shared/waza/read")) {
 		t.Fatalf("archive leaked into default list: %s", withoutArchive)
 	}
-	if !bytes.Contains(withArchive, []byte("archive/waza/read")) {
+	if !bytes.Contains(withArchive, []byte("archived-shared/waza/read")) {
 		t.Fatalf("explicit archive list omitted skill: %s", withArchive)
 	}
 
 	_, err = execute(t,
-		"--sources", sourcesRoot,
+		"--resources", resourceRoot,
 		"--project", projectRoot,
-		"enable", "archive/waza/read",
+		"enable", "archived-shared/waza/read",
 		"--client", "codex",
 	)
 	if err == nil {
@@ -194,18 +336,19 @@ func TestArchivedSkillsRequireExplicitListingAndCannotBeEnabled(t *testing.T) {
 }
 
 func TestShowStatusAndDoctorExposeStableJSON(t *testing.T) {
-	sourcesRoot := t.TempDir()
+	resourceRoot := t.TempDir()
+	sourcesRoot := filepath.Join(resourceRoot, "skills")
 	projectRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "portable"), "portable")
-	base := []string{"--sources", sourcesRoot, "--project", projectRoot}
-	if _, err := execute(t, append(base, "enable", "local/portable", "--client", "codex")...); err != nil {
+	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+	base := []string{"--resources", resourceRoot, "--project", projectRoot}
+	if _, err := execute(t, append(base, "enable", "local-shared/portable", "--client", "codex")...); err != nil {
 		t.Fatal(err)
 	}
 
-	show, err := execute(t, append(base, "show", "local/portable", "--json")...)
+	show, err := execute(t, append(base, "show", "local-shared/portable", "--json")...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,21 +374,22 @@ func TestShowStatusAndDoctorExposeStableJSON(t *testing.T) {
 }
 
 func TestMultiClientEnableIsAtomicAcrossClientDirectories(t *testing.T) {
-	sourcesRoot := t.TempDir()
+	resourceRoot := t.TempDir()
+	sourcesRoot := filepath.Join(resourceRoot, "skills")
 	projectRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "portable"), "portable")
+	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
 	conflict := filepath.Join(projectRoot, ".claude", "skills", "portable")
 	if err := os.MkdirAll(conflict, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	_, err := execute(t,
-		"--sources", sourcesRoot,
+		"--resources", resourceRoot,
 		"--project", projectRoot,
-		"enable", "local/portable",
+		"enable", "local-shared/portable",
 		"--client", "codex",
 		"--client", "claude",
 	)

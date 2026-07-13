@@ -12,12 +12,27 @@ import (
 )
 
 type Manager struct {
-	projectRoot string
-	clients     client.Registry
+	projectRoot     string
+	clients         client.Registry
+	providersByPath map[string]catalog.Skill
+	beforeApply     func(change)
 }
 
-func New(projectRoot string, clients client.Registry) Manager {
-	return Manager{projectRoot: projectRoot, clients: clients}
+func New(projectRoot string, loaded catalog.Catalog) Manager {
+	providersByPath := make(map[string]catalog.Skill)
+	for _, source := range loaded.Sources {
+		if source.IsArchived() {
+			continue
+		}
+		for _, skill := range source.Skills {
+			providersByPath[filepath.Clean(skill.Path)] = skill
+		}
+	}
+	return Manager{
+		projectRoot:     projectRoot,
+		clients:         loaded.Clients,
+		providersByPath: providersByPath,
+	}
 }
 
 type State string
@@ -58,6 +73,12 @@ func (m Manager) State(skill catalog.Skill, client catalog.Client) (State, error
 		target = filepath.Join(filepath.Dir(linkPath), target)
 	}
 	if filepath.Clean(target) != filepath.Clean(skill.Path) {
+		if m.isManagedAlternative(target, skill) {
+			if !supported {
+				return StateIncompatible, nil
+			}
+			return StateDisabled, nil
+		}
 		return StateConflict, nil
 	}
 	if _, err := os.Stat(filepath.Join(target, "SKILL.md")); err != nil {
@@ -99,6 +120,7 @@ type action int
 const (
 	createLink action = iota
 	removeLink
+	replaceLink
 )
 
 type change struct {
@@ -126,7 +148,7 @@ func (m Manager) Apply(operations []Operation) error {
 		if err != nil {
 			return err
 		}
-		planned, operationConflicts := plan(operation.Skills, operation.Client, targetDir, operation.Enabled)
+		planned, operationConflicts := m.plan(operation.Skills, operation.Client, targetDir, operation.Enabled)
 		changes = append(changes, planned...)
 		conflicts = append(conflicts, operationConflicts...)
 	}
@@ -152,6 +174,17 @@ func (m Manager) Apply(operations []Operation) error {
 
 	executed := make([]change, 0, len(changes))
 	for _, next := range changes {
+		if m.beforeApply != nil {
+			m.beforeApply(next)
+		}
+		if err := validateChange(next); err != nil {
+			rollbackErr := rollback(executed)
+			cleanupDirectories(createdDirectories)
+			if rollbackErr != nil {
+				return errors.Join(err, fmt.Errorf("rollback projection: %w", rollbackErr))
+			}
+			return err
+		}
 		if err := apply(next); err != nil {
 			rollbackErr := rollback(executed)
 			cleanupDirectories(createdDirectories)
@@ -164,6 +197,61 @@ func (m Manager) Apply(operations []Operation) error {
 		executed = append(executed, next)
 	}
 	return nil
+}
+
+func validateChange(next change) error {
+	if next.action == createLink || next.action == replaceLink {
+		info, err := os.Stat(filepath.Join(next.target, "SKILL.md"))
+		if err != nil || !info.Mode().IsRegular() {
+			reason := "source SKILL.md changed after preflight"
+			if err != nil {
+				reason += ": " + err.Error()
+			}
+			return &ConflictError{Conflicts: []Conflict{{Path: next.target, Reason: reason}}}
+		}
+	}
+	switch next.action {
+	case createLink:
+		_, exists, _, err := inspectExpectedLink(next.path, next.target)
+		if err != nil {
+			return &ConflictError{Conflicts: []Conflict{{Path: next.path, Reason: err.Error()}}}
+		}
+		if !exists {
+			return nil
+		}
+	case removeLink, replaceLink:
+		matches, exists, conflict, err := inspectExpectedLink(next.path, next.originalTarget)
+		if err != nil {
+			return &ConflictError{Conflicts: []Conflict{{Path: next.path, Reason: err.Error()}}}
+		}
+		if exists && matches && !conflict {
+			return nil
+		}
+	default:
+		return errors.New("unknown projection action")
+	}
+	return &ConflictError{Conflicts: []Conflict{{Path: next.path, Reason: "target changed after preflight"}}}
+}
+
+func inspectExpectedLink(path, expectedTarget string) (matches, exists, conflict bool, err error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, false, false, nil
+	}
+	if err != nil {
+		return false, false, false, err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return false, true, true, nil
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		return false, true, false, err
+	}
+	if target != expectedTarget {
+		return false, true, true, nil
+	}
+	return true, true, false, nil
 }
 
 func ensureDirectory(path string) ([]string, error) {
@@ -197,7 +285,7 @@ func cleanupDirectories(paths []string) {
 	}
 }
 
-func plan(skills []catalog.Skill, client catalog.Client, targetDir string, enabled bool) ([]change, []Conflict) {
+func (m Manager) plan(skills []catalog.Skill, client catalog.Client, targetDir string, enabled bool) ([]change, []Conflict) {
 	changes := make([]change, 0, len(skills))
 	conflicts := make([]Conflict, 0)
 	seenNames := make(map[string]string)
@@ -249,6 +337,17 @@ func plan(skills []catalog.Skill, client catalog.Client, targetDir string, enabl
 			resolvedTarget = filepath.Join(filepath.Dir(linkPath), resolvedTarget)
 		}
 		if filepath.Clean(resolvedTarget) != filepath.Clean(skill.Path) {
+			if m.isManagedAlternative(resolvedTarget, skill) {
+				if enabled {
+					changes = append(changes, change{
+						action:         replaceLink,
+						path:           linkPath,
+						target:         skill.Path,
+						originalTarget: originalTarget,
+					})
+				}
+				continue
+			}
 			conflicts = append(conflicts, Conflict{Path: linkPath, Reason: "symlink is not managed by this skill"})
 			continue
 		}
@@ -265,12 +364,36 @@ func plan(skills []catalog.Skill, client catalog.Client, targetDir string, enabl
 	return changes, conflicts
 }
 
+func (m Manager) isManagedAlternative(target string, selected catalog.Skill) bool {
+	provider, ok := m.providersByPath[filepath.Clean(target)]
+	return ok && provider.Name == selected.Name && filepath.Clean(provider.Path) != filepath.Clean(selected.Path)
+}
+
 func apply(next change) error {
 	switch next.action {
 	case createLink:
 		return os.Symlink(next.target, next.path)
 	case removeLink:
 		return os.Remove(next.path)
+	case replaceLink:
+		if err := os.Remove(next.path); err != nil {
+			return err
+		}
+		if err := os.Symlink(next.target, next.path); err != nil {
+			_, exists, _, inspectErr := inspectExpectedLink(next.path, next.target)
+			if inspectErr != nil {
+				return errors.Join(err, fmt.Errorf("inspect failed replacement: %w", inspectErr))
+			}
+			if exists {
+				return errors.Join(err, fmt.Errorf("preserve concurrently changed target %s", next.path))
+			}
+			restoreErr := os.Symlink(next.originalTarget, next.path)
+			if restoreErr != nil {
+				return errors.Join(err, fmt.Errorf("restore original provider: %w", restoreErr))
+			}
+			return err
+		}
+		return nil
 	default:
 		return errors.New("unknown projection action")
 	}
@@ -280,15 +403,65 @@ func rollback(executed []change) error {
 	var rollbackErrors []error
 	for index := len(executed) - 1; index >= 0; index-- {
 		previous := executed[index]
-		var err error
 		switch previous.action {
 		case createLink:
-			err = os.Remove(previous.path)
+			matches, exists, conflict, err := inspectExpectedLink(previous.path, previous.target)
+			if err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("inspect %s: %w", previous.path, err))
+				continue
+			}
+			if !exists {
+				continue
+			}
+			if conflict || !matches {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("preserve concurrently changed target %s", previous.path))
+				continue
+			}
+			if err := os.Remove(previous.path); err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", previous.path, err))
+			}
 		case removeLink:
-			err = os.Symlink(previous.originalTarget, previous.path)
-		}
-		if err != nil {
-			rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", previous.path, err))
+			matches, exists, conflict, err := inspectExpectedLink(previous.path, previous.originalTarget)
+			if err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("inspect %s: %w", previous.path, err))
+				continue
+			}
+			if exists {
+				if conflict || !matches {
+					rollbackErrors = append(rollbackErrors, fmt.Errorf("preserve concurrently changed target %s", previous.path))
+				}
+				continue
+			}
+			if err := os.Symlink(previous.originalTarget, previous.path); err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", previous.path, err))
+			}
+		case replaceLink:
+			originalMatches, exists, originalConflict, err := inspectExpectedLink(previous.path, previous.originalTarget)
+			if err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("inspect %s: %w", previous.path, err))
+				continue
+			}
+			if exists && originalMatches && !originalConflict {
+				continue
+			}
+			newMatches, _, newConflict, err := inspectExpectedLink(previous.path, previous.target)
+			if err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("inspect %s: %w", previous.path, err))
+				continue
+			}
+			if exists && (newConflict || !newMatches) {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("preserve concurrently changed target %s", previous.path))
+				continue
+			}
+			if exists {
+				if err := os.Remove(previous.path); err != nil {
+					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", previous.path, err))
+					continue
+				}
+			}
+			if err := os.Symlink(previous.originalTarget, previous.path); err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", previous.path, err))
+			}
 		}
 	}
 	return errors.Join(rollbackErrors...)

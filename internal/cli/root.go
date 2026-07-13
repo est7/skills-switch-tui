@@ -11,33 +11,48 @@ import (
 	"text/tabwriter"
 
 	"github.com/est7/skills-switch-tui/internal/catalog"
+	"github.com/est7/skills-switch-tui/internal/client"
 	"github.com/est7/skills-switch-tui/internal/i18n"
+	"github.com/est7/skills-switch-tui/internal/mcp"
 	"github.com/est7/skills-switch-tui/internal/project"
 	"github.com/est7/skills-switch-tui/internal/projection"
+	"github.com/est7/skills-switch-tui/internal/resource"
 	"github.com/est7/skills-switch-tui/internal/source"
+	"github.com/est7/skills-switch-tui/internal/systemprompt"
 	"github.com/spf13/cobra"
 )
 
 type rootOptions struct {
-	sourcesRoot string
-	projectRoot string
-	language    string
+	resourcesRoot string
+	projectRoot   string
+	language      string
 }
 
 type runtime struct {
 	catalog     catalog.Catalog
 	projectRoot string
+	userHome    string
 	projection  projection.Manager
 	translator  i18n.Translator
-	sourcesRoot string
+	resources   resource.Layout
 	manager     source.Manager
+	mcpCatalog  mcp.Catalog
+	mcpManager  mcp.Manager
+	prompts     systemprompt.Catalog
+	promptMgr   systemprompt.Manager
+}
+
+type promptRuntime struct {
+	translator i18n.Translator
+	prompts    systemprompt.Catalog
+	promptMgr  systemprompt.Manager
 }
 
 type catalogRuntime struct {
-	catalog     catalog.Catalog
-	translator  i18n.Translator
-	sourcesRoot string
-	manager     source.Manager
+	catalog    catalog.Catalog
+	translator i18n.Translator
+	resources  resource.Layout
+	manager    source.Manager
 }
 
 func NewRootCommand(version string) *cobra.Command {
@@ -57,7 +72,7 @@ func NewRootCommand(version string) *cobra.Command {
 		},
 	}
 	command.CompletionOptions.DisableDefaultCmd = true
-	command.PersistentFlags().StringVar(&options.sourcesRoot, "sources", "", translator.Text(i18n.SourcesFlag))
+	command.PersistentFlags().StringVar(&options.resourcesRoot, "resources", "", translator.Text(i18n.ResourcesFlag))
 	command.PersistentFlags().StringVar(&options.projectRoot, "project", "", translator.Text(i18n.ProjectFlag))
 	command.PersistentFlags().StringVar(&options.language, "lang", defaultLanguage, translator.Text(i18n.LanguageFlag))
 	command.AddCommand(newListCommand(options))
@@ -66,6 +81,8 @@ func NewRootCommand(version string) *cobra.Command {
 	command.AddCommand(newShowCommand(options))
 	command.AddCommand(newStatusCommand(options))
 	command.AddCommand(newSourceCommand(options))
+	command.AddCommand(newMCPCommand(options))
+	command.AddCommand(newPromptCommand(options))
 	command.AddCommand(newUpdateCommand(options))
 	command.AddCommand(newDoctorCommand(options))
 	command.AddCommand(newTUICommand(options))
@@ -220,7 +237,7 @@ type skillView struct {
 func buildListOutput(runtime runtime, includeArchive bool) (listOutput, error) {
 	result := listOutput{Project: runtime.projectRoot}
 	for _, source := range runtime.catalog.Sources {
-		if source.Archived && !includeArchive {
+		if source.IsArchived() && !includeArchive {
 			continue
 		}
 		for _, skill := range source.Skills {
@@ -261,22 +278,73 @@ func loadRuntime(options *rootOptions) (runtime, error) {
 	if err != nil {
 		return runtime{}, err
 	}
+	userHome, err := resolveUserHome()
+	if err != nil {
+		return runtime{}, err
+	}
+	mcpCatalogPath := base.resources.MCPCatalogFile()
+	mcpCatalog := mcp.Catalog{Path: mcpCatalogPath, Servers: make(map[string]mcp.Server)}
+	if _, statErr := os.Stat(mcpCatalogPath); statErr == nil {
+		mcpCatalog, err = mcp.LoadCatalog(mcpCatalogPath)
+		if err != nil {
+			return runtime{}, err
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return runtime{}, fmt.Errorf("stat MCP catalog: %w", statErr)
+	}
+	prompts, err := systemprompt.Discover(base.resources.SystemPromptsRoot(), base.catalog.Clients)
+	if err != nil {
+		return runtime{}, err
+	}
 	return runtime{
 		catalog:     base.catalog,
 		projectRoot: projectRoot,
-		projection:  projection.New(projectRoot, base.catalog.Clients),
+		userHome:    userHome,
+		projection:  projection.New(projectRoot, base.catalog),
 		translator:  base.translator,
-		sourcesRoot: base.sourcesRoot,
+		resources:   base.resources,
 		manager:     base.manager,
+		mcpCatalog:  mcpCatalog,
+		mcpManager:  mcp.NewManager(projectRoot, mcpCatalog, base.catalog.Clients),
+		prompts:     prompts,
+		promptMgr:   systemprompt.NewManager(userHome, base.catalog.Clients),
+	}, nil
+}
+
+func loadPromptRuntime(options *rootOptions) (promptRuntime, error) {
+	base, err := loadCatalogRuntime(options)
+	if err != nil {
+		return promptRuntime{}, err
+	}
+	userHome, err := resolveUserHome()
+	if err != nil {
+		return promptRuntime{}, err
+	}
+	prompts, err := systemprompt.Discover(base.resources.SystemPromptsRoot(), base.catalog.Clients)
+	if err != nil {
+		return promptRuntime{}, err
+	}
+	return promptRuntime{
+		translator: base.translator,
+		prompts:    prompts,
+		promptMgr:  systemprompt.NewManager(userHome, base.catalog.Clients),
 	}, nil
 }
 
 func loadCatalogRuntime(options *rootOptions) (catalogRuntime, error) {
-	sourcesRoot, err := resolveSourcesRoot(options.sourcesRoot)
+	resourcesRoot, err := resolveResourcesRoot(options.resourcesRoot)
 	if err != nil {
 		return catalogRuntime{}, err
 	}
-	loadedCatalog, err := catalog.Load(sourcesRoot)
+	resources, err := resource.NewLayout(resourcesRoot)
+	if err != nil {
+		return catalogRuntime{}, err
+	}
+	clients, err := client.LoadRegistry(resources.RegistryFile())
+	if err != nil {
+		return catalogRuntime{}, err
+	}
+	loadedCatalog, err := catalog.Load(resources.SkillsRoot(), clients)
 	if err != nil {
 		return catalogRuntime{}, err
 	}
@@ -285,39 +353,51 @@ func loadCatalogRuntime(options *rootOptions) (catalogRuntime, error) {
 		return catalogRuntime{}, err
 	}
 	return catalogRuntime{
-		catalog:     loadedCatalog,
-		translator:  translator,
-		sourcesRoot: sourcesRoot,
+		catalog:    loadedCatalog,
+		translator: translator,
+		resources:  resources,
 		manager: source.Manager{
-			AgentsRoot:  filepath.Dir(sourcesRoot),
-			SourcesRoot: sourcesRoot,
+			SkillsRoot: resources.SkillsRoot(),
+			Clients:    loadedCatalog.Clients,
 		},
 	}, nil
 }
 
 func loadSourceMutationRuntime(options *rootOptions) (catalogRuntime, error) {
-	sourcesRoot, err := resolveSourcesRoot(options.sourcesRoot)
+	resourcesRoot, err := resolveResourcesRoot(options.resourcesRoot)
 	if err != nil {
 		return catalogRuntime{}, err
 	}
-	if err := os.MkdirAll(sourcesRoot, 0o755); err != nil {
-		return catalogRuntime{}, fmt.Errorf("create sources root: %w", err)
+	resources, err := resource.NewLayout(resourcesRoot)
+	if err != nil {
+		return catalogRuntime{}, err
+	}
+	if err := os.MkdirAll(resources.SkillsRoot(), 0o755); err != nil {
+		return catalogRuntime{}, fmt.Errorf("create skills root: %w", err)
 	}
 	return loadCatalogRuntime(options)
 }
 
-func resolveSourcesRoot(configured string) (string, error) {
+func resolveResourcesRoot(configured string) (string, error) {
 	if configured != "" {
 		return filepath.Abs(configured)
 	}
-	if fromEnvironment := os.Getenv("SKILLS_SWITCH_SOURCES"); fromEnvironment != "" {
+	if fromEnvironment := os.Getenv("SKILLS_SWITCH_RESOURCES"); fromEnvironment != "" {
 		return filepath.Abs(fromEnvironment)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".agents", "sources"), nil
+	return filepath.Join(home, ".agents", "resources"), nil
+}
+
+func resolveUserHome() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Abs(home)
 }
 
 func parseClients(values []string, loaded catalog.Catalog, translator i18n.Translator) ([]catalog.Client, error) {
@@ -342,8 +422,8 @@ func parseClients(values []string, loaded catalog.Catalog, translator i18n.Trans
 func localizeCommandTree(root *cobra.Command, translator i18n.Translator) {
 	root.Short = translator.Text(i18n.RootShort)
 	root.SetUsageTemplate(localizedUsageTemplate(translator))
-	if flag := root.PersistentFlags().Lookup("sources"); flag != nil {
-		flag.Usage = translator.Text(i18n.SourcesFlag)
+	if flag := root.PersistentFlags().Lookup("resources"); flag != nil {
+		flag.Usage = translator.Text(i18n.ResourcesFlag)
 	}
 	if flag := root.PersistentFlags().Lookup("project"); flag != nil {
 		flag.Usage = translator.Text(i18n.ProjectFlag)
@@ -384,8 +464,37 @@ func localizeCommandTree(root *cobra.Command, translator i18n.Translator) {
 		case "source":
 			command.Short = translator.Text(i18n.SourceCommandShort)
 			localizeSourceCommands(command, translator)
+		case "mcp":
+			command.Short = translator.Text(i18n.MCPCommandShort)
+			localizeResourceCommands(command, translator)
+		case "prompt":
+			command.Short = translator.Text(i18n.PromptCommandShort)
+			localizeResourceCommands(command, translator)
 		case "help":
 			command.Short = translator.Text(i18n.HelpCommandShort)
+		}
+	}
+}
+
+func localizeResourceCommands(command *cobra.Command, translator i18n.Translator) {
+	for _, child := range command.Commands() {
+		switch command.Name() + "/" + child.Name() {
+		case "mcp/list":
+			child.Short = translator.Text(i18n.MCPListShort)
+		case "mcp/enable":
+			child.Short = translator.Text(i18n.MCPEnableShort)
+		case "mcp/disable":
+			child.Short = translator.Text(i18n.MCPDisableShort)
+		case "prompt/list":
+			child.Short = translator.Text(i18n.PromptListShort)
+		case "prompt/enable":
+			child.Short = translator.Text(i18n.PromptEnableShort)
+		case "prompt/disable":
+			child.Short = translator.Text(i18n.PromptDisableShort)
+		}
+		localizeOutputFlags(child, translator)
+		if flag := child.Flags().Lookup("client"); flag != nil {
+			flag.Usage = translator.Text(i18n.ClientFlag)
 		}
 	}
 }
@@ -446,12 +555,20 @@ func localizeSourceCommands(command *cobra.Command, translator i18n.Translator) 
 			if flag := child.Flags().Lookup("branch"); flag != nil {
 				flag.Usage = translator.Text(i18n.BranchFlag)
 			}
+			if flag := child.Flags().Lookup("client"); flag != nil {
+				flag.Usage = translator.Text(i18n.SourceScopeFlag)
+			}
+			if flag := child.Flags().Lookup("skill-path"); flag != nil {
+				flag.Usage = translator.Text(i18n.SkillPathFlag)
+			}
 			if flag := child.Flags().Lookup("sparse"); flag != nil {
 				flag.Usage = translator.Text(i18n.SparseFlag)
 			}
 			if flag := child.Flags().Lookup("discovery-priority"); flag != nil {
 				flag.Usage = translator.Text(i18n.DiscoveryPriorityFlag)
 			}
+		case "remove":
+			child.Short = translator.Text(i18n.SourceRemoveShort)
 		}
 	}
 }
@@ -471,7 +588,7 @@ func selectedSkills(loaded catalog.Catalog, args []string, sourceID string, clie
 		if !ok {
 			return nil, errors.New(translator.Text(i18n.UnknownSource, sourceID))
 		}
-		if enabled && source.Archived {
+		if enabled && source.IsArchived() {
 			return nil, errors.New(translator.Text(i18n.ArchivedCannotCLIEnable, source.ID))
 		}
 		return source.Skills, nil
@@ -480,7 +597,7 @@ func selectedSkills(loaded catalog.Catalog, args []string, sourceID string, clie
 	if !ok {
 		return nil, errors.New(translator.Text(i18n.UnknownSkill, args[0]))
 	}
-	if source, ok := loaded.Source(skill.SourceID); enabled && ok && source.Archived {
+	if source, ok := loaded.Source(skill.SourceID); enabled && ok && source.IsArchived() {
 		return nil, errors.New(translator.Text(i18n.ArchivedCannotCLIEnable, source.ID))
 	}
 	if enabled {

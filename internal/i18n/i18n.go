@@ -18,7 +18,11 @@ type Key string
 const (
 	Ready                     Key = "ready"
 	ProductSubtitle           Key = "product_subtitle"
+	TabSkills                 Key = "tab_skills"
+	TabMCP                    Key = "tab_mcp"
+	TabSystemPrompts          Key = "tab_system_prompts"
 	ProjectLabel              Key = "project_label"
+	UserLabel                 Key = "user_label"
 	FilterAll                 Key = "filter_all"
 	FilterEnabled             Key = "filter_enabled"
 	FilterIssues              Key = "filter_issues"
@@ -26,9 +30,12 @@ const (
 	FilterSelected            Key = "filter_selected"
 	SearchPlaceholder         Key = "search_placeholder"
 	SourceSkillHeader         Key = "source_skill_header"
+	ResourceHeader            Key = "resource_header"
 	NoSkillsMatch             Key = "no_skills_match"
+	NoResourcesMatch          Key = "no_resources_match"
 	MoreRows                  Key = "more_rows"
 	HelpNavigate              Key = "help_navigate"
+	HelpResource              Key = "help_resource"
 	HelpClient                Key = "help_client"
 	HelpToggle                Key = "help_toggle"
 	HelpExpand                Key = "help_expand"
@@ -49,6 +56,9 @@ const (
 	NoChangesApplied          Key = "no_changes_applied"
 	EnabledSkills             Key = "enabled_skills"
 	DisabledSkills            Key = "disabled_skills"
+	EnabledResource           Key = "enabled_resource"
+	DisabledResource          Key = "disabled_resource"
+	ResourceIncompatible      Key = "resource_incompatible"
 	UpdatesUnavailable        Key = "updates_unavailable"
 	NoSourceSelected          Key = "no_source_selected"
 	VendorOnlyUpdate          Key = "vendor_only_update"
@@ -63,8 +73,9 @@ const (
 	ArchiveReference          Key = "archive_reference"
 	TargetsLabel              Key = "targets_label"
 	ArchivedLabel             Key = "archived_label"
+	MetadataIssueLabel        Key = "metadata_issue_label"
 	RootShort                 Key = "root_short"
-	SourcesFlag               Key = "sources_flag"
+	ResourcesFlag             Key = "resources_flag"
 	ProjectFlag               Key = "project_flag"
 	LanguageFlag              Key = "language_flag"
 	ListShort                 Key = "list_short"
@@ -78,6 +89,8 @@ const (
 	SelectExactlyOne          Key = "select_exactly_one"
 	AtLeastOneClient          Key = "at_least_one_client"
 	UnknownClient             Key = "unknown_client"
+	UnknownMCPServer          Key = "unknown_mcp_server"
+	UnknownPromptGroup        Key = "unknown_prompt_group"
 	SourceNoCompatibleSkills  Key = "source_no_compatible_skills"
 	EnabledResult             Key = "enabled_result"
 	DisabledResult            Key = "disabled_result"
@@ -88,11 +101,26 @@ const (
 	SourceCommandShort        Key = "source_command_short"
 	SourceListShort           Key = "source_list_short"
 	SourceAddShort            Key = "source_add_short"
+	SourceRemoveShort         Key = "source_remove_short"
+	SourceRemoved             Key = "source_removed"
+	MCPCommandShort           Key = "mcp_command_short"
+	MCPListShort              Key = "mcp_list_short"
+	MCPEnableShort            Key = "mcp_enable_short"
+	MCPDisableShort           Key = "mcp_disable_short"
+	PromptCommandShort        Key = "prompt_command_short"
+	PromptListShort           Key = "prompt_list_short"
+	PromptEnableShort         Key = "prompt_enable_short"
+	PromptDisableShort        Key = "prompt_disable_short"
+	PromptHeader              Key = "prompt_header"
+	FilesHeader               Key = "files_header"
+	PromptFileSummary         Key = "prompt_file_summary"
 	UpdateShort               Key = "update_short"
 	DoctorShort               Key = "doctor_short"
 	IncludeArchiveFlag        Key = "include_archive_flag"
 	NameFlag                  Key = "name_flag"
 	BranchFlag                Key = "branch_flag"
+	SourceScopeFlag           Key = "source_scope_flag"
+	SkillPathFlag             Key = "skill_path_flag"
 	SparseFlag                Key = "sparse_flag"
 	DiscoveryPriorityFlag     Key = "discovery_priority_flag"
 	DryRunFlag                Key = "dry_run_flag"
@@ -140,8 +168,12 @@ type Translator struct {
 var messages = map[Language]map[Key]string{
 	English: {
 		Ready:                     "Ready",
-		ProductSubtitle:           "project-local skill projections",
+		ProductSubtitle:           "project resources · user-global prompts",
+		TabSkills:                 "Skills",
+		TabMCP:                    "MCP",
+		TabSystemPrompts:          "System Prompts",
 		ProjectLabel:              "project",
+		UserLabel:                 "user",
 		FilterAll:                 "all",
 		FilterEnabled:             "enabled",
 		FilterIssues:              "issues",
@@ -149,9 +181,12 @@ var messages = map[Language]map[Key]string{
 		FilterSelected:            "Filter: %s",
 		SearchPlaceholder:         "filter sources and skills",
 		SourceSkillHeader:         "SOURCE / SKILL",
+		ResourceHeader:            "RESOURCE",
 		NoSkillsMatch:             "No skills match this view.",
+		NoResourcesMatch:          "No resources match this view.",
 		MoreRows:                  "↓ %d more",
 		HelpNavigate:              "navigate",
+		HelpResource:              "resource",
 		HelpClient:                "client",
 		HelpToggle:                "toggle",
 		HelpExpand:                "expand",
@@ -172,6 +207,9 @@ var messages = map[Language]map[Key]string{
 		NoChangesApplied:          "No changes applied",
 		EnabledSkills:             "Enabled %d skill(s) for %s",
 		DisabledSkills:            "Disabled %d skill(s) for %s",
+		EnabledResource:           "Enabled %s for %s",
+		DisabledResource:          "Disabled %s for %s",
+		ResourceIncompatible:      "%s is unavailable for %s",
 		UpdatesUnavailable:        "Source updates are unavailable",
 		NoSourceSelected:          "No source selected",
 		VendorOnlyUpdate:          "Only vendor sources can be updated",
@@ -186,8 +224,9 @@ var messages = map[Language]map[Key]string{
 		ArchiveReference:          "archive · reference-only",
 		TargetsLabel:              "targets  %s",
 		ArchivedLabel:             "archived",
-		RootShort:                 "Switch project-local agent skills",
-		SourcesFlag:               "agent skill sources root (default ~/.agents/sources)",
+		MetadataIssueLabel:        "metadata issue",
+		RootShort:                 "Manage project resources and user-global system prompts",
+		ResourcesFlag:             "agent resources root (default ~/.agents/resources)",
 		ProjectFlag:               "project directory (default current directory)",
 		LanguageFlag:              "interface language: auto, en, or zh",
 		ListShort:                 "List catalog skills and their current project state",
@@ -201,6 +240,8 @@ var messages = map[Language]map[Key]string{
 		SelectExactlyOne:          "select exactly one skill-id or --source",
 		AtLeastOneClient:          "at least one --client is required",
 		UnknownClient:             "unknown client %q",
+		UnknownMCPServer:          "unknown MCP server %q",
+		UnknownPromptGroup:        "unknown system prompt group %q",
 		SourceNoCompatibleSkills:  "source %s has no skills compatible with %s",
 		EnabledResult:             "enabled %d skill(s) for %s\n",
 		DisabledResult:            "disabled %d skill(s) for %s\n",
@@ -211,15 +252,30 @@ var messages = map[Language]map[Key]string{
 		SourceCommandShort:        "Manage catalog source repositories",
 		SourceListShort:           "List catalog sources",
 		SourceAddShort:            "Add a vendor repository as a git submodule",
+		SourceRemoveShort:         "Remove a clean vendor submodule and its catalog policy",
+		SourceRemoved:             "removed source %s\n",
+		MCPCommandShort:           "Manage project-level MCP servers",
+		MCPListShort:              "List MCP servers and project state",
+		MCPEnableShort:            "Enable an MCP server for project clients",
+		MCPDisableShort:           "Disable an MCP server for project clients",
+		PromptCommandShort:        "Manage user-global system prompt files",
+		PromptListShort:           "List system prompt groups and user-global state",
+		PromptEnableShort:         "Enable a system prompt group for its user-global client",
+		PromptDisableShort:        "Disable a system prompt group for its user-global client",
+		PromptHeader:              "PROMPT",
+		FilesHeader:               "FILES",
+		PromptFileSummary:         "%d Markdown file(s) · %s",
 		UpdateShort:               "Update vendor sources from their tracked branches",
-		DoctorShort:               "Check catalog and project projection health",
+		DoctorShort:               "Check project resources and user-global system prompts",
 		IncludeArchiveFlag:        "include archived sources",
 		NameFlag:                  "source name",
 		BranchFlag:                "tracked branch",
+		SourceScopeFlag:           "restrict the entire source to one registered client",
+		SkillPathFlag:             "authoritative Skill directory path (repeatable)",
 		SparseFlag:                "additional sparse-checkout path (repeatable)",
 		DiscoveryPriorityFlag:     "source discovery strategy priority (repeatable)",
 		DryRunFlag:                "inspect updates without changing submodules",
-		SourceAdded:               "added source vendor/%s\n",
+		SourceAdded:               "added source %s\n",
 		BranchHeader:              "BRANCH",
 		CurrentHeader:             "CURRENT",
 		RemoteHeader:              "REMOTE",
@@ -257,8 +313,12 @@ var messages = map[Language]map[Key]string{
 	},
 	Chinese: {
 		Ready:                     "就绪",
-		ProductSubtitle:           "项目级 Skill 投影管理",
+		ProductSubtitle:           "项目资源 · 用户级系统提示词",
+		TabSkills:                 "Skills",
+		TabMCP:                    "MCP",
+		TabSystemPrompts:          "系统提示词",
 		ProjectLabel:              "项目",
+		UserLabel:                 "用户",
 		FilterAll:                 "全部",
 		FilterEnabled:             "已启用",
 		FilterIssues:              "问题",
@@ -266,9 +326,12 @@ var messages = map[Language]map[Key]string{
 		FilterSelected:            "筛选：%s",
 		SearchPlaceholder:         "筛选来源与 Skills",
 		SourceSkillHeader:         "来源 / SKILL",
+		ResourceHeader:            "资源",
 		NoSkillsMatch:             "当前视图没有匹配的 Skills。",
+		NoResourcesMatch:          "当前视图没有匹配的资源。",
 		MoreRows:                  "↓ 还有 %d 项",
 		HelpNavigate:              "导航",
+		HelpResource:              "资源",
 		HelpClient:                "客户端",
 		HelpToggle:                "开关",
 		HelpExpand:                "展开",
@@ -289,6 +352,9 @@ var messages = map[Language]map[Key]string{
 		NoChangesApplied:          "未应用任何变更",
 		EnabledSkills:             "已启用 %d 个 Skill（%s）",
 		DisabledSkills:            "已停用 %d 个 Skill（%s）",
+		EnabledResource:           "已为 %[2]s 启用 %[1]s",
+		DisabledResource:          "已为 %[2]s 停用 %[1]s",
+		ResourceIncompatible:      "%s 不适用于 %s",
 		UpdatesUnavailable:        "当前无法更新来源",
 		NoSourceSelected:          "未选择来源",
 		VendorOnlyUpdate:          "只有 vendor 来源可以更新",
@@ -303,8 +369,9 @@ var messages = map[Language]map[Key]string{
 		ArchiveReference:          "归档 · 仅供参考",
 		TargetsLabel:              "适用客户端  %s",
 		ArchivedLabel:             "已归档",
-		RootShort:                 "切换项目级 Agent Skills",
-		SourcesFlag:               "Agent Skill 来源根目录（默认 ~/.agents/sources）",
+		MetadataIssueLabel:        "元数据问题",
+		RootShort:                 "管理项目资源和用户级系统提示词",
+		ResourcesFlag:             "Agent 资源根目录（默认 ~/.agents/resources）",
 		ProjectFlag:               "项目目录（默认当前目录）",
 		LanguageFlag:              "界面语言：auto、en 或 zh",
 		ListShort:                 "列出目录 Skills 及当前项目状态",
@@ -318,6 +385,8 @@ var messages = map[Language]map[Key]string{
 		SelectExactlyOne:          "必须且只能选择一个 skill-id 或 --source",
 		AtLeastOneClient:          "至少需要一个 --client",
 		UnknownClient:             "未知客户端 %q",
+		UnknownMCPServer:          "未知 MCP server %q",
+		UnknownPromptGroup:        "未知系统提示词组 %q",
 		SourceNoCompatibleSkills:  "来源 %s 没有适用于 %s 的 Skills",
 		EnabledResult:             "已启用 %d 个 Skill（%s）\n",
 		DisabledResult:            "已停用 %d 个 Skill（%s）\n",
@@ -328,15 +397,30 @@ var messages = map[Language]map[Key]string{
 		SourceCommandShort:        "管理目录来源仓库",
 		SourceListShort:           "列出目录来源",
 		SourceAddShort:            "将 vendor 仓库添加为 Git submodule",
+		SourceRemoveShort:         "移除干净的 vendor submodule 及其目录策略",
+		SourceRemoved:             "已移除来源 %s\n",
+		MCPCommandShort:           "管理项目级 MCP servers",
+		MCPListShort:              "列出 MCP servers 及项目状态",
+		MCPEnableShort:            "为项目客户端启用一个 MCP server",
+		MCPDisableShort:           "为项目客户端停用一个 MCP server",
+		PromptCommandShort:        "管理用户级系统提示词文件",
+		PromptListShort:           "列出系统提示词组及用户级状态",
+		PromptEnableShort:         "为对应用户级客户端启用系统提示词组",
+		PromptDisableShort:        "为对应用户级客户端停用系统提示词组",
+		PromptHeader:              "提示词",
+		FilesHeader:               "文件",
+		PromptFileSummary:         "%d 个 Markdown 文件 · %s",
 		UpdateShort:               "从跟踪分支更新 vendor 来源",
-		DoctorShort:               "检查目录与项目投影健康状态",
+		DoctorShort:               "检查项目资源和用户级系统提示词",
 		IncludeArchiveFlag:        "包含归档来源",
 		NameFlag:                  "来源名称",
 		BranchFlag:                "跟踪分支",
+		SourceScopeFlag:           "将整个来源限制为一个已注册客户端",
+		SkillPathFlag:             "权威 Skill 目录路径（可重复）",
 		SparseFlag:                "附加稀疏检出路径（可重复）",
 		DiscoveryPriorityFlag:     "来源发现策略优先级（可重复）",
 		DryRunFlag:                "只检查更新，不修改 submodule",
-		SourceAdded:               "已添加来源 vendor/%s\n",
+		SourceAdded:               "已添加来源 %s\n",
 		BranchHeader:              "分支",
 		CurrentHeader:             "当前版本",
 		RemoteHeader:              "远端版本",

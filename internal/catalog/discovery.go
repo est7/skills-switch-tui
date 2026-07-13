@@ -14,6 +14,7 @@ import (
 type DiscoveryStrategy string
 
 const (
+	DiscoveryExplicit          DiscoveryStrategy = "explicit"
 	DiscoveryAgentsMarketplace DiscoveryStrategy = "agents-marketplace"
 	DiscoveryClaudeMarketplace DiscoveryStrategy = "claude-marketplace"
 	DiscoveryCodexPlugin       DiscoveryStrategy = "codex-plugin"
@@ -79,7 +80,21 @@ func ValidateDiscoveryPriority(priority []DiscoveryStrategy) error {
 	return nil
 }
 
-func PlanVendorDiscovery(root string, configuredPriority []DiscoveryStrategy) (DiscoveryPlan, error) {
+func PlanVendorDiscovery(root string, configuredPriority []DiscoveryStrategy, skillPaths []string) (DiscoveryPlan, error) {
+	if len(skillPaths) > 0 {
+		if len(configuredPriority) > 0 {
+			return DiscoveryPlan{}, errors.New("skillPaths and discoveryPriority are mutually exclusive")
+		}
+		roots, err := explicitSkillRoots(root, skillPaths)
+		if err != nil {
+			return DiscoveryPlan{}, fmt.Errorf("plan explicit discovery: %w", err)
+		}
+		paths, err := sparsePathsForDiscovery(root, DiscoveryExplicit, roots)
+		if err != nil {
+			return DiscoveryPlan{}, fmt.Errorf("plan sparse checkout for explicit discovery: %w", err)
+		}
+		return DiscoveryPlan{Strategy: DiscoveryExplicit, SparsePaths: paths}, nil
+	}
 	priority := normalizedDiscoveryPriority(configuredPriority)
 	if err := ValidateDiscoveryPriority(priority); err != nil {
 		return DiscoveryPlan{}, err
@@ -105,10 +120,26 @@ func discoverVendorSource(
 	id string,
 	root string,
 	configuredPriority []DiscoveryStrategy,
+	skillPaths []string,
 	defaults map[Client]bool,
 	overrides map[string]overrideConfig,
 	clients client.Registry,
 ) (Source, error) {
+	if len(skillPaths) > 0 {
+		if len(configuredPriority) > 0 {
+			return Source{}, fmt.Errorf("discover source %s: skillPaths and discoveryPriority are mutually exclusive", id)
+		}
+		roots, err := explicitSkillRoots(root, skillPaths)
+		if err != nil {
+			return Source{}, fmt.Errorf("discover source %s with explicit paths: %w", id, err)
+		}
+		source, err := discoverSourceRoots(id, root, roots, defaults, overrides, clients, false)
+		if err != nil {
+			return Source{}, err
+		}
+		source.DiscoveryStrategy = DiscoveryExplicit
+		return source, nil
+	}
 	priority := normalizedDiscoveryPriority(configuredPriority)
 	if err := ValidateDiscoveryPriority(priority); err != nil {
 		return Source{}, fmt.Errorf("discover source %s: %w", id, err)
@@ -121,7 +152,7 @@ func discoverVendorSource(
 		if !matched {
 			continue
 		}
-		source, err := discoverSourceRoots(id, root, roots, defaults, overrides, clients)
+		source, err := discoverSourceRoots(id, root, roots, defaults, overrides, clients, false)
 		if err != nil {
 			return Source{}, err
 		}
@@ -130,6 +161,25 @@ func discoverVendorSource(
 		return source, nil
 	}
 	return Source{ID: id, Path: root, DiscoveryPriority: priority}, nil
+}
+
+func explicitSkillRoots(root string, skillPaths []string) ([]string, error) {
+	roots := make([]string, 0, len(skillPaths))
+	seen := make(map[string]bool)
+	for _, declared := range skillPaths {
+		resolved, err := resolveDeclaredPath(root, root, declared)
+		if err != nil {
+			return nil, fmt.Errorf("skill path %q: %w", declared, err)
+		}
+		if _, err := os.Stat(filepath.Join(resolved, "SKILL.md")); err != nil {
+			return nil, fmt.Errorf("skill path %q does not contain SKILL.md: %w", declared, err)
+		}
+		if !seen[resolved] {
+			seen[resolved] = true
+			roots = append(roots, resolved)
+		}
+	}
+	return roots, nil
 }
 
 func discoveryRoots(root string, strategy DiscoveryStrategy) ([]string, bool, error) {
@@ -313,12 +363,17 @@ func resolveDeclaredPath(sourceRoot, base, declared string) (string, error) {
 
 func sparsePathsForDiscovery(sourceRoot string, strategy DiscoveryStrategy, roots []string) ([]string, error) {
 	paths := make(map[string]bool)
+	requiresFullRoot := false
 	add := func(path string) error {
 		relative, err := filepath.Rel(sourceRoot, path)
 		if err != nil {
 			return err
 		}
 		if relative == "." {
+			if strategy == DiscoveryExplicit {
+				requiresFullRoot = true
+				return nil
+			}
 			return errors.New("discovery requires the entire source root")
 		}
 		if relative == ".." || len(relative) > 3 && relative[:3] == ".."+string(filepath.Separator) {
@@ -365,6 +420,9 @@ func sparsePathsForDiscovery(sourceRoot string, strategy DiscoveryStrategy, root
 				}
 			}
 		}
+	}
+	if requiresFullRoot {
+		return nil, nil
 	}
 
 	result := make([]string, 0, len(paths))

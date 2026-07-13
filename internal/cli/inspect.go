@@ -7,7 +7,9 @@ import (
 	"text/tabwriter"
 
 	"github.com/est7/skills-switch-tui/internal/i18n"
+	"github.com/est7/skills-switch-tui/internal/mcp"
 	"github.com/est7/skills-switch-tui/internal/projection"
+	"github.com/est7/skills-switch-tui/internal/systemprompt"
 	"github.com/est7/skills-switch-tui/internal/tui"
 	"github.com/spf13/cobra"
 )
@@ -28,7 +30,13 @@ func runTUI(options *rootOptions) error {
 	if err != nil {
 		return err
 	}
-	model := tui.NewModel(runtime.catalog, runtime.projectRoot, runtime.projection, &runtime.manager, runtime.translator)
+	model := tui.NewModel(runtime.catalog, runtime.projectRoot, runtime.projection, &runtime.manager, runtime.translator, tui.Resources{
+		MCPCatalog:    runtime.mcpCatalog,
+		MCPManager:    runtime.mcpManager,
+		Prompts:       runtime.prompts,
+		PromptManager: runtime.promptMgr,
+		UserHome:      runtime.userHome,
+	})
 	return tui.Run(model)
 }
 
@@ -39,13 +47,14 @@ type clientProjectionView struct {
 }
 
 type showOutput struct {
-	ID          string                          `json:"id"`
-	Name        string                          `json:"name"`
-	Description string                          `json:"description,omitempty"`
-	Source      string                          `json:"source"`
-	Path        string                          `json:"path"`
-	Archived    bool                            `json:"archived"`
-	Clients     map[string]clientProjectionView `json:"clients"`
+	ID            string                          `json:"id"`
+	Name          string                          `json:"name"`
+	Description   string                          `json:"description,omitempty"`
+	MetadataIssue string                          `json:"metadataIssue,omitempty"`
+	Source        string                          `json:"source"`
+	Path          string                          `json:"path"`
+	Archived      bool                            `json:"archived"`
+	Clients       map[string]clientProjectionView `json:"clients"`
 }
 
 func newShowCommand(options *rootOptions) *cobra.Command {
@@ -66,13 +75,14 @@ func newShowCommand(options *rootOptions) *cobra.Command {
 			}
 			source, _ := runtime.catalog.Source(skill.SourceID)
 			result := showOutput{
-				ID:          skill.ID,
-				Name:        skill.Name,
-				Description: skill.Description,
-				Source:      skill.SourceID,
-				Path:        skill.Path,
-				Archived:    source.Archived,
-				Clients:     make(map[string]clientProjectionView),
+				ID:            skill.ID,
+				Name:          skill.Name,
+				Description:   skill.Description,
+				MetadataIssue: skill.MetadataIssue,
+				Source:        skill.SourceID,
+				Path:          skill.Path,
+				Archived:      source.IsArchived(),
+				Clients:       make(map[string]clientProjectionView),
 			}
 			for _, client := range runtime.catalog.Clients.IDs() {
 				state, stateErr := runtime.projection.State(skill, client)
@@ -93,6 +103,9 @@ func newShowCommand(options *rootOptions) *cobra.Command {
 				return writeJSON(command, result)
 			}
 			fmt.Fprintf(command.OutOrStdout(), "%s\n%s\n%s\n", result.ID, result.Description, result.Path)
+			if result.MetadataIssue != "" {
+				fmt.Fprintf(command.OutOrStdout(), "%s: %s\n", runtime.translator.Text(i18n.MetadataIssueLabel), result.MetadataIssue)
+			}
 			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintf(writer, "%s\t%s\t%s\n", runtime.translator.Text(i18n.ClientHeader), runtime.translator.Text(i18n.StateHeader), runtime.translator.Text(i18n.PathHeader))
 			for _, client := range runtime.catalog.Clients.IDs() {
@@ -160,7 +173,7 @@ func buildStatus(runtime runtime) (statusOutput, error) {
 	for _, client := range runtime.catalog.Clients.IDs() {
 		summary := clientStatus{Client: string(client)}
 		for _, source := range runtime.catalog.Sources {
-			if source.Archived {
+			if source.IsArchived() {
 				continue
 			}
 			for _, skill := range source.Skills {
@@ -186,17 +199,18 @@ func buildStatus(runtime runtime) (statusOutput, error) {
 }
 
 type doctorIssue struct {
-	Skill  string `json:"skill"`
-	Client string `json:"client"`
-	State  string `json:"state"`
-	Path   string `json:"path"`
+	Kind     string `json:"kind"`
+	Resource string `json:"resource"`
+	Client   string `json:"client"`
+	State    string `json:"state"`
+	Path     string `json:"path"`
 }
 
 type doctorOutput struct {
-	Healthy     bool          `json:"healthy"`
-	Project     string        `json:"project"`
-	SourcesRoot string        `json:"sourcesRoot"`
-	Issues      []doctorIssue `json:"issues"`
+	Healthy       bool          `json:"healthy"`
+	Project       string        `json:"project"`
+	ResourcesRoot string        `json:"resourcesRoot"`
+	Issues        []doctorIssue `json:"issues"`
 }
 
 func newDoctorCommand(options *rootOptions) *cobra.Command {
@@ -222,9 +236,9 @@ func newDoctorCommand(options *rootOptions) *cobra.Command {
 				fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.DoctorHealthy))
 			} else {
 				writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
-				fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", runtime.translator.Text(i18n.SkillHeader), runtime.translator.Text(i18n.ClientHeader), runtime.translator.Text(i18n.StateHeader), runtime.translator.Text(i18n.PathHeader))
+				fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", runtime.translator.Text(i18n.KindHeader), runtime.translator.Text(i18n.ResourceHeader), runtime.translator.Text(i18n.ClientHeader), runtime.translator.Text(i18n.StateHeader), runtime.translator.Text(i18n.PathHeader))
 				for _, issue := range result.Issues {
-					fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", issue.Skill, issue.Client, issue.State, issue.Path)
+					fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", issue.Kind, issue.Resource, issue.Client, issue.State, issue.Path)
 				}
 				if err := writer.Flush(); err != nil {
 					return err
@@ -242,12 +256,12 @@ func newDoctorCommand(options *rootOptions) *cobra.Command {
 
 func buildDoctor(runtime runtime) (doctorOutput, error) {
 	result := doctorOutput{
-		Healthy:     true,
-		Project:     runtime.projectRoot,
-		SourcesRoot: runtime.sourcesRoot,
+		Healthy:       true,
+		Project:       runtime.projectRoot,
+		ResourcesRoot: runtime.resources.Root,
 	}
 	for _, source := range runtime.catalog.Sources {
-		if source.Archived {
+		if source.IsArchived() {
 			continue
 		}
 		for _, skill := range source.Skills {
@@ -264,9 +278,41 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 					return doctorOutput{}, err
 				}
 				result.Healthy = false
-				result.Issues = append(result.Issues, doctorIssue{Skill: skill.ID, Client: string(client), State: string(state), Path: path})
+				result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: skill.ID, Client: string(client), State: string(state), Path: path})
 			}
 		}
+	}
+	for _, name := range runtime.mcpCatalog.Names() {
+		for _, clientID := range runtime.catalog.Clients.IDs() {
+			state, err := runtime.mcpManager.State(name, clientID)
+			if err != nil {
+				return doctorOutput{}, err
+			}
+			if state != mcp.StateConflict {
+				continue
+			}
+			path, _, err := runtime.catalog.Clients.MCPProjectFile(runtime.projectRoot, clientID)
+			if err != nil {
+				return doctorOutput{}, err
+			}
+			result.Healthy = false
+			result.Issues = append(result.Issues, doctorIssue{Kind: "mcp", Resource: name, Client: string(clientID), State: string(state), Path: path})
+		}
+	}
+	for _, group := range runtime.prompts.Groups {
+		state, err := runtime.promptMgr.State(group)
+		if err != nil {
+			return doctorOutput{}, err
+		}
+		if state != systemprompt.StatePartial && state != systemprompt.StateConflict && state != systemprompt.StateBroken {
+			continue
+		}
+		path, err := runtime.catalog.Clients.UserPromptTargetDir(runtime.userHome, group.Client)
+		if err != nil {
+			return doctorOutput{}, err
+		}
+		result.Healthy = false
+		result.Issues = append(result.Issues, doctorIssue{Kind: "system-prompt", Resource: group.ID, Client: string(group.Client), State: string(state), Path: path})
 	}
 	return result, nil
 }

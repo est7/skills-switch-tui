@@ -1,31 +1,60 @@
 # skills-switch
 
-`skills-switch` manages project-local Agent Skills as symlink projections from a central source catalog. It keeps project selection state in the filesystem itself: there is no per-project manifest to drift away from the links.
+`skills-switch` manages project-local Agent Skills and MCP servers plus user-global system prompts from a central resource catalog. Skills are projected into the current project, MCP servers are surgically merged into each client's project configuration, and system prompts are projected into each client's user-level directory. There is no per-project manifest to drift away from the real client files.
 
 The TUI is built with Bubble Tea v2, Bubbles v2, and Lip Gloss v2. Human-facing CLI and TUI text supports English and Simplified Chinese.
 
 ## Model
 
-The default source root is `~/.agents/sources`:
+The default resource root is `~/.agents/resources`:
 
 ```text
 ~/.agents/
-└── sources/
-    ├── catalog.yaml
-    ├── local/       # skills you own
-    ├── vendor/      # upstream repositories as git submodules
-    └── archive/     # reference-only skills; never enabled
+└── resources/
+    ├── skills/
+    │   ├── catalog.yaml
+    │   ├── local/
+    │   │   ├── shared/          # local skills supported by every client
+    │   │   ├── codex/           # local skills supported only by Codex
+    │   │   └── pi/              # valid when the pi client is registered
+    │   ├── archived/
+    │   │   ├── shared/          # reference-only collections; never enabled
+    │   │   ├── codex/
+    │   │   └── pi/
+    │   └── vendor/
+    │       ├── shared/<repo>/   # upstream repositories as git submodules
+    │       ├── codex/<repo>/
+    │       └── pi/<repo>/
+    ├── registry.yaml            # client adapters; built-ins work without this file
+    ├── mcp/
+    │   └── mcp.json             # client-neutral MCP definitions
+    └── system-prompts/
+        ├── claude-prompt/
+        │   ├── CLAUDE.md
+        │   └── rules/*.md
+        └── codex-prompt/
+            └── AGENTS.md
 ```
 
-The built-in client registry projects enabled skills into these project directories:
+Inside `resources/skills`, the physical layout remains a strict `kind / client-scope` matrix. TUI and CLI use stable logical source IDs derived from it:
 
-| Client | Project directory |
+| Physical path | Logical source ID |
 | --- | --- |
-| `codex` | `.agents/skills` |
-| `claude` | `.claude/skills` |
-| `gemini` | `.gemini/skills` |
+| `local/shared` | `local-shared` |
+| `local/pi` | `local-pi-only` |
+| `archived/pi/<name>` | `archived-pi-only/<name>` |
+| `vendor/shared/<repo>` | `vendor-shared/<repo>` |
+| `vendor/pi/<repo>` | `vendor-pi-only/<repo>` |
 
-Clients are data, not a closed enum. Add another client without changing Go code:
+The built-in client registry owns both project-local and user-global client adapters:
+
+| Client | Project Skills | Project MCP | User-global system prompts |
+| --- | --- | --- | --- |
+| `codex` | `.agents/skills` | `.codex/config.toml` | `~/.codex/` |
+| `claude` | `.claude/skills` | `.mcp.json` | `~/.claude/` |
+| `gemini` | `.gemini/skills` | `.gemini/settings.json` | `~/.gemini/` |
+
+Clients are data, not a closed enum. Built-ins live in the binary; `resources/registry.yaml` can override them or add another client without changing Go code:
 
 ```yaml
 version: 1
@@ -33,23 +62,25 @@ version: 1
 clients:
   pi:
     projectSkillsDir: .pi/skills
+    userPromptDir: .pi
+```
 
+Skill discovery policy remains separate in `resources/skills/catalog.yaml`:
+
+```yaml
+version: 1
 sources:
-  vendor/worktrunk:
+  vendor-shared/worktrunk:
     branch: main
     discoveryPriority:
       - agents-marketplace
       - claude-marketplace
       - skills-dir
-
-overrides:
-  local/codex-dynamic-workflows:
-    targets:
-      - codex
-    reason: Uses Codex-only workflow APIs.
 ```
 
-When `defaults.targets` is omitted, new skills support every registered client. An override narrows exceptional skills to the clients they actually support.
+Override the complete resource root with `--resources` or `SKILLS_SWITCH_RESOURCES`. The old pre-release `--sources` surface is intentionally unsupported.
+
+When `defaults.targets` is omitted, shared local and vendor Skills support every registered client. A physical scope directory named after a registered client supports only that client, so adding the `pi` adapter automatically makes `local/pi`, `vendor/pi`, and `archived/pi` valid scopes. Their logical IDs become `local-pi-only`, `vendor-pi-only/*`, and `archived-pi-only/*`. Unknown scope directories fail catalog loading instead of being ignored. Per-Skill overrides remain available for exceptions within a shared source. A new MCP serialization format still requires a Go adapter; Pi intentionally has no built-in MCP adapter because Pi core does not implement MCP.
 
 ## Install and build
 
@@ -77,6 +108,24 @@ Add an upstream repository as a submodule tracking `main`. Discovery uses the fi
 5. `skills-dir` — every Skill below the root `skills/` directory
 
 A matched manifest is authoritative. A `skills` array exposes only its declared paths; an explicit empty array exposes no Skills. Marketplace entries resolve their local plugin source and then use that plugin's manifest or conventional `skills/` directory. Lower-priority strategies are not merged into the result.
+
+When a repository has no authoritative manifest, or only a subset of its Skills is wanted, register exact directories with repeatable `--skill-path`. Explicit paths are the complete Skill set for that source and also drive sparse checkout; they cannot be combined with `--discovery-priority`:
+
+```sh
+skills-switch source add https://github.com/majiayu000/spellbook.git \
+  --name spellbook \
+  --skill-path skills/codebase-audit
+```
+
+The default scope is `shared`. Restrict a complete vendor source to a registered client with `--client`; this stores it under the matching physical scope and exposes the corresponding logical ID:
+
+```sh
+skills-switch source add https://example.com/pi-tools.git \
+  --name pi-tools \
+  --client pi
+# physical: vendor/pi/pi-tools
+# logical:  vendor-pi-only/pi-tools
+```
 
 `source add` derives a sparse checkout from the matched manifest and registered Skill paths. Worktrunk therefore checks out its marketplace metadata and registered plugin Skills, without materializing the rest of the working tree:
 
@@ -110,14 +159,15 @@ Inspect and explicitly update vendor sources:
 ```sh
 skills-switch source list
 skills-switch update --dry-run
-skills-switch update vendor/worktrunk
+skills-switch update vendor-shared/worktrunk
+skills-switch source remove vendor-shared/worktrunk
 ```
 
-Launching the TUI never updates submodules. Press `u` on a vendor source, or use `update`, when an update is intended.
+Launching the TUI never updates submodules. Press `u` on a vendor source, or use `update`, when an update is intended. `source remove` refuses dirty submodules and updates the gitlink, `.gitmodules`, and catalog policy as one managed operation.
 
-## Project operations
+## Operations
 
-Run the TUI anywhere inside a Git worktree; the nearest Git root is the managed project:
+Run the TUI anywhere inside a Git worktree. The nearest Git root receives Skills and MCP changes; the System Prompts tab always manages the current user's client directories:
 
 ```sh
 skills-switch
@@ -127,14 +177,26 @@ Common non-interactive commands:
 
 ```sh
 skills-switch list
-skills-switch show vendor/worktrunk/plugins/worktrunk/skills/worktrunk
+skills-switch show vendor-shared/worktrunk/plugins/worktrunk/skills/worktrunk
 skills-switch status
-skills-switch enable --source vendor/worktrunk --client codex --client claude
-skills-switch disable local/codex-dynamic-workflows --client codex
+skills-switch enable --source vendor-shared/worktrunk --client codex --client claude
+skills-switch disable local-shared/make-goal --client codex
+skills-switch mcp list
+skills-switch mcp enable context7 --client claude --client codex --client gemini
+skills-switch mcp disable context7 --client claude --client codex --client gemini
+skills-switch prompt list
+skills-switch prompt enable claude-prompt
+skills-switch prompt disable claude-prompt
 skills-switch doctor
 ```
 
-Source-group and multi-client changes are preflighted as one transaction. A conflict prevents every selected projection from changing; an apply failure rolls back already-applied links.
+Source-group and multi-client changes are preflighted as one transaction. A conflict prevents every selected projection from changing; an apply failure rolls back already-applied links or configuration files.
+
+Skills from different active sources may intentionally share a name. They are alternative providers for the same project link: enabling one atomically switches a link currently owned by another catalog provider. A real directory or a symlink outside the active catalog remains an unmanaged conflict and is never overwritten.
+
+MCP ownership is entry-level. Enabling adds only the selected server; disabling removes it only when the live definition is semantically identical to the catalog definition. Unknown servers, sibling settings, JSONC comments, TOML comments, ordering, and config-file symlinks are preserved. A same-name different definition is an unmanaged conflict and is never overwritten.
+
+Each `<client>-prompt` directory is one atomic user-global group. Markdown files are recursively projected at the same relative path below that client's user prompt root. Existing unmanaged files may coexist at other paths; an unmanaged target at any selected path rejects the whole group without partial links. The non-interactive `prompt` commands do not require a Git project.
 
 Archived sources are hidden by default and reference-only:
 
@@ -147,13 +209,14 @@ skills-switch source list --archive
 
 | Key | Action |
 | --- | --- |
-| `↑` / `↓`, `j` / `k` | Navigate source and skill rows |
+| `Tab` / `Shift+Tab` | Switch Skills, MCP, and System Prompts |
+| `↑` / `↓`, `j` / `k` | Navigate resource rows |
 | `←` / `→`, `h` / `l` | Select a client column |
-| `Space` | Toggle the selected skill or entire source group atomically |
-| `Enter` | Expand or collapse a source |
-| `/` | Search sources and skills |
-| `Tab` / `Shift+Tab` | Cycle all, enabled, issues, and archive views |
-| `u` | Update the selected vendor source |
+| `Space` | Toggle the selected resource or Skill source group atomically |
+| `Enter` | Expand or collapse a Skill source |
+| `/` | Search the active resource tab |
+| `f` | Cycle all, enabled, issues, and Skill archive views |
+| `u` | Update the selected Skill vendor source |
 | `?` | Toggle full help |
 | `q` | Quit |
 
@@ -172,7 +235,7 @@ Accepted values are `auto`, `en`, and `zh`. JSON field names, client IDs, skill 
 
 ## Release
 
-Tags matching `v*` run the test suite and publish macOS, Linux, and Windows archives with GoReleaser. Local release validation can be run with:
+Tags matching `v*` run the test suite and publish macOS, Linux, and Windows archives with GoReleaser. The `est7/homebrew-tap` repository independently follows the latest stable release and regenerates its Formula without a cross-repository token. Local release validation can be run with:
 
 ```sh
 goreleaser check

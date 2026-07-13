@@ -5,21 +5,23 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/est7/skills-switch-tui/internal/client"
 )
 
 func TestLoadDiscoversSourceGroupsAndAppliesCompatibilityOverrides(t *testing.T) {
 	sourcesRoot := t.TempDir()
-	writeSkill(t, filepath.Join(sourcesRoot, "local", "codex-dynamic-workflows"), `---
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "codex-dynamic-workflows"), `---
 name: codex-dynamic-workflows
 description: Run Codex-native workflows.
 ---
 `)
-	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "worktrunk", "skills", "worktrunk"), `---
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "worktrunk", "skills", "worktrunk"), `---
 name: worktrunk
 description: Manage worktrees with Worktrunk.
 ---
 `)
-	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "worktrunk", "skills", "wt-switch-create"), `---
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "worktrunk", "skills", "wt-switch-create"), `---
 name: wt-switch-create
 description: Create and switch worktrees.
 ---
@@ -29,7 +31,7 @@ description: Create and switch worktrees.
 defaults:
   targets: [codex, claude, gemini]
 overrides:
-  local/codex-dynamic-workflows:
+  local-shared/codex-dynamic-workflows:
     targets: [codex]
     reason: Requires Codex goal and collaboration tools.
 `
@@ -37,7 +39,7 @@ overrides:
 		t.Fatal(err)
 	}
 
-	loaded, err := Load(sourcesRoot)
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -46,7 +48,7 @@ overrides:
 		t.Fatalf("source count = %d, want %d", got, want)
 	}
 
-	worktrunk, ok := loaded.Skill("vendor/worktrunk/skills/worktrunk")
+	worktrunk, ok := loaded.Skill("vendor-shared/worktrunk/skills/worktrunk")
 	if !ok {
 		t.Fatal("worktrunk skill was not discovered")
 	}
@@ -54,7 +56,7 @@ overrides:
 		t.Fatalf("worktrunk targets = %v, want all clients", worktrunk.Targets)
 	}
 
-	dynamic, ok := loaded.Skill("local/codex-dynamic-workflows")
+	dynamic, ok := loaded.Skill("local-shared/codex-dynamic-workflows")
 	if !ok {
 		t.Fatal("codex-dynamic-workflows skill was not discovered")
 	}
@@ -66,9 +68,205 @@ overrides:
 	}
 }
 
+func TestLoadDiscoversSharedAndClientOnlyLocalSources(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), `---
+name: portable
+description: Runs in every registered client.
+---
+`)
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "codex", "codex-workflow"), `---
+name: codex-workflow
+description: Uses Codex-native workflow APIs.
+---
+`)
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "pi", "pi-workflow"), `---
+name: pi-workflow
+description: Uses Pi-native workflow APIs.
+---
+`)
+
+	registry, err := client.NewRegistry(map[client.ID]client.Definition{
+		"pi": {ProjectSkillsDir: ".pi/skills"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(sourcesRoot, registry)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	portable, ok := loaded.Skill("local-shared/portable")
+	if !ok {
+		t.Fatal("shared local skill was not discovered")
+	}
+	for _, target := range []Client{ClientCodex, ClientClaude, ClientGemini, Client("pi")} {
+		if !portable.Supports(target) {
+			t.Fatalf("portable does not support %s: %v", target, portable.Targets)
+		}
+	}
+
+	codexWorkflow, ok := loaded.Skill("local-codex-only/codex-workflow")
+	if !ok {
+		t.Fatal("Codex-only local skill was not discovered")
+	}
+	if !codexWorkflow.Supports(ClientCodex) || codexWorkflow.Supports(ClientClaude) || codexWorkflow.Supports(ClientGemini) || codexWorkflow.Supports(Client("pi")) {
+		t.Fatalf("codex-workflow targets = %v, want codex only", codexWorkflow.Targets)
+	}
+
+	piWorkflow, ok := loaded.Skill("local-pi-only/pi-workflow")
+	if !ok {
+		t.Fatal("Pi-only local skill was not discovered")
+	}
+	if !piWorkflow.Supports(Client("pi")) || piWorkflow.Supports(ClientCodex) {
+		t.Fatalf("pi-workflow targets = %v, want pi only", piWorkflow.Targets)
+	}
+
+	piSource, ok := loaded.Source("local-pi-only")
+	if !ok {
+		t.Fatal("logical local-pi-only source was not discovered")
+	}
+	if piSource.Kind != SourceLocal || piSource.Scope != "pi" {
+		t.Fatalf("pi source = kind %q scope %q", piSource.Kind, piSource.Scope)
+	}
+}
+
+func TestLoadDiscoversClientScopedVendorSource(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "pi", "pi-tools", "skills", "pi-tool"), `---
+name: pi-tool
+description: Uses Pi-native APIs.
+---
+`)
+	registry, err := client.NewRegistry(map[client.ID]client.Definition{
+		"pi": {ProjectSkillsDir: ".pi/skills"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(sourcesRoot, registry)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	skill, ok := loaded.Skill("vendor-pi-only/pi-tools/skills/pi-tool")
+	if !ok {
+		t.Fatal("Pi-only vendor skill was not discovered")
+	}
+	if !skill.Supports(Client("pi")) || skill.Supports(ClientCodex) || skill.Supports(ClientClaude) || skill.Supports(ClientGemini) {
+		t.Fatalf("pi-tool targets = %v, want pi only", skill.Targets)
+	}
+	source, ok := loaded.Source("vendor-pi-only/pi-tools")
+	if !ok || source.Kind != SourceVendor || source.Scope != "pi" {
+		t.Fatalf("Pi vendor source = %#v", source)
+	}
+}
+
+func TestLoadRejectsLegacyAndUnknownSourceScopes(t *testing.T) {
+	tests := []struct {
+		name string
+		path []string
+		want string
+	}{
+		{name: "legacy", path: []string{"local-shared", "example"}, want: "legacy source root"},
+		{name: "unknown local client", path: []string{"local", "ghost", "example"}, want: `unknown client "ghost"`},
+		{name: "unknown vendor client", path: []string{"vendor", "ghost", "repo", "example"}, want: `unknown client "ghost"`},
+		{name: "unknown archived client", path: []string{"archived", "ghost", "repo", "example"}, want: `unknown client "ghost"`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sourcesRoot := t.TempDir()
+			parts := append([]string{sourcesRoot}, test.path...)
+			writeSkill(t, filepath.Join(parts...), `---
+name: example
+description: Invalid local source fixture.
+---
+`)
+
+			_, err := Load(sourcesRoot, client.DefaultRegistry())
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load() error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadDegradesMalformedArchivedFrontmatterWithoutBlockingCatalog(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "healthy"), `---
+name: healthy
+description: Active Skill remains available.
+---
+`)
+	writeSkill(t, filepath.Join(sourcesRoot, "archived", "shared", "legacy", "broken"), `---
+name: broken
+description: invalid: unquoted colon
+---
+`)
+
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if _, ok := loaded.Skill("local-shared/healthy"); !ok {
+		t.Fatal("healthy active Skill was not discovered")
+	}
+	broken, ok := loaded.Skill("archived-shared/legacy/broken")
+	if !ok {
+		t.Fatal("malformed archived Skill was not retained")
+	}
+	if broken.MetadataIssue == "" {
+		t.Fatal("malformed archived Skill does not expose its metadata issue")
+	}
+	archived, ok := loaded.Source("archived-shared/legacy")
+	if !ok || !archived.IsArchived() {
+		t.Fatalf("archived source = %#v", archived)
+	}
+}
+
+func TestLoadRejectsUnsafeActiveSkillNameAndDegradesArchivedName(t *testing.T) {
+	t.Run("active", func(t *testing.T) {
+		sourcesRoot := t.TempDir()
+		writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "unsafe", "skills", "escape"), `---
+name: ../../escape
+description: Must not control the projection path.
+---
+`)
+
+		_, err := Load(sourcesRoot, client.DefaultRegistry())
+		if err == nil || !strings.Contains(err.Error(), `invalid skill name "../../escape"`) {
+			t.Fatalf("Load() error = %v, want unsafe name rejection", err)
+		}
+	})
+
+	t.Run("archived", func(t *testing.T) {
+		sourcesRoot := t.TempDir()
+		writeSkill(t, filepath.Join(sourcesRoot, "archived", "shared", "legacy", "escape"), `---
+name: ../../escape
+description: Retain as reference-only metadata.
+---
+`)
+
+		loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+		if err != nil {
+			t.Fatal(err)
+		}
+		skill, ok := loaded.Skill("archived-shared/legacy/escape")
+		if !ok {
+			t.Fatal("archived skill was not retained")
+		}
+		if skill.Name != "escape" || !strings.Contains(skill.MetadataIssue, "invalid skill name") {
+			t.Fatalf("archived skill = name %q issue %q", skill.Name, skill.MetadataIssue)
+		}
+	})
+}
+
 func TestLoadUsesFirstAvailableDiscoveryStrategyAndOnlyDeclaredSkills(t *testing.T) {
 	sourcesRoot := t.TempDir()
-	vendorRoot := filepath.Join(sourcesRoot, "vendor", "mixed")
+	vendorRoot := filepath.Join(sourcesRoot, "vendor", "shared", "mixed")
 	writeSkill(t, filepath.Join(vendorRoot, "skills", "registered"), `---
 name: registered
 description: Declared by the preferred plugin manifest.
@@ -97,7 +295,7 @@ description: Declared by a lower-priority marketplace.
 }`)
 	config := `version: 1
 sources:
-  vendor/mixed:
+  vendor-shared/mixed:
     discoveryPriority:
       - claude-plugin
       - agents-marketplace
@@ -107,16 +305,16 @@ sources:
 		t.Fatal(err)
 	}
 
-	loaded, err := Load(sourcesRoot)
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if _, ok := loaded.Skill("vendor/mixed/skills/registered"); !ok {
+	if _, ok := loaded.Skill("vendor-shared/mixed/skills/registered"); !ok {
 		t.Fatal("manifest-declared skill was not discovered")
 	}
 	for _, id := range []string{
-		"vendor/mixed/skills/unregistered",
-		"vendor/mixed/plugins/codex/skills/codex-only",
+		"vendor-shared/mixed/skills/unregistered",
+		"vendor-shared/mixed/plugins/codex/skills/codex-only",
 	} {
 		if _, ok := loaded.Skill(id); ok {
 			t.Fatalf("lower-authority skill %q was discovered", id)
@@ -124,9 +322,83 @@ sources:
 	}
 }
 
+func TestLoadUsesExplicitSkillPathsAsAuthoritativeVendorRegistration(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	vendorRoot := filepath.Join(sourcesRoot, "vendor", "shared", "spellbook")
+	writeSkill(t, filepath.Join(vendorRoot, "skills", "codebase-audit"), `---
+name: codebase-audit
+description: Registered explicitly.
+---
+`)
+	writeSkill(t, filepath.Join(vendorRoot, "skills", "unrelated"), `---
+name: unrelated
+description: Present in the repository but not registered.
+---
+`)
+	config := `version: 1
+sources:
+  vendor-shared/spellbook:
+    branch: main
+    skillPaths:
+      - skills/codebase-audit
+`
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if _, ok := loaded.Skill("vendor-shared/spellbook/skills/codebase-audit"); !ok {
+		t.Fatal("explicitly registered skill was not discovered")
+	}
+	if _, ok := loaded.Skill("vendor-shared/spellbook/skills/unrelated"); ok {
+		t.Fatal("unregistered skill was discovered")
+	}
+	source, ok := loaded.Source("vendor-shared/spellbook")
+	if !ok {
+		t.Fatal("spellbook source was not discovered")
+	}
+	if source.DiscoveryStrategy != DiscoveryExplicit {
+		t.Fatalf("discovery strategy = %q, want %q", source.DiscoveryStrategy, DiscoveryExplicit)
+	}
+	if got, want := source.SkillPaths, []string{"skills/codebase-audit"}; len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("skill paths = %v, want %v", got, want)
+	}
+
+	plan, err := PlanVendorDiscovery(vendorRoot, nil, source.SkillPaths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := plan.SparsePaths, []string{"skills/codebase-audit"}; len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("sparse paths = %v, want %v", got, want)
+	}
+}
+
+func TestPlanVendorDiscoveryAllowsExplicitRootSkillWithoutSparseCheckout(t *testing.T) {
+	vendorRoot := t.TempDir()
+	writeSkill(t, vendorRoot, `---
+name: root-skill
+description: The repository root is the Skill directory.
+---
+`)
+
+	plan, err := PlanVendorDiscovery(vendorRoot, nil, []string{"."})
+	if err != nil {
+		t.Fatalf("PlanVendorDiscovery() error = %v", err)
+	}
+	if plan.Strategy != DiscoveryExplicit {
+		t.Fatalf("strategy = %q, want %q", plan.Strategy, DiscoveryExplicit)
+	}
+	if len(plan.SparsePaths) != 0 {
+		t.Fatalf("sparse paths = %v, want full root checkout", plan.SparsePaths)
+	}
+}
+
 func TestLoadDiscoversSkillsFromAgentsMarketplacePluginSources(t *testing.T) {
 	sourcesRoot := t.TempDir()
-	vendorRoot := filepath.Join(sourcesRoot, "vendor", "worktrunk")
+	vendorRoot := filepath.Join(sourcesRoot, "vendor", "shared", "worktrunk")
 	writeSkill(t, filepath.Join(vendorRoot, "skills", "distribution-copy"), `---
 name: distribution-copy
 description: A root copy that is outside the selected marketplace.
@@ -154,36 +426,36 @@ description: Registered through the Codex marketplace.
 }`)
 	config := `version: 1
 sources:
-  vendor/worktrunk:
+  vendor-shared/worktrunk:
     discoveryPriority: [agents-marketplace, skills-dir]
 `
 	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	loaded, err := Load(sourcesRoot)
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
 	for _, id := range []string{
-		"vendor/worktrunk/plugins/worktrunk/skills/worktrunk",
-		"vendor/worktrunk/plugins/worktrunk/skills/wt-switch-create",
+		"vendor-shared/worktrunk/plugins/worktrunk/skills/worktrunk",
+		"vendor-shared/worktrunk/plugins/worktrunk/skills/wt-switch-create",
 	} {
 		if _, ok := loaded.Skill(id); !ok {
 			t.Fatalf("marketplace skill %q was not discovered", id)
 		}
 	}
-	if _, ok := loaded.Skill("vendor/worktrunk/skills/distribution-copy"); ok {
+	if _, ok := loaded.Skill("vendor-shared/worktrunk/skills/distribution-copy"); ok {
 		t.Fatal("lower-priority root skills directory was discovered")
 	}
-	source, ok := loaded.Source("vendor/worktrunk")
+	source, ok := loaded.Source("vendor-shared/worktrunk")
 	if !ok {
 		t.Fatal("worktrunk source was not discovered")
 	}
 	if got, want := source.DiscoveryStrategy, DiscoveryAgentsMarketplace; got != want {
 		t.Fatalf("discovery strategy = %q, want %q", got, want)
 	}
-	plan, err := PlanVendorDiscovery(vendorRoot, source.DiscoveryPriority)
+	plan, err := PlanVendorDiscovery(vendorRoot, source.DiscoveryPriority, nil)
 	if err != nil {
 		t.Fatalf("PlanVendorDiscovery() error = %v", err)
 	}
@@ -222,7 +494,7 @@ description: Not registered by manifest.
 	plan, err := PlanVendorDiscovery(vendorRoot, []DiscoveryStrategy{
 		DiscoveryClaudePlugin,
 		DiscoverySkillsDir,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("PlanVendorDiscovery() error = %v", err)
 	}
@@ -242,7 +514,7 @@ description: Not registered by manifest.
 
 func TestLoadTreatsExplicitEmptyPluginSkillsAsAuthoritative(t *testing.T) {
 	sourcesRoot := t.TempDir()
-	vendorRoot := filepath.Join(sourcesRoot, "vendor", "empty")
+	vendorRoot := filepath.Join(sourcesRoot, "vendor", "shared", "empty")
 	writeSkill(t, filepath.Join(vendorRoot, "skills", "must-stay-hidden"), `---
 name: must-stay-hidden
 description: Not registered by the plugin.
@@ -254,25 +526,25 @@ description: Not registered by the plugin.
 }`)
 	config := `version: 1
 sources:
-  vendor/empty:
+  vendor-shared/empty:
     discoveryPriority: [claude-plugin, skills-dir]
 `
 	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	loaded, err := Load(sourcesRoot)
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if _, ok := loaded.Skill("vendor/empty/skills/must-stay-hidden"); ok {
+	if _, ok := loaded.Skill("vendor-shared/empty/skills/must-stay-hidden"); ok {
 		t.Fatal("explicit empty registration fell back to the skills directory")
 	}
 }
 
 func TestLoadRejectsManifestSkillSymlinkOutsideSource(t *testing.T) {
 	sourcesRoot := t.TempDir()
-	vendorRoot := filepath.Join(sourcesRoot, "vendor", "unsafe")
+	vendorRoot := filepath.Join(sourcesRoot, "vendor", "shared", "unsafe")
 	outside := filepath.Join(t.TempDir(), "outside")
 	writeSkill(t, outside, `---
 name: outside
@@ -291,14 +563,14 @@ description: Must not escape the source boundary.
 }`)
 	config := `version: 1
 sources:
-  vendor/unsafe:
+  vendor-shared/unsafe:
     discoveryPriority: [claude-plugin]
 `
 	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := Load(sourcesRoot)
+	_, err := Load(sourcesRoot, client.DefaultRegistry())
 	if err == nil || !strings.Contains(err.Error(), "symlink target escapes source root") {
 		t.Fatalf("Load() error = %v, want source-boundary rejection", err)
 	}
@@ -306,19 +578,19 @@ sources:
 
 func TestLoadMarksArchivedSourcesAndLoadsVendorUpdatePolicy(t *testing.T) {
 	sourcesRoot := t.TempDir()
-	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "worktrunk", "skills", "worktrunk"), `---
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "worktrunk", "skills", "worktrunk"), `---
 name: worktrunk
 description: Manage worktrees with Worktrunk.
 ---
 `)
-	writeSkill(t, filepath.Join(sourcesRoot, "archive", "waza", "read"), `---
+	writeSkill(t, filepath.Join(sourcesRoot, "archived", "shared", "waza", "read"), `---
 name: waza-read
 description: Archived reference material.
 ---
 `)
 	config := `version: 1
 sources:
-  vendor/worktrunk:
+  vendor-shared/worktrunk:
     branch: main
     sparsePaths: [skills]
 `
@@ -326,14 +598,14 @@ sources:
 		t.Fatal(err)
 	}
 
-	loaded, err := Load(sourcesRoot)
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
 
-	worktrunk, ok := loaded.Source("vendor/worktrunk")
+	worktrunk, ok := loaded.Source("vendor-shared/worktrunk")
 	if !ok {
-		t.Fatal("vendor/worktrunk source was not discovered")
+		t.Fatal("vendor-shared/worktrunk source was not discovered")
 	}
 	if got, want := worktrunk.Branch, "main"; got != want {
 		t.Fatalf("branch = %q, want %q", got, want)
@@ -344,7 +616,7 @@ sources:
 	if got, want := worktrunk.DiscoveryStrategy, DiscoverySkillsDir; got != want {
 		t.Fatalf("discovery strategy = %q, want %q", got, want)
 	}
-	plan, err := PlanVendorDiscovery(worktrunk.Path, worktrunk.DiscoveryPriority)
+	plan, err := PlanVendorDiscovery(worktrunk.Path, worktrunk.DiscoveryPriority, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,44 +624,68 @@ sources:
 		t.Fatalf("derived sparse paths = %v, want %v", got, want)
 	}
 
-	archived, ok := loaded.Source("archive/waza")
+	archived, ok := loaded.Source("archived-shared/waza")
 	if !ok {
-		t.Fatal("archive/waza source was not discovered")
+		t.Fatal("archived-shared/waza source was not discovered")
 	}
-	if !archived.Archived {
-		t.Fatal("archive/waza was not marked archived")
+	if !archived.IsArchived() {
+		t.Fatal("archived-shared/waza was not marked archived")
 	}
 }
 
 func TestLoadRegistersConfiguredClientAndIncludesItInDefaultTargets(t *testing.T) {
 	sourcesRoot := t.TempDir()
-	writeSkill(t, filepath.Join(sourcesRoot, "local", "portable"), `---
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), `---
 name: portable
 description: Works with every registered client.
 ---
 `)
-	config := `version: 1
-clients:
-  pi:
-    projectSkillsDir: .pi/skills
-`
-	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+	registry, err := client.NewRegistry(map[client.ID]client.Definition{
+		"pi": {ProjectSkillsDir: ".pi/skills"},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	loaded, err := Load(sourcesRoot)
+	loaded, err := Load(sourcesRoot, registry)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !loaded.Clients.Has(Client("pi")) {
 		t.Fatal("configured pi client was not registered")
 	}
-	skill, ok := loaded.Skill("local/portable")
+	skill, ok := loaded.Skill("local-shared/portable")
 	if !ok {
 		t.Fatal("portable skill was not discovered")
 	}
 	if !skill.Supports(Client("pi")) {
 		t.Fatalf("portable targets = %v, want pi included by default", skill.Targets)
+	}
+}
+
+func TestLoadRejectsClientRegistryFieldsInSkillCatalog(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	config := "version: 1\nclients:\n  pi:\n    projectSkillsDir: .pi/skills\n"
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err == nil || !strings.Contains(err.Error(), "field clients not found") {
+		t.Fatalf("Load() error = %v, want client registry rejection", err)
+	}
+}
+
+func TestLoadRejectsMultipleSkillCatalogDocuments(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	config := "version: 1\n---\nversion: 1\n"
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err == nil || !strings.Contains(err.Error(), "multiple YAML documents") {
+		t.Fatalf("Load() error = %v, want multiple-document rejection", err)
 	}
 }
 

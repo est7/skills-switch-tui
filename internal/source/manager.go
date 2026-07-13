@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/est7/skills-switch-tui/internal/catalog"
+	"github.com/est7/skills-switch-tui/internal/client"
 )
 
 var sourceNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -33,20 +34,23 @@ func (GitCommander) Output(ctx context.Context, directory string, arguments ...s
 }
 
 type Manager struct {
-	AgentsRoot  string
-	SourcesRoot string
-	Git         Commander
+	RepositoryRoot string
+	SkillsRoot     string
+	Git            Commander
+	Clients        client.Registry
 }
 
 type AddRequest struct {
 	Name              string
 	URL               string
 	Branch            string
+	Scope             string
+	SkillPaths        []string
 	SparsePaths       []string
 	DiscoveryPriority []catalog.DiscoveryStrategy
 }
 
-func (m Manager) Add(ctx context.Context, request AddRequest) error {
+func (m Manager) Add(ctx context.Context, request AddRequest) (returnErr error) {
 	if !sourceNamePattern.MatchString(request.Name) {
 		return fmt.Errorf("invalid source name %q", request.Name)
 	}
@@ -56,31 +60,54 @@ func (m Manager) Add(ctx context.Context, request AddRequest) error {
 	if request.Branch == "" {
 		request.Branch = "main"
 	}
+	if request.Scope == "" {
+		request.Scope = "shared"
+	}
+	if request.Scope != "shared" && !m.Clients.Has(client.ID(request.Scope)) {
+		return fmt.Errorf("unknown client %q", request.Scope)
+	}
 	if err := catalog.ValidateDiscoveryPriority(request.DiscoveryPriority); err != nil {
 		return fmt.Errorf("discovery priority: %w", err)
+	}
+	if len(request.SkillPaths) > 0 && len(request.DiscoveryPriority) > 0 {
+		return errors.New("skill paths and discovery priority are mutually exclusive")
 	}
 	if m.Git == nil {
 		m.Git = GitCommander{}
 	}
-	targetPath := filepath.Join(m.SourcesRoot, "vendor", request.Name)
+	repositoryRoot, err := m.repositoryRoot(ctx)
+	if err != nil {
+		return err
+	}
+	sourceID := catalog.ScopedSourceID(catalog.SourceVendor, request.Scope, request.Name)
+	targetPath := filepath.Join(m.SkillsRoot, "vendor", request.Scope, request.Name)
 	if _, err := os.Lstat(targetPath); err == nil {
 		return fmt.Errorf("source path already exists: %s", targetPath)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect source path: %w", err)
 	}
-	if err := catalog.ValidateSourceRegistration(m.SourcesRoot, "vendor/"+request.Name); err != nil {
+	if err := catalog.ValidateSourceRegistration(m.SkillsRoot, sourceID); err != nil {
 		return err
 	}
-	relativePath, err := filepath.Rel(m.AgentsRoot, targetPath)
+	relativePath, err := filepath.Rel(repositoryRoot, targetPath)
 	if err != nil || strings.HasPrefix(relativePath, "..") {
-		return fmt.Errorf("sources root must be inside agents root: %s", m.SourcesRoot)
+		return fmt.Errorf("skills root must be inside repository root %s: %s", repositoryRoot, m.SkillsRoot)
 	}
-	if _, err := m.Git.Output(ctx, m.AgentsRoot,
+	if _, err := m.Git.Output(ctx, repositoryRoot,
 		"submodule", "add", "-b", request.Branch, request.URL, filepath.ToSlash(relativePath),
 	); err != nil {
 		return err
 	}
-	discovery, err := catalog.PlanVendorDiscovery(targetPath, request.DiscoveryPriority)
+	completed := false
+	defer func() {
+		if completed {
+			return
+		}
+		if _, rollbackErr := m.Git.Output(context.WithoutCancel(ctx), repositoryRoot, "rm", "--", filepath.ToSlash(relativePath)); rollbackErr != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("rollback added submodule: %w", rollbackErr))
+		}
+	}()
+	discovery, err := catalog.PlanVendorDiscovery(targetPath, request.DiscoveryPriority, request.SkillPaths)
 	if err != nil {
 		return err
 	}
@@ -94,11 +121,16 @@ func (m Manager) Add(ctx context.Context, request AddRequest) error {
 			return err
 		}
 	}
-	return catalog.RegisterSource(m.SourcesRoot, "vendor/"+request.Name, catalog.SourcePolicy{
+	if err := catalog.RegisterSource(m.SkillsRoot, sourceID, catalog.SourcePolicy{
 		Branch:            request.Branch,
+		SkillPaths:        request.SkillPaths,
 		SparsePaths:       request.SparsePaths,
 		DiscoveryPriority: request.DiscoveryPriority,
-	})
+	}); err != nil {
+		return err
+	}
+	completed = true
+	return nil
 }
 
 func mergeSparsePaths(groups ...[]string) []string {
@@ -131,8 +163,47 @@ type DirtyError struct {
 	SourceIDs []string
 }
 
+func (m Manager) Remove(ctx context.Context, source catalog.Source) error {
+	if source.IsArchived() || !source.IsVendor() {
+		return fmt.Errorf("source %s is not a removable vendor source", source.ID)
+	}
+	if m.Git == nil {
+		m.Git = GitCommander{}
+	}
+	status, err := m.Git.Output(ctx, source.Path, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", source.ID, err)
+	}
+	if strings.TrimSpace(string(status)) != "" {
+		return &DirtyError{SourceIDs: []string{source.ID}}
+	}
+	repositoryRoot, err := m.repositoryRoot(ctx)
+	if err != nil {
+		return err
+	}
+	relativePath, err := filepath.Rel(repositoryRoot, source.Path)
+	if err != nil || relativePath == "." || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("source path is outside repository root %s: %s", repositoryRoot, source.Path)
+	}
+	if _, err := m.Git.Output(ctx, repositoryRoot, "rm", "--", filepath.ToSlash(relativePath)); err != nil {
+		return fmt.Errorf("remove %s submodule: %w", source.ID, err)
+	}
+	if err := catalog.UnregisterSource(m.SkillsRoot, source.ID); err != nil {
+		_, restoreErr := m.Git.Output(ctx, repositoryRoot, "restore", "--staged", "--worktree", "--", ".gitmodules", filepath.ToSlash(relativePath))
+		if restoreErr == nil {
+			_, restoreErr = m.Git.Output(ctx, repositoryRoot, "submodule", "update", "--init", "--", filepath.ToSlash(relativePath))
+		}
+		operationErr := fmt.Errorf("unregister %s after removing submodule: %w", source.ID, err)
+		if restoreErr != nil {
+			return errors.Join(operationErr, fmt.Errorf("restore removed submodule: %w", restoreErr))
+		}
+		return operationErr
+	}
+	return nil
+}
+
 func (e *DirtyError) Error() string {
-	return "dirty vendor sources block update: " + strings.Join(e.SourceIDs, ", ")
+	return "dirty vendor sources block the operation: " + strings.Join(e.SourceIDs, ", ")
 }
 
 func (m Manager) Update(ctx context.Context, sources []catalog.Source, dryRun bool) ([]UpdateResult, error) {
@@ -142,7 +213,7 @@ func (m Manager) Update(ctx context.Context, sources []catalog.Source, dryRun bo
 	results := make([]UpdateResult, 0, len(sources))
 	dirty := make([]string, 0)
 	for _, source := range sources {
-		if source.Archived || !strings.HasPrefix(source.ID, "vendor/") {
+		if source.IsArchived() || !source.IsVendor() {
 			continue
 		}
 		status, err := m.Git.Output(ctx, source.Path, "status", "--porcelain")
@@ -188,20 +259,24 @@ func (m Manager) Update(ctx context.Context, sources []catalog.Source, dryRun bo
 		if !ok {
 			return nil, fmt.Errorf("source disappeared during update: %s", result.SourceID)
 		}
-		relativePath, err := filepath.Rel(m.AgentsRoot, source.Path)
-		if err != nil || strings.HasPrefix(relativePath, "..") {
-			return nil, fmt.Errorf("source path is outside agents root: %s", source.Path)
+		repositoryRoot, err := m.repositoryRoot(ctx)
+		if err != nil {
+			return nil, err
 		}
-		if _, err := m.Git.Output(ctx, m.AgentsRoot,
+		relativePath, err := filepath.Rel(repositoryRoot, source.Path)
+		if err != nil || strings.HasPrefix(relativePath, "..") {
+			return nil, fmt.Errorf("source path is outside repository root %s: %s", repositoryRoot, source.Path)
+		}
+		if _, err := m.Git.Output(ctx, repositoryRoot,
 			"submodule", "update", "--init", "--remote", "--", filepath.ToSlash(relativePath),
 		); err != nil {
 			return nil, fmt.Errorf("update %s: %w", source.ID, err)
 		}
-		if len(source.DiscoveryPriority) > 0 || len(source.SparsePaths) > 0 {
+		if len(source.DiscoveryPriority) > 0 || len(source.SkillPaths) > 0 || len(source.SparsePaths) > 0 {
 			if _, err := m.Git.Output(ctx, source.Path, "sparse-checkout", "disable"); err != nil {
 				return nil, fmt.Errorf("expand %s sparse checkout: %w", source.ID, err)
 			}
-			discovery, err := catalog.PlanVendorDiscovery(source.Path, source.DiscoveryPriority)
+			discovery, err := catalog.PlanVendorDiscovery(source.Path, source.DiscoveryPriority, source.SkillPaths)
 			if err != nil {
 				return nil, fmt.Errorf("recompute %s discovery: %w", source.ID, err)
 			}
@@ -218,6 +293,21 @@ func (m Manager) Update(ctx context.Context, sources []catalog.Source, dryRun bo
 		}
 	}
 	return results, nil
+}
+
+func (m Manager) repositoryRoot(ctx context.Context) (string, error) {
+	if m.RepositoryRoot != "" {
+		return m.RepositoryRoot, nil
+	}
+	output, err := m.Git.Output(ctx, m.SkillsRoot, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", fmt.Errorf("resolve catalog repository root: %w", err)
+	}
+	root := strings.TrimSpace(string(output))
+	if root == "" {
+		return "", errors.New("resolve catalog repository root: git returned an empty path")
+	}
+	return root, nil
 }
 
 func findSource(sources []catalog.Source, id string) (catalog.Source, bool) {

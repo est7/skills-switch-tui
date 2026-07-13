@@ -11,8 +11,18 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/est7/skills-switch-tui/internal/catalog"
 	"github.com/est7/skills-switch-tui/internal/i18n"
+	"github.com/est7/skills-switch-tui/internal/mcp"
 	"github.com/est7/skills-switch-tui/internal/projection"
 	"github.com/est7/skills-switch-tui/internal/source"
+	"github.com/est7/skills-switch-tui/internal/systemprompt"
+)
+
+type resourceTab int
+
+const (
+	tabSkills resourceTab = iota
+	tabMCP
+	tabSystemPrompts
 )
 
 type filterMode int
@@ -60,8 +70,14 @@ type updateFinishedMsg struct {
 type Model struct {
 	catalog     catalog.Catalog
 	project     string
+	userHome    string
 	projection  projection.Manager
+	mcpCatalog  mcp.Catalog
+	mcpManager  mcp.Manager
+	prompts     systemprompt.Catalog
+	promptMgr   systemprompt.Manager
 	updater     *source.Manager
+	tab         resourceTab
 	clientIndex int
 	cursor      int
 	offset      int
@@ -84,7 +100,15 @@ type Model struct {
 	cancel      context.CancelFunc
 }
 
-func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Manager, updater *source.Manager, translator i18n.Translator) Model {
+type Resources struct {
+	MCPCatalog    mcp.Catalog
+	MCPManager    mcp.Manager
+	Prompts       systemprompt.Catalog
+	PromptManager systemprompt.Manager
+	UserHome      string
+}
+
+func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Manager, updater *source.Manager, translator i18n.Translator, resources ...Resources) Model {
 	search := textinput.New()
 	search.Prompt = "/ "
 	search.Placeholder = translator.Text(i18n.SearchPlaceholder)
@@ -96,7 +120,7 @@ func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Man
 	helpModel.ShowAll = false
 	helpModel.SetWidth(100)
 	operationContext, cancel := context.WithCancel(context.Background())
-	return Model{
+	model := Model{
 		catalog:    loaded,
 		project:    projectRoot,
 		projection: manager,
@@ -114,6 +138,14 @@ func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Man
 		context:    operationContext,
 		cancel:     cancel,
 	}
+	if len(resources) > 0 {
+		model.mcpCatalog = resources[0].MCPCatalog
+		model.mcpManager = resources[0].MCPManager
+		model.prompts = resources[0].Prompts
+		model.promptMgr = resources[0].PromptManager
+		model.userHome = resources[0].UserHome
+	}
+	return model
 }
 
 func (m Model) Init() tea.Cmd {
@@ -147,7 +179,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				changed++
 			}
 		}
-		if reloaded, err := catalog.Load(m.catalog.Root); err != nil {
+		if reloaded, err := catalog.Load(m.catalog.Root, m.catalog.Clients); err != nil {
 			m.err = fmt.Errorf("reload catalog after update: %w", err)
 			m.status = m.translator.Text(i18n.UpdateReloadFailed)
 			return m, nil
@@ -187,9 +219,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.searching = true
 		return m, m.search.Focus()
 	case "tab":
-		m.cycleFilter(1)
+		m.cycleResource(1)
 	case "shift+tab":
-		m.cycleFilter(-1)
+		m.cycleResource(-1)
+	case "f":
+		m.cycleFilter(1)
 	case "up", "k":
 		m.moveCursor(-1)
 	case "down", "j":
@@ -232,7 +266,10 @@ func (m Model) updateSearch(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cycleFilter(delta int) {
-	count := int(filterArchive) + 1
+	count := int(filterIssues) + 1
+	if m.tab == tabSkills {
+		count = int(filterArchive) + 1
+	}
 	next := (int(m.filter) + delta + count) % count
 	m.filter = filterMode(next)
 	m.cursor = 0
@@ -240,14 +277,25 @@ func (m *Model) cycleFilter(delta int) {
 	m.status = m.translator.Text(i18n.FilterSelected, m.filterLabel(m.filter))
 }
 
+func (m *Model) cycleResource(delta int) {
+	count := int(tabSystemPrompts) + 1
+	m.tab = resourceTab((int(m.tab) + delta + count) % count)
+	if m.tab != tabSkills && m.filter == filterArchive {
+		m.filter = filterAll
+	}
+	m.cursor = 0
+	m.offset = 0
+	m.status = m.translator.Text(i18n.Ready)
+}
+
 func (m *Model) moveCursor(delta int) {
-	rows := m.rows()
-	if len(rows) == 0 {
+	rowCount := m.activeRowCount()
+	if rowCount == 0 {
 		m.cursor = 0
 		return
 	}
-	m.cursor = (m.cursor + delta + len(rows)) % len(rows)
-	m.ensureCursorVisible(len(rows))
+	m.cursor = (m.cursor + delta + rowCount) % rowCount
+	m.ensureCursorVisible(rowCount)
 }
 
 func (m *Model) moveClient(delta int) {
@@ -257,6 +305,9 @@ func (m *Model) moveClient(delta int) {
 }
 
 func (m *Model) toggleExpanded() {
+	if m.tab != tabSkills {
+		return
+	}
 	selected, ok := m.selectedRow()
 	if !ok || selected.kind != sourceRow {
 		return
@@ -267,6 +318,18 @@ func (m *Model) toggleExpanded() {
 }
 
 func (m *Model) toggleSelection() {
+	switch m.tab {
+	case tabMCP:
+		m.toggleMCPSelection()
+		return
+	case tabSystemPrompts:
+		m.togglePromptSelection()
+		return
+	}
+	m.toggleSkillSelection()
+}
+
+func (m *Model) toggleSkillSelection() {
 	selected, ok := m.selectedRow()
 	if !ok {
 		m.status = m.translator.Text(i18n.NoMatchingSkills)
@@ -334,7 +397,7 @@ func (m *Model) toggleSelection() {
 		skills = []catalog.Skill{skill}
 		enable = state != projection.StateEnabled && state != projection.StateIncompatibleEnabled
 	}
-	if source.Archived && enable {
+	if source.IsArchived() && enable {
 		m.err = errors.New(m.translator.Text(i18n.ArchiveReferenceError, source.ID))
 		m.status = m.translator.Text(i18n.ArchiveCannotEnable)
 		return
@@ -352,7 +415,77 @@ func (m *Model) toggleSelection() {
 	m.status = m.translator.Text(resultKey, len(skills), client)
 }
 
+func (m *Model) toggleMCPSelection() {
+	names := m.mcpNames()
+	if len(names) == 0 || m.cursor >= len(names) {
+		m.status = m.translator.Text(i18n.NoSelection)
+		return
+	}
+	name := names[m.cursor]
+	clientID := m.currentClient()
+	state, err := m.mcpManager.State(name, clientID)
+	if err != nil {
+		m.err = err
+		m.status = m.translator.Text(i18n.InspectProjectFailed)
+		return
+	}
+	if state == mcp.StateIncompatible {
+		m.err = errors.New(m.translator.Text(i18n.ResourceIncompatible, name, clientID))
+		m.status = m.translator.Text(i18n.NoChangesApplied)
+		return
+	}
+	enable := state != mcp.StateEnabled
+	if err := m.mcpManager.Apply([]mcp.Operation{{Server: name, Client: clientID, Enabled: enable}}); err != nil {
+		m.err = err
+		m.status = m.translator.Text(i18n.NoChangesApplied)
+		return
+	}
+	m.err = nil
+	key := i18n.DisabledResource
+	if enable {
+		key = i18n.EnabledResource
+	}
+	m.status = m.translator.Text(key, name, clientID)
+}
+
+func (m *Model) togglePromptSelection() {
+	groups := m.promptGroups()
+	if len(groups) == 0 || m.cursor >= len(groups) {
+		m.status = m.translator.Text(i18n.NoSelection)
+		return
+	}
+	group := groups[m.cursor]
+	clientID := m.currentClient()
+	if group.Client != clientID {
+		m.err = errors.New(m.translator.Text(i18n.ResourceIncompatible, group.ID, clientID))
+		m.status = m.translator.Text(i18n.NoChangesApplied)
+		return
+	}
+	state, err := m.promptMgr.State(group)
+	if err != nil {
+		m.err = err
+		m.status = m.translator.Text(i18n.InspectProjectFailed)
+		return
+	}
+	enable := state != systemprompt.StateEnabled
+	if err := m.promptMgr.SetEnabled([]systemprompt.Group{group}, enable); err != nil {
+		m.err = err
+		m.status = m.translator.Text(i18n.NoChangesApplied)
+		return
+	}
+	m.err = nil
+	key := i18n.DisabledResource
+	if enable {
+		key = i18n.EnabledResource
+	}
+	m.status = m.translator.Text(key, group.ID, clientID)
+}
+
 func (m Model) startUpdate() (tea.Model, tea.Cmd) {
+	if m.tab != tabSkills {
+		m.status = m.translator.Text(i18n.UpdatesUnavailable)
+		return m, nil
+	}
 	if m.updating {
 		return m, nil
 	}
@@ -366,7 +499,7 @@ func (m Model) startUpdate() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	selectedSource := m.catalog.Sources[selected.sourceIndex]
-	if selectedSource.Archived || !strings.HasPrefix(selectedSource.ID, "vendor/") {
+	if selectedSource.IsArchived() || !selectedSource.IsVendor() {
 		m.status = m.translator.Text(i18n.VendorOnlyUpdate)
 		return m, nil
 	}
@@ -393,16 +526,80 @@ func (m Model) selectedRow() (row, bool) {
 }
 
 func (m *Model) clampCursor() {
-	rows := m.rows()
-	if len(rows) == 0 {
+	rowCount := m.activeRowCount()
+	if rowCount == 0 {
 		m.cursor = 0
 		m.offset = 0
 		return
 	}
-	if m.cursor >= len(rows) {
-		m.cursor = len(rows) - 1
+	if m.cursor >= rowCount {
+		m.cursor = rowCount - 1
 	}
-	m.ensureCursorVisible(len(rows))
+	m.ensureCursorVisible(rowCount)
+}
+
+func (m Model) activeRowCount() int {
+	switch m.tab {
+	case tabMCP:
+		return len(m.mcpNames())
+	case tabSystemPrompts:
+		return len(m.promptGroups())
+	default:
+		return len(m.rows())
+	}
+}
+
+func (m Model) mcpNames() []string {
+	query := strings.ToLower(strings.TrimSpace(m.search.Value()))
+	result := make([]string, 0, len(m.mcpCatalog.Servers))
+	for _, name := range m.mcpCatalog.Names() {
+		if query != "" && !containsFold(name, query) {
+			continue
+		}
+		if !m.mcpMatchesFilter(name) {
+			continue
+		}
+		result = append(result, name)
+	}
+	return result
+}
+
+func (m Model) mcpMatchesFilter(name string) bool {
+	if m.filter == filterAll {
+		return true
+	}
+	for _, clientID := range m.catalog.Clients.IDs() {
+		state, err := m.mcpManager.State(name, clientID)
+		if err != nil {
+			return m.filter == filterIssues
+		}
+		if m.filter == filterEnabled && state == mcp.StateEnabled {
+			return true
+		}
+		if m.filter == filterIssues && state == mcp.StateConflict {
+			return true
+		}
+	}
+	return false
+}
+
+func (m Model) promptGroups() []systemprompt.Group {
+	query := strings.ToLower(strings.TrimSpace(m.search.Value()))
+	result := make([]systemprompt.Group, 0, len(m.prompts.Groups))
+	for _, group := range m.prompts.Groups {
+		if query != "" && !containsFold(group.ID+" "+string(group.Client), query) {
+			continue
+		}
+		state, err := m.promptMgr.State(group)
+		if m.filter == filterEnabled && (err != nil || state != systemprompt.StateEnabled) {
+			continue
+		}
+		if m.filter == filterIssues && err == nil && state != systemprompt.StateConflict && state != systemprompt.StateBroken && state != systemprompt.StatePartial {
+			continue
+		}
+		result = append(result, group)
+	}
+	return result
 }
 
 func (m *Model) ensureCursorVisible(rowCount int) {
@@ -432,10 +629,10 @@ func (m Model) rows() []row {
 	rows := make([]row, 0)
 	for sourceIndex, source := range m.catalog.Sources {
 		if m.filter == filterArchive {
-			if !source.Archived {
+			if !source.IsArchived() {
 				continue
 			}
-		} else if source.Archived {
+		} else if source.IsArchived() {
 			continue
 		}
 

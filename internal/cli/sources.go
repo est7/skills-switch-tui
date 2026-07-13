@@ -20,15 +20,42 @@ func newSourceCommand(options *rootOptions) *cobra.Command {
 	}
 	command.AddCommand(newSourceListCommand(options))
 	command.AddCommand(newSourceAddCommand(options))
+	command.AddCommand(newSourceRemoveCommand(options))
 	return command
+}
+
+func newSourceRemoveCommand(options *rootOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:     "remove <source-id>",
+		Aliases: []string{"delete", "del", "rm"},
+		Short:   "Remove a clean vendor submodule and its catalog policy",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			runtime, err := loadCatalogRuntime(options)
+			if err != nil {
+				return err
+			}
+			selected, err := selectVendorSources(runtime.catalog, args, runtime.translator)
+			if err != nil {
+				return err
+			}
+			if err := runtime.manager.Remove(command.Context(), selected[0]); err != nil {
+				return err
+			}
+			fmt.Fprint(command.OutOrStdout(), runtime.translator.Text(i18n.SourceRemoved, selected[0].ID))
+			return nil
+		},
+	}
 }
 
 type sourceView struct {
 	ID                string                      `json:"id"`
 	Kind              string                      `json:"kind"`
+	Scope             string                      `json:"scope"`
 	Path              string                      `json:"path"`
 	Skills            int                         `json:"skills"`
 	Branch            string                      `json:"branch,omitempty"`
+	SkillPaths        []string                    `json:"skillPaths,omitempty"`
 	SparsePaths       []string                    `json:"sparsePaths,omitempty"`
 	DiscoveryStrategy catalog.DiscoveryStrategy   `json:"discoveryStrategy,omitempty"`
 	DiscoveryPriority []catalog.DiscoveryStrategy `json:"discoveryPriority,omitempty"`
@@ -38,9 +65,10 @@ func newSourceListCommand(options *rootOptions) *cobra.Command {
 	var outputJSON bool
 	var includeArchive bool
 	command := &cobra.Command{
-		Use:   "list",
-		Short: "List catalog sources",
-		Args:  cobra.NoArgs,
+		Use:     "list",
+		Aliases: []string{"query"},
+		Short:   "List catalog sources",
+		Args:    cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			runtime, err := loadCatalogRuntime(options)
 			if err != nil {
@@ -48,22 +76,18 @@ func newSourceListCommand(options *rootOptions) *cobra.Command {
 			}
 			result := make([]sourceView, 0, len(runtime.catalog.Sources))
 			for _, catalogSource := range runtime.catalog.Sources {
-				if catalogSource.Archived && !includeArchive {
+				if catalogSource.IsArchived() && !includeArchive {
 					continue
 				}
-				kind := "local"
-				if strings.HasPrefix(catalogSource.ID, "vendor/") {
-					kind = "vendor"
-				}
-				if catalogSource.Archived {
-					kind = "archive"
-				}
+				kind := string(catalogSource.Kind)
 				result = append(result, sourceView{
 					ID:                catalogSource.ID,
 					Kind:              kind,
+					Scope:             catalogSource.Scope,
 					Path:              catalogSource.Path,
 					Skills:            len(catalogSource.Skills),
 					Branch:            catalogSource.Branch,
+					SkillPaths:        catalogSource.SkillPaths,
 					SparsePaths:       catalogSource.SparsePaths,
 					DiscoveryStrategy: catalogSource.DiscoveryStrategy,
 					DiscoveryPriority: catalogSource.DiscoveryPriority,
@@ -102,6 +126,8 @@ func newSourceListCommand(options *rootOptions) *cobra.Command {
 func newSourceAddCommand(options *rootOptions) *cobra.Command {
 	var name string
 	var branch string
+	var clientScope string
+	var skillPaths []string
 	var sparsePaths []string
 	var discoveryPriority []string
 	command := &cobra.Command{
@@ -114,10 +140,23 @@ func newSourceAddCommand(options *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			scope := "shared"
+			if clientScope != "" {
+				if !runtime.catalog.Clients.Has(catalog.Client(clientScope)) {
+					return errors.New(runtime.translator.Text(i18n.UnknownClient, clientScope))
+				}
+				scope = clientScope
+			}
 			cleanSparsePaths := make([]string, 0, len(sparsePaths))
 			for _, path := range sparsePaths {
 				if path = strings.TrimSpace(path); path != "" {
 					cleanSparsePaths = append(cleanSparsePaths, path)
+				}
+			}
+			cleanSkillPaths := make([]string, 0, len(skillPaths))
+			for _, path := range skillPaths {
+				if path = strings.TrimSpace(path); path != "" {
+					cleanSkillPaths = append(cleanSkillPaths, path)
 				}
 			}
 			cleanDiscoveryPriority := make([]catalog.DiscoveryStrategy, 0, len(discoveryPriority))
@@ -130,17 +169,22 @@ func newSourceAddCommand(options *rootOptions) *cobra.Command {
 				Name:              name,
 				URL:               args[0],
 				Branch:            branch,
+				Scope:             scope,
+				SkillPaths:        cleanSkillPaths,
 				SparsePaths:       cleanSparsePaths,
 				DiscoveryPriority: cleanDiscoveryPriority,
 			}); err != nil {
 				return err
 			}
-			fmt.Fprint(command.OutOrStdout(), runtime.translator.Text(i18n.SourceAdded, name))
+			sourceID := catalog.ScopedSourceID(catalog.SourceVendor, scope, name)
+			fmt.Fprint(command.OutOrStdout(), runtime.translator.Text(i18n.SourceAdded, sourceID))
 			return nil
 		},
 	}
 	command.Flags().StringVar(&name, "name", "", "source name")
 	command.Flags().StringVar(&branch, "branch", "main", "tracked branch")
+	command.Flags().StringVar(&clientScope, "client", "", "restrict the entire source to one registered client")
+	command.Flags().StringSliceVar(&skillPaths, "skill-path", nil, "authoritative Skill directory path (repeatable)")
 	command.Flags().StringSliceVar(&sparsePaths, "sparse", nil, "additional sparse-checkout path (repeatable)")
 	command.Flags().StringSliceVar(&discoveryPriority, "discovery-priority", nil, "source discovery strategy priority (repeatable)")
 	_ = command.MarkFlagRequired("name")
@@ -206,14 +250,14 @@ func selectVendorSources(loaded catalog.Catalog, args []string, translator i18n.
 		if !ok {
 			return nil, errors.New(translator.Text(i18n.UnknownSource, args[0]))
 		}
-		if selected.Archived || !strings.HasPrefix(selected.ID, "vendor/") {
+		if selected.IsArchived() || !selected.IsVendor() {
 			return nil, errors.New(translator.Text(i18n.SourceNotVendor, selected.ID))
 		}
 		return []catalog.Source{selected}, nil
 	}
 	selected := make([]catalog.Source, 0)
 	for _, candidate := range loaded.Sources {
-		if !candidate.Archived && strings.HasPrefix(candidate.ID, "vendor/") {
+		if candidate.IsVendor() {
 			selected = append(selected, candidate)
 		}
 	}

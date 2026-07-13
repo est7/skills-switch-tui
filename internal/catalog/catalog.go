@@ -2,11 +2,14 @@ package catalog
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -15,6 +18,14 @@ import (
 )
 
 type Client = client.ID
+
+type SourceKind string
+
+const (
+	SourceLocal    SourceKind = "local"
+	SourceArchived SourceKind = "archived"
+	SourceVendor   SourceKind = "vendor"
+)
 
 const (
 	ClientCodex  = client.Codex
@@ -30,6 +41,7 @@ type Skill struct {
 	Path                string
 	Targets             map[Client]bool
 	CompatibilityReason string
+	MetadataIssue       string
 }
 
 func (s Skill) Supports(client Client) bool {
@@ -38,13 +50,23 @@ func (s Skill) Supports(client Client) bool {
 
 type Source struct {
 	ID                string
+	Kind              SourceKind
+	Scope             string
 	Path              string
 	Branch            string
+	SkillPaths        []string
 	SparsePaths       []string
 	DiscoveryPriority []DiscoveryStrategy
 	DiscoveryStrategy DiscoveryStrategy
-	Archived          bool
 	Skills            []Skill
+}
+
+func (s Source) IsArchived() bool {
+	return s.Kind == SourceArchived
+}
+
+func (s Source) IsVendor() bool {
+	return s.Kind == SourceVendor
 }
 
 type Catalog struct {
@@ -70,18 +92,14 @@ func (c Catalog) Source(id string) (Source, bool) {
 
 type configFile struct {
 	Version   int                       `yaml:"version"`
-	Clients   map[Client]clientConfig   `yaml:"clients,omitempty"`
 	Defaults  targetConfig              `yaml:"defaults,omitempty"`
 	Sources   map[string]sourceConfig   `yaml:"sources,omitempty"`
 	Overrides map[string]overrideConfig `yaml:"overrides,omitempty"`
 }
 
-type clientConfig struct {
-	ProjectSkillsDir string `yaml:"projectSkillsDir"`
-}
-
 type sourceConfig struct {
 	Branch            string              `yaml:"branch"`
+	SkillPaths        []string            `yaml:"skillPaths,omitempty"`
 	SparsePaths       []string            `yaml:"sparsePaths"`
 	DiscoveryPriority []DiscoveryStrategy `yaml:"discoveryPriority"`
 }
@@ -100,8 +118,11 @@ type skillFrontmatter struct {
 	Description string `yaml:"description"`
 }
 
+var skillNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
 type SourcePolicy struct {
 	Branch            string
+	SkillPaths        []string
 	SparsePaths       []string
 	DiscoveryPriority []DiscoveryStrategy
 }
@@ -126,6 +147,7 @@ func RegisterSource(root, id string, policy SourcePolicy) error {
 	}
 	config.Sources[id] = sourceConfig{
 		Branch:            policy.Branch,
+		SkillPaths:        append([]string(nil), policy.SkillPaths...),
 		SparsePaths:       append([]string(nil), policy.SparsePaths...),
 		DiscoveryPriority: append([]DiscoveryStrategy(nil), policy.DiscoveryPriority...),
 	}
@@ -173,14 +195,59 @@ func ValidateSourceRegistration(root, id string) error {
 	return nil
 }
 
-func validateVendorSourceID(id string) error {
-	if !strings.HasPrefix(id, "vendor/") || strings.TrimPrefix(id, "vendor/") == "" {
-		return fmt.Errorf("vendor source id must start with vendor/: %s", id)
+func UnregisterSource(root, id string) error {
+	if err := validateVendorSourceID(id); err != nil {
+		return err
+	}
+	configPath := filepath.Join(root, "catalog.yaml")
+	config, err := loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	if _, exists := config.Sources[id]; !exists {
+		return fmt.Errorf("source policy does not exist: %s", id)
+	}
+	delete(config.Sources, id)
+	data, err := yaml.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("encode catalog config: %w", err)
+	}
+	temporary, err := os.CreateTemp(root, ".catalog-*.yaml")
+	if err != nil {
+		return fmt.Errorf("create catalog temporary file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		return fmt.Errorf("write catalog temporary file: %w", err)
+	}
+	if err := temporary.Chmod(0o644); err != nil {
+		temporary.Close()
+		return fmt.Errorf("set catalog permissions: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return fmt.Errorf("sync catalog temporary file: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close catalog temporary file: %w", err)
+	}
+	if err := os.Rename(temporaryPath, configPath); err != nil {
+		return fmt.Errorf("replace catalog config: %w", err)
 	}
 	return nil
 }
 
-func Load(root string) (Catalog, error) {
+func validateVendorSourceID(id string) error {
+	namespace, name, found := strings.Cut(id, "/")
+	if !found || name == "" || !strings.HasPrefix(namespace, "vendor-") {
+		return fmt.Errorf("invalid vendor source id: %s", id)
+	}
+	return nil
+}
+
+func Load(root string, clients client.Registry) (Catalog, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return Catalog{}, fmt.Errorf("resolve sources root: %w", err)
@@ -197,14 +264,6 @@ func Load(root string) (Catalog, error) {
 	if err != nil {
 		return Catalog{}, err
 	}
-	configuredClients := make(map[client.ID]string, len(config.Clients))
-	for id, definition := range config.Clients {
-		configuredClients[id] = definition.ProjectSkillsDir
-	}
-	clients, err := client.NewRegistry(configuredClients)
-	if err != nil {
-		return Catalog{}, fmt.Errorf("catalog clients: %w", err)
-	}
 	defaultTargets, err := targetSet(config.Defaults.Targets, clients)
 	if err != nil {
 		return Catalog{}, fmt.Errorf("catalog defaults: %w", err)
@@ -212,64 +271,26 @@ func Load(root string) (Catalog, error) {
 	if len(defaultTargets) == 0 {
 		defaultTargets, _ = targetSet(clients.IDs(), clients)
 	}
+	if err := validateNoLegacySourceRoots(absRoot); err != nil {
+		return Catalog{}, err
+	}
 
 	sources := make([]Source, 0)
-	localRoot := filepath.Join(absRoot, "local")
-	if isDirectory(localRoot) {
-		source, err := discoverSource("local", localRoot, defaultTargets, config.Overrides, clients)
-		if err != nil {
-			return Catalog{}, err
-		}
-		if len(source.Skills) > 0 {
-			sources = append(sources, source)
-		}
+	localSources, err := discoverLocalSources(absRoot, defaultTargets, config.Overrides, clients)
+	if err != nil {
+		return Catalog{}, err
 	}
-
-	vendorRoot := filepath.Join(absRoot, "vendor")
-	entries, err := os.ReadDir(vendorRoot)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return Catalog{}, fmt.Errorf("read vendor sources: %w", err)
+	sources = append(sources, localSources...)
+	vendorSources, err := discoverVendorSources(absRoot, defaultTargets, config, clients)
+	if err != nil {
+		return Catalog{}, err
 	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		id := "vendor/" + entry.Name()
-		path := filepath.Join(vendorRoot, entry.Name())
-		policy := config.Sources[id]
-		source, discoverErr := discoverVendorSource(id, path, policy.DiscoveryPriority, defaultTargets, config.Overrides, clients)
-		if discoverErr != nil {
-			return Catalog{}, discoverErr
-		}
-		source.Branch = policy.Branch
-		if source.Branch == "" {
-			source.Branch = "main"
-		}
-		source.SparsePaths = append([]string(nil), policy.SparsePaths...)
-		source.DiscoveryPriority = normalizedDiscoveryPriority(policy.DiscoveryPriority)
-		sources = append(sources, source)
+	sources = append(sources, vendorSources...)
+	archivedSources, err := discoverArchivedSources(absRoot, defaultTargets, config.Overrides, clients)
+	if err != nil {
+		return Catalog{}, err
 	}
-
-	archiveRoot := filepath.Join(absRoot, "archive")
-	archiveEntries, err := os.ReadDir(archiveRoot)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return Catalog{}, fmt.Errorf("read archived sources: %w", err)
-	}
-	for _, entry := range archiveEntries {
-		if !entry.IsDir() {
-			continue
-		}
-		id := "archive/" + entry.Name()
-		path := filepath.Join(archiveRoot, entry.Name())
-		source, discoverErr := discoverSource(id, path, defaultTargets, config.Overrides, clients)
-		if discoverErr != nil {
-			return Catalog{}, discoverErr
-		}
-		if len(source.Skills) > 0 {
-			source.Archived = true
-			sources = append(sources, source)
-		}
-	}
+	sources = append(sources, archivedSources...)
 
 	sort.Slice(sources, func(i, j int) bool { return sources[i].ID < sources[j].ID })
 	byID := make(map[string]Skill)
@@ -285,11 +306,179 @@ func Load(root string) (Catalog, error) {
 	return Catalog{Root: absRoot, Sources: sources, Clients: clients, byID: byID}, nil
 }
 
-func discoverSource(id, root string, defaults map[Client]bool, overrides map[string]overrideConfig, clients client.Registry) (Source, error) {
-	return discoverSourceRoots(id, root, []string{root}, defaults, overrides, clients)
+func discoverLocalSources(root string, defaults map[Client]bool, overrides map[string]overrideConfig, clients client.Registry) ([]Source, error) {
+	localRoot := filepath.Join(root, string(SourceLocal))
+	entries, err := readDirectories(localRoot, "local scopes")
+	if err != nil {
+		return nil, err
+	}
+	sources := make([]Source, 0)
+	for _, entry := range entries {
+		scope := entry.Name()
+		targets, err := targetsForScope(scope, defaults, clients)
+		if err != nil {
+			return nil, fmt.Errorf("local scope: %w", err)
+		}
+		id := ScopedSourceID(SourceLocal, scope, "")
+		path := filepath.Join(localRoot, scope)
+		source, discoverErr := discoverSource(id, path, targets, overrides, clients)
+		if discoverErr != nil {
+			return nil, discoverErr
+		}
+		if len(source.Skills) > 0 {
+			source.Kind = SourceLocal
+			source.Scope = scope
+			sources = append(sources, source)
+		}
+	}
+	return sources, nil
 }
 
-func discoverSourceRoots(id, root string, scanRoots []string, defaults map[Client]bool, overrides map[string]overrideConfig, clients client.Registry) (Source, error) {
+func discoverVendorSources(root string, defaults map[Client]bool, config configFile, clients client.Registry) ([]Source, error) {
+	vendorRoot := filepath.Join(root, string(SourceVendor))
+	scopeEntries, err := readDirectories(vendorRoot, "vendor scopes")
+	if err != nil {
+		return nil, err
+	}
+	sources := make([]Source, 0)
+	for _, scopeEntry := range scopeEntries {
+		scope := scopeEntry.Name()
+		targets, err := targetsForScope(scope, defaults, clients)
+		if err != nil {
+			return nil, fmt.Errorf("vendor scope: %w", err)
+		}
+		scopeRoot := filepath.Join(vendorRoot, scope)
+		repositories, err := readDirectories(scopeRoot, "vendor repositories")
+		if err != nil {
+			return nil, err
+		}
+		for _, repository := range repositories {
+			id := ScopedSourceID(SourceVendor, scope, repository.Name())
+			path := filepath.Join(scopeRoot, repository.Name())
+			policy := config.Sources[id]
+			source, discoverErr := discoverVendorSource(id, path, policy.DiscoveryPriority, policy.SkillPaths, targets, config.Overrides, clients)
+			if discoverErr != nil {
+				return nil, discoverErr
+			}
+			source.Kind = SourceVendor
+			source.Scope = scope
+			source.Branch = policy.Branch
+			if source.Branch == "" {
+				source.Branch = "main"
+			}
+			source.SparsePaths = append([]string(nil), policy.SparsePaths...)
+			source.SkillPaths = append([]string(nil), policy.SkillPaths...)
+			if len(policy.SkillPaths) == 0 {
+				source.DiscoveryPriority = normalizedDiscoveryPriority(policy.DiscoveryPriority)
+			}
+			sources = append(sources, source)
+		}
+	}
+	return sources, nil
+}
+
+func discoverArchivedSources(root string, defaults map[Client]bool, overrides map[string]overrideConfig, clients client.Registry) ([]Source, error) {
+	archivedRoot := filepath.Join(root, string(SourceArchived))
+	scopeEntries, err := readDirectories(archivedRoot, "archived scopes")
+	if err != nil {
+		return nil, err
+	}
+	sources := make([]Source, 0)
+	for _, scopeEntry := range scopeEntries {
+		scope := scopeEntry.Name()
+		targets, err := targetsForScope(scope, defaults, clients)
+		if err != nil {
+			return nil, fmt.Errorf("archived scope: %w", err)
+		}
+		scopeRoot := filepath.Join(archivedRoot, scope)
+		collections, err := readDirectories(scopeRoot, "archived collections")
+		if err != nil {
+			return nil, err
+		}
+		for _, collection := range collections {
+			id := ScopedSourceID(SourceArchived, scope, collection.Name())
+			path := filepath.Join(scopeRoot, collection.Name())
+			source, discoverErr := discoverArchivedSource(id, path, targets, overrides, clients)
+			if discoverErr != nil {
+				return nil, discoverErr
+			}
+			if len(source.Skills) > 0 {
+				source.Kind = SourceArchived
+				source.Scope = scope
+				sources = append(sources, source)
+			}
+		}
+	}
+	return sources, nil
+}
+
+func validateNoLegacySourceRoots(root string) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return fmt.Errorf("read sources root: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() {
+			continue
+		}
+		if name == "archive" || name == "archive-raw" || strings.HasPrefix(name, "local-") || strings.HasPrefix(name, "vendor-") || strings.HasPrefix(name, "archived-") {
+			return fmt.Errorf("legacy source root %q is unsupported; use the kind/scope directory matrix", name)
+		}
+	}
+	return nil
+}
+
+func readDirectories(root, label string) ([]os.DirEntry, error) {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", label, err)
+	}
+	directories := make([]os.DirEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			directories = append(directories, entry)
+		}
+	}
+	return directories, nil
+}
+
+func targetsForScope(scope string, defaults map[Client]bool, clients client.Registry) (map[Client]bool, error) {
+	if scope == "shared" {
+		return defaults, nil
+	}
+	clientID := Client(scope)
+	if !clients.Has(clientID) {
+		return nil, fmt.Errorf("unknown client %q", scope)
+	}
+	return map[Client]bool{clientID: true}, nil
+}
+
+func ScopedSourceID(kind SourceKind, scope, name string) string {
+	var namespace string
+	if scope == "shared" {
+		namespace = string(kind) + "-shared"
+	} else {
+		namespace = string(kind) + "-" + scope + "-only"
+	}
+	if name == "" {
+		return namespace
+	}
+	return namespace + "/" + name
+}
+
+func discoverSource(id, root string, defaults map[Client]bool, overrides map[string]overrideConfig, clients client.Registry) (Source, error) {
+	return discoverSourceRoots(id, root, []string{root}, defaults, overrides, clients, false)
+}
+
+func discoverArchivedSource(id, root string, defaults map[Client]bool, overrides map[string]overrideConfig, clients client.Registry) (Source, error) {
+	return discoverSourceRoots(id, root, []string{root}, defaults, overrides, clients, true)
+}
+
+func discoverSourceRoots(id, root string, scanRoots []string, defaults map[Client]bool, overrides map[string]overrideConfig, clients client.Registry, tolerateMetadataIssues bool) (Source, error) {
 	source := Source{ID: id, Path: root}
 	seenSkillDirs := make(map[string]bool)
 	for _, scanRoot := range scanRoots {
@@ -318,12 +507,27 @@ func discoverSourceRoots(id, root string, scanRoots []string, defaults map[Clien
 				relativeID = filepath.Base(skillDir)
 			}
 			skillID := id + "/" + relativeID
-			frontmatter, err := readFrontmatter(path)
-			if err != nil {
-				return fmt.Errorf("read %s: %w", path, err)
+			frontmatter, metadataErr := readFrontmatter(path)
+			metadataIssue := ""
+			if metadataErr != nil {
+				if !tolerateMetadataIssues {
+					return fmt.Errorf("read %s: %w", path, metadataErr)
+				}
+				metadataIssue = metadataErr.Error()
 			}
 			name := frontmatter.Name
 			if name == "" {
+				name = filepath.Base(skillDir)
+			}
+			if !skillNamePattern.MatchString(name) {
+				nameErr := fmt.Errorf("invalid skill name %q", name)
+				if !tolerateMetadataIssues {
+					return fmt.Errorf("read %s: %w", path, nameErr)
+				}
+				if metadataIssue != "" {
+					metadataIssue += "; "
+				}
+				metadataIssue += nameErr.Error()
 				name = filepath.Base(skillDir)
 			}
 			targets := cloneTargets(defaults)
@@ -343,6 +547,7 @@ func discoverSourceRoots(id, root string, scanRoots []string, defaults map[Clien
 				Path:                skillDir,
 				Targets:             targets,
 				CompatibilityReason: reason,
+				MetadataIssue:       metadataIssue,
 			})
 			return nil
 		})
@@ -364,8 +569,17 @@ func loadConfig(path string) (configFile, error) {
 	if err != nil {
 		return configFile{}, fmt.Errorf("read catalog config: %w", err)
 	}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
 	var config configFile
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	if err := decoder.Decode(&config); err != nil {
+		return configFile{}, fmt.Errorf("parse catalog config: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("multiple YAML documents")
+		}
 		return configFile{}, fmt.Errorf("parse catalog config: %w", err)
 	}
 	if config.Version != 1 {
