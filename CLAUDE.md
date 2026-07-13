@@ -19,6 +19,16 @@ Related paths:
 - bundled operator Skill: `skills/skills-switch/SKILL.md`
 - marketplace registration: `.agents/plugins/marketplace.json`
 
+## Architecture Order
+
+CLI subcommands are the first-class interface. Every mutating capability lands in this order:
+
+1. Core package operation (`internal/catalog`, `internal/mcp`, `internal/projection`, `internal/source`) — the single source of truth for the mutation and its invariants.
+2. A first-class CLI subcommand exposing it (human + `--json`), grouped under its resource noun (`skills`, `mcp`, `source`, `prompt`).
+3. Any UI (the TUI) drives the same core operation — it never reimplements mutation logic.
+
+Build the CLI path first, then wrap it in UI. A capability that exists only in the TUI is incomplete: agents drive this tool through the CLI and cannot use interactive keys.
+
 ## Product Invariants
 
 - Skills and MCP servers are project-local. System prompts are user-global.

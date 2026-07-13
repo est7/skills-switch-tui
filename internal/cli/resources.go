@@ -21,7 +21,120 @@ func newMCPCommand(options *rootOptions) *cobra.Command {
 	command.AddCommand(newMCPListCommand(options))
 	command.AddCommand(newMCPToggleCommand(options, true))
 	command.AddCommand(newMCPToggleCommand(options, false))
+	command.AddCommand(newMCPAddCommand(options))
+	command.AddCommand(newMCPRemoveCommand(options))
 	return command
+}
+
+func newMCPAddCommand(options *rootOptions) *cobra.Command {
+	var commandLine, url, cwd, transport string
+	var commandArgs, env, headers []string
+	command := &cobra.Command{
+		Use:   "add <name>",
+		Short: "Register a new MCP server in the catalog",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			runtime, err := loadRuntime(options)
+			if err != nil {
+				return err
+			}
+			envMap, err := parseKeyValues(env)
+			if err != nil {
+				return err
+			}
+			headerMap, err := parseKeyValues(headers)
+			if err != nil {
+				return err
+			}
+			server := mcp.Server{
+				Name:      args[0],
+				Transport: mcp.Transport(transport),
+				Command:   commandLine,
+				Args:      commandArgs,
+				Env:       envMap,
+				CWD:       cwd,
+				URL:       url,
+				Headers:   headerMap,
+			}
+			if server.Transport == "" {
+				switch {
+				case commandLine != "" && url == "":
+					server.Transport = mcp.TransportStdio
+				case url != "" && commandLine == "":
+					server.Transport = mcp.TransportHTTP
+				default:
+					return errors.New(runtime.translator.Text(i18n.MCPTransportAmbiguous))
+				}
+			}
+			if err := mcp.AddServer(runtime.mcpCatalog.Path, server); err != nil {
+				return err
+			}
+			fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.MCPServerAdded, args[0]))
+			return nil
+		},
+	}
+	command.Flags().StringVar(&commandLine, "command", "", "stdio command executable")
+	command.Flags().StringSliceVar(&commandArgs, "arg", nil, "stdio command argument (repeatable)")
+	command.Flags().StringSliceVar(&env, "env", nil, "stdio environment KEY=VALUE (repeatable)")
+	command.Flags().StringVar(&cwd, "cwd", "", "stdio working directory")
+	command.Flags().StringVar(&url, "url", "", "http(s) endpoint URL")
+	command.Flags().StringSliceVar(&headers, "header", nil, "http header KEY=VALUE (repeatable)")
+	command.Flags().StringVar(&transport, "transport", "", "stdio or http (inferred when omitted)")
+	return command
+}
+
+func newMCPRemoveCommand(options *rootOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:     "remove <name>",
+		Aliases: []string{"delete", "del", "rm"},
+		Short:   "Remove an MCP server from the catalog",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			runtime, err := loadRuntime(options)
+			if err != nil {
+				return err
+			}
+			name := args[0]
+			if _, ok := runtime.mcpCatalog.Server(name); !ok {
+				return errors.New(runtime.translator.Text(i18n.UnknownMCPServer, name))
+			}
+			operations := make([]mcp.Operation, 0)
+			for _, clientID := range runtime.catalog.Clients.IDs() {
+				state, err := runtime.mcpManager.State(name, clientID)
+				if err != nil {
+					return err
+				}
+				if state == mcp.StateEnabled {
+					operations = append(operations, mcp.Operation{Server: name, Client: clientID, Enabled: false})
+				}
+			}
+			if len(operations) > 0 {
+				if err := runtime.mcpManager.Apply(operations); err != nil {
+					return err
+				}
+			}
+			if err := mcp.RemoveServer(runtime.mcpCatalog.Path, name); err != nil {
+				return err
+			}
+			fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.DeletedMCPServer, name))
+			return nil
+		},
+	}
+}
+
+func parseKeyValues(values []string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	result := make(map[string]string, len(values))
+	for _, value := range values {
+		key, val, found := strings.Cut(value, "=")
+		if !found || key == "" {
+			return nil, fmt.Errorf("invalid KEY=VALUE %q", value)
+		}
+		result[key] = val
+	}
+	return result, nil
 }
 
 type mcpView struct {

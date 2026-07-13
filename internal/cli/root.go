@@ -76,6 +76,7 @@ func NewRootCommand(version string) *cobra.Command {
 	command.PersistentFlags().StringVar(&options.projectRoot, "project", "", translator.Text(i18n.ProjectFlag))
 	command.PersistentFlags().StringVar(&options.language, "lang", defaultLanguage, translator.Text(i18n.LanguageFlag))
 	command.AddCommand(newListCommand(options))
+	command.AddCommand(newSkillsCommand(options))
 	command.AddCommand(newEnableCommand(options, true))
 	command.AddCommand(newEnableCommand(options, false))
 	command.AddCommand(newShowCommand(options))
@@ -468,6 +469,9 @@ func localizeCommandTree(root *cobra.Command, translator i18n.Translator) {
 		case "source":
 			command.Short = translator.Text(i18n.SourceCommandShort)
 			localizeSourceCommands(command, translator)
+		case "skills":
+			command.Short = translator.Text(i18n.SkillsCommandShort)
+			localizeSkillsCommands(command, translator)
 		case "mcp":
 			command.Short = translator.Text(i18n.MCPCommandShort)
 			localizeResourceCommands(command, translator)
@@ -476,6 +480,21 @@ func localizeCommandTree(root *cobra.Command, translator i18n.Translator) {
 			localizeResourceCommands(command, translator)
 		case "help":
 			command.Short = translator.Text(i18n.HelpCommandShort)
+		}
+	}
+}
+
+func localizeSkillsCommands(command *cobra.Command, translator i18n.Translator) {
+	for _, child := range command.Commands() {
+		switch child.Name() {
+		case "list":
+			child.Short = translator.Text(i18n.ListShort)
+			localizeOutputFlags(child, translator)
+		case "delete":
+			child.Short = translator.Text(i18n.SkillsDeleteShort)
+			if flag := child.Flags().Lookup("client"); flag != nil {
+				flag.Usage = translator.Text(i18n.ClientFlag)
+			}
 		}
 	}
 }
@@ -489,6 +508,10 @@ func localizeResourceCommands(command *cobra.Command, translator i18n.Translator
 			child.Short = translator.Text(i18n.MCPEnableShort)
 		case "mcp/disable":
 			child.Short = translator.Text(i18n.MCPDisableShort)
+		case "mcp/add":
+			child.Short = translator.Text(i18n.MCPAddShort)
+		case "mcp/remove":
+			child.Short = translator.Text(i18n.MCPRemoveShort)
 		case "prompt/list":
 			child.Short = translator.Text(i18n.PromptListShort)
 		case "prompt/enable":
