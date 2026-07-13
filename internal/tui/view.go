@@ -2,11 +2,13 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/est7/skills-switch-tui/internal/catalog"
 	"github.com/est7/skills-switch-tui/internal/i18n"
 	"github.com/est7/skills-switch-tui/internal/projection"
@@ -26,7 +28,8 @@ func (m Model) View() tea.View {
 		Background(m.styles.canvas).
 		Foreground(m.styles.title.GetForeground()).
 		Padding(1, m.horizontalPadding())
-	view := tea.NewView(canvas.Render(strings.Join(sections, "\n")))
+	content := canvas.Render(strings.Join(sections, "\n"))
+	view := tea.NewView(paintCanvasBackground(content, m.styles.canvas))
 	view.BackgroundColor = m.styles.canvas
 	view.ForegroundColor = m.styles.title.GetForeground()
 	view.AltScreen = true
@@ -503,6 +506,7 @@ func (m Model) renderFooter() string {
 	statusStyle := m.styles.status.Background(barBackground)
 	status := m.status
 	icon := m.styles.accent.Background(barBackground).Render("●")
+	gap := lipgloss.NewStyle().Background(barBackground).Render("  ")
 	if m.err != nil {
 		statusStyle = m.styles.error.Background(barBackground)
 		status += ": " + m.err.Error()
@@ -511,8 +515,19 @@ func (m Model) renderFooter() string {
 	if m.updating {
 		icon = m.styles.accent.Background(barBackground).Render("◌")
 	}
-	statusLine := m.styles.statusBar.Width(m.contentWidth()).Render(icon + "  " + statusStyle.Render(status))
+	statusLine := m.styles.statusBar.Width(m.contentWidth()).Render(icon + gap + statusStyle.Render(status))
 	return statusLine + "\n" + m.help.View(m.keys)
+}
+
+func paintCanvasBackground(content string, background color.Color) string {
+	if background == nil {
+		return content
+	}
+	backgroundSequence := ansi.Style{}.BackgroundColor(background).String()
+	for _, reset := range []string{ansi.ResetStyle, "\x1b[0m", "\x1b[49m"} {
+		content = strings.ReplaceAll(content, reset, reset+backgroundSequence)
+	}
+	return backgroundSequence + content + ansi.ResetStyle
 }
 
 func (m Model) tabCount(tab resourceTab) int {

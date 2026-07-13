@@ -4,6 +4,9 @@ import (
 	"image/color"
 	"math"
 	"testing"
+
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestThemesKeepInformationalTextReadable(t *testing.T) {
@@ -50,6 +53,23 @@ func TestTableStylesNeverFallBackToTransparentBackgrounds(t *testing.T) {
 				t.Errorf("%s background is transparent", name)
 			}
 		}
+	}
+}
+
+func TestDarkThemeUsesSlateGrayInsteadOfBlackCanvas(t *testing.T) {
+	theme := newStyles(true)
+	if !sameColor(theme.canvas, lipgloss.Color("#3B4449")) {
+		t.Fatal("dark canvas must use the slate-gray application background")
+	}
+}
+
+func TestCanvasBackgroundSurvivesNestedStyleResets(t *testing.T) {
+	background := lipgloss.Color("#3B4449")
+	backgroundSequence := ansi.Style{}.BackgroundColor(background).String()
+	input := "left" + ansi.ResetStyle + " right"
+	want := backgroundSequence + "left" + ansi.ResetStyle + backgroundSequence + " right" + ansi.ResetStyle
+	if got := paintCanvasBackground(input, background); got != want {
+		t.Fatalf("paintCanvasBackground() = %q, want %q", got, want)
 	}
 }
 

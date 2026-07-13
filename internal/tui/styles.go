@@ -40,18 +40,18 @@ type styles struct {
 
 func newStyles(isDark bool) styles {
 	choose := lipgloss.LightDark(isDark)
-	canvas := choose(lipgloss.Color("#F5F7F8"), lipgloss.Color("#0D1117"))
-	foreground := choose(lipgloss.Color("#1F2933"), lipgloss.Color("#E6EDF3"))
-	muted := choose(lipgloss.Color("#566574"), lipgloss.Color("#A7B2BE"))
-	accent := choose(lipgloss.Color("#0B746E"), lipgloss.Color("#5ED6C9"))
-	accentStrong := choose(lipgloss.Color("#0B746E"), lipgloss.Color("#117C74"))
+	canvas := choose(lipgloss.Color("#E8ECEE"), lipgloss.Color("#3B4449"))
+	foreground := choose(lipgloss.Color("#1D292F"), lipgloss.Color("#F2F5F7"))
+	muted := choose(lipgloss.Color("#52636C"), lipgloss.Color("#CBD3D8"))
+	accent := choose(lipgloss.Color("#006D66"), lipgloss.Color("#77E6D9"))
+	accentStrong := choose(lipgloss.Color("#006D66"), lipgloss.Color("#087A72"))
 	accentContrast := lipgloss.Color("#FFFFFF")
-	accentSoft := choose(lipgloss.Color("#DFF4F1"), lipgloss.Color("#123B38"))
+	accentSoft := choose(lipgloss.Color("#CDEAE6"), lipgloss.Color("#1F5A55"))
 	panel := canvas
-	panelRaised := choose(lipgloss.Color("#E7EDF0"), lipgloss.Color("#1A232D"))
-	border := choose(lipgloss.Color("#A9B6C0"), lipgloss.Color("#3D4D5C"))
-	green := choose(lipgloss.Color("#08783F"), lipgloss.Color("#6DE0A5"))
-	red := choose(lipgloss.Color("#B4233A"), lipgloss.Color("#FF8999"))
+	panelRaised := choose(lipgloss.Color("#D7DEE2"), lipgloss.Color("#48545B"))
+	border := choose(lipgloss.Color("#98A6AE"), lipgloss.Color("#81909A"))
+	green := choose(lipgloss.Color("#08703B"), lipgloss.Color("#88E8B5"))
+	red := choose(lipgloss.Color("#B4233A"), lipgloss.Color("#FFB0BB"))
 
 	return styles{
 		canvas:       canvas,
