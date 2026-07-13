@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"image/color"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/est7/skills-switch-tui/internal/i18n"
 	"github.com/est7/skills-switch-tui/internal/mcp"
 	"github.com/est7/skills-switch-tui/internal/projection"
+	"github.com/est7/skills-switch-tui/internal/source"
 	"github.com/est7/skills-switch-tui/internal/systemprompt"
 )
 
@@ -112,6 +114,161 @@ func TestSkillToggleAllClientsPreflightsEveryClientAtomically(t *testing.T) {
 	data, err := os.ReadFile(conflict)
 	if err != nil || string(data) != "user owned\n" {
 		t.Fatalf("conflict was not preserved: %q, %v", data, err)
+	}
+}
+
+func TestSourceToggleAllClientsEnablesAndDisablesEveryCompatibleProjection(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "mixed", "skills", "universal"), "universal")
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "mixed", "skills", "codex-only"), "codex-only")
+	config := "version: 1\noverrides:\n  vendor-shared/mixed/skills/codex-only:\n    targets: [codex]\n    reason: Uses Codex-only workflow APIs.\n"
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("enable source for all clients: %v", model.err)
+	}
+	for _, target := range []string{
+		filepath.Join(projectRoot, ".agents", "skills", "universal"),
+		filepath.Join(projectRoot, ".claude", "skills", "universal"),
+		filepath.Join(projectRoot, ".gemini", "skills", "universal"),
+		filepath.Join(projectRoot, ".agents", "skills", "codex-only"),
+	} {
+		if _, err := os.Readlink(target); err != nil {
+			t.Fatalf("source all-client toggle did not enable %s: %v", target, err)
+		}
+	}
+	assertNotExist(t, filepath.Join(projectRoot, ".claude", "skills", "codex-only"))
+	assertNotExist(t, filepath.Join(projectRoot, ".gemini", "skills", "codex-only"))
+
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("disable source for all clients: %v", model.err)
+	}
+	for _, clientDir := range []string{".agents", ".claude", ".gemini"} {
+		for _, skill := range []string{"universal", "codex-only"} {
+			assertNotExist(t, filepath.Join(projectRoot, clientDir, "skills", skill))
+		}
+	}
+}
+
+func TestSourceToggleAllClientsPreflightsTheWholeMatrixAtomically(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "bundle", "skills", "first"), "first")
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "bundle", "skills", "second"), "second")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflict := filepath.Join(projectRoot, ".claude", "skills", "second")
+	if err := os.MkdirAll(filepath.Dir(conflict), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(conflict, []byte("user owned\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	model = updated.(Model)
+	if model.err == nil {
+		t.Fatal("source all-client toggle succeeded despite an unmanaged conflict")
+	}
+	for _, target := range []string{
+		filepath.Join(projectRoot, ".agents", "skills", "first"),
+		filepath.Join(projectRoot, ".agents", "skills", "second"),
+		filepath.Join(projectRoot, ".claude", "skills", "first"),
+		filepath.Join(projectRoot, ".gemini", "skills", "first"),
+		filepath.Join(projectRoot, ".gemini", "skills", "second"),
+	} {
+		assertNotExist(t, target)
+	}
+	data, err := os.ReadFile(conflict)
+	if err != nil || string(data) != "user owned\n" {
+		t.Fatalf("conflict was not preserved: %q, %v", data, err)
+	}
+}
+
+func TestUpdateAllRefreshesEveryVendorSource(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	for _, name := range []string{"first", "second"} {
+		writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", name, "skills", name), name)
+	}
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := &tuiSourceGit{responses: make(map[string]string)}
+	for _, candidate := range loaded.Sources {
+		git.responses[candidate.Path+"|status --porcelain"] = ""
+		git.responses[candidate.Path+"|rev-parse HEAD"] = "aaaaaaaa\n"
+		git.responses[candidate.Path+"|ls-remote origin refs/heads/main"] = "aaaaaaaa\trefs/heads/main\n"
+	}
+	updater := source.Manager{RepositoryRoot: t.TempDir(), SkillsRoot: sourcesRoot, Git: git}
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), &updater, i18n.New(i18n.English))
+
+	updated, command := model.Update(tea.KeyPressMsg{Code: 'U', Text: "U"})
+	model = updated.(Model)
+	if command == nil || !model.updating {
+		t.Fatal("update-all key did not start an update")
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("update all vendors: %v", model.err)
+	}
+	for _, candidate := range loaded.Sources {
+		if !git.called(candidate.Path + "|status --porcelain") {
+			t.Errorf("update all did not inspect %s", candidate.ID)
+		}
+	}
+}
+
+func TestUpdateReloadsChangedSkillTotalsFromTheVendorSnapshot(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	sourceRoot := filepath.Join(sourcesRoot, "vendor", "shared", "changing", "skills")
+	removedPath := filepath.Join(sourceRoot, "removed")
+	writeSkill(t, removedPath, "removed")
+	writeSkill(t, filepath.Join(sourceRoot, "kept"), "kept")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := projection.New(projectRoot, loaded)
+	changing := loaded.Sources[0]
+	if err := manager.SetEnabled(changing.Skills, catalog.ClientCodex, true); err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, manager, nil, i18n.New(i18n.English))
+
+	if err := os.RemoveAll(removedPath); err != nil {
+		t.Fatal(err)
+	}
+	writeSkill(t, filepath.Join(sourceRoot, "added"), "added")
+	updated, _ := model.Update(updateFinishedMsg{results: []source.UpdateResult{{SourceID: changing.ID, Changed: true}}})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("reload changed vendor snapshot: %v", model.err)
+	}
+	if got := model.tabCount(tabSkills); got != 2 {
+		t.Fatalf("skill total after update = %d, want 2", got)
+	}
+	value, _ := model.cell(row{kind: sourceRow, sourceIndex: 0}, catalog.ClientCodex)
+	if value != "1/2" {
+		t.Fatalf("Codex source count after removed/kept/added update = %s, want 1/2", value)
 	}
 }
 
@@ -433,6 +590,30 @@ func TestResourceTabsToggleMCPAndSystemPrompts(t *testing.T) {
 			t.Fatalf("tab bar is missing %q:\n%s", label, view)
 		}
 	}
+}
+
+type tuiSourceGit struct {
+	responses map[string]string
+	calls     []string
+}
+
+func (g *tuiSourceGit) Output(_ context.Context, directory string, arguments ...string) ([]byte, error) {
+	key := directory + "|" + strings.Join(arguments, " ")
+	g.calls = append(g.calls, key)
+	response, ok := g.responses[key]
+	if !ok {
+		return nil, errors.New("unexpected git call: " + key)
+	}
+	return []byte(response), nil
+}
+
+func (g *tuiSourceGit) called(expected string) bool {
+	for _, call := range g.calls {
+		if call == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func writeSkill(t *testing.T, dir, name string) {

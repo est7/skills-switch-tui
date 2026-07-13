@@ -31,6 +31,28 @@ func TestThemesKeepInformationalTextReadable(t *testing.T) {
 	}
 }
 
+func TestTableStylesNeverFallBackToTransparentBackgrounds(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		theme := newStyles(dark)
+		if !sameColor(theme.panel.GetBackground(), theme.canvas) {
+			t.Fatal("panel background must match the full-window canvas")
+		}
+		for name, background := range map[string]color.Color{
+			"source kind":  theme.scopeLabel.GetBackground(),
+			"group":        theme.group.GetBackground(),
+			"child":        theme.child.GetBackground(),
+			"enabled":      theme.enabled.GetBackground(),
+			"disabled":     theme.disabled.GetBackground(),
+			"incompatible": theme.incompatible.GetBackground(),
+			"issue":        theme.issue.GetBackground(),
+		} {
+			if background == nil {
+				t.Errorf("%s background is transparent", name)
+			}
+		}
+	}
+}
+
 type contrastPair struct {
 	name       string
 	foreground color.Color
@@ -56,12 +78,16 @@ func themeContrastPairs(theme styles) []contrastPair {
 		{name: "active tab", foreground: theme.activeTab.GetForeground(), background: theme.activeTab.GetBackground()},
 		{name: "table header", foreground: theme.tableHeader.GetForeground(), background: raised},
 		{name: "selected row", foreground: theme.selected.GetForeground(), background: selected},
+		{name: "selected row accent", foreground: theme.scopeLabel.GetForeground(), background: selected},
+		{name: "selected row secondary", foreground: theme.disabled.GetForeground(), background: selected},
+		{name: "selected row enabled", foreground: theme.enabled.GetForeground(), background: selected},
 		{name: "selected cell", foreground: theme.selectedCell.GetForeground(), background: selectedCell},
 		{name: "enabled state", foreground: theme.enabled.GetForeground(), background: panel},
 		{name: "disabled state", foreground: theme.disabled.GetForeground(), background: panel},
 		{name: "issue state", foreground: theme.issue.GetForeground(), background: panel},
 		{name: "active filter", foreground: theme.activeFilter.GetForeground(), background: theme.activeFilter.GetBackground()},
 		{name: "status", foreground: theme.status.GetForeground(), background: theme.statusBar.GetBackground()},
+		{name: "status accent", foreground: theme.accent.GetForeground(), background: theme.statusBar.GetBackground()},
 		{name: "error", foreground: theme.error.GetForeground(), background: theme.statusBar.GetBackground()},
 	}
 }
@@ -88,4 +114,13 @@ func relativeLuminance(value color.Color) float64 {
 		return math.Pow((normalized+0.055)/1.055, 2.4)
 	}
 	return 0.2126*linearize(r) + 0.7152*linearize(g) + 0.0722*linearize(b)
+}
+
+func sameColor(left, right color.Color) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	lr, lg, lb, la := left.RGBA()
+	rr, rg, rb, ra := right.RGBA()
+	return lr == rr && lg == rg && lb == rb && la == ra
 }

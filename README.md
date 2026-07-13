@@ -169,11 +169,12 @@ Inspect and explicitly update vendor sources:
 ```sh
 skills-switch source list
 skills-switch update --dry-run
+skills-switch update
 skills-switch update vendor-shared/worktrunk
 skills-switch source remove vendor-shared/worktrunk
 ```
 
-Launching the TUI never updates submodules. Press `u` on a vendor source, or use `update`, when an update is intended. `source remove` refuses dirty submodules and updates the gitlink, `.gitmodules`, and catalog policy as one managed operation.
+Launching the TUI never updates submodules automatically. Press `u` for the selected vendor source, `U` for every vendor source, or use `update` without a source ID. After an update, the catalog is rediscovered from the new upstream snapshot; added and removed Skills immediately change each source's enabled/total counts. `source remove` refuses dirty submodules and updates the gitlink, `.gitmodules`, and catalog policy as one managed operation.
 
 ## Operations
 
@@ -223,11 +224,12 @@ skills-switch source list --archive
 | `↑` / `↓`, `j` / `k` | Navigate resource rows |
 | `←` / `→`, `h` / `l` | Select a client column |
 | `Space` | Toggle the selected resource or Skill source group for the selected client |
-| `a` | Toggle the selected Skill for every compatible client atomically |
+| `a` | Toggle the selected Skill or entire source for every compatible client atomically |
 | `Enter` | Expand or collapse a Skill source |
 | `/` | Search the active resource tab |
 | `f` | Cycle all, enabled, issues, and Skill archive views |
 | `u` | Update the selected Skill vendor source |
+| `U` | Update every vendor source and rediscover its current Skills |
 | `L` | Switch the TUI language between English and Chinese |
 | `?` | Toggle full help |
 | `q` | Quit |

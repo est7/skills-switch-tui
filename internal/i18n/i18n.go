@@ -43,6 +43,7 @@ const (
 	HelpSearch                Key = "help_search"
 	HelpFilter                Key = "help_filter"
 	HelpUpdate                Key = "help_update"
+	HelpUpdateAll             Key = "help_update_all"
 	HelpLanguage              Key = "help_language"
 	HelpMore                  Key = "help_more"
 	HelpQuit                  Key = "help_quit"
@@ -60,6 +61,8 @@ const (
 	DisabledSkills            Key = "disabled_skills"
 	EnabledSkillAllClients    Key = "enabled_skill_all_clients"
 	DisabledSkillAllClients   Key = "disabled_skill_all_clients"
+	EnabledSourceAllClients   Key = "enabled_source_all_clients"
+	DisabledSourceAllClients  Key = "disabled_source_all_clients"
 	SelectSkillForAllClients  Key = "select_skill_for_all_clients"
 	AllClientsSkillOnly       Key = "all_clients_skill_only"
 	NoCompatibleClients       Key = "no_compatible_clients"
@@ -70,6 +73,7 @@ const (
 	NoSourceSelected          Key = "no_source_selected"
 	VendorOnlyUpdate          Key = "vendor_only_update"
 	UpdatingSource            Key = "updating_source"
+	UpdatingAllSources        Key = "updating_all_sources"
 	UpdateFailed              Key = "update_failed"
 	UpdateReloadFailed        Key = "update_reload_failed"
 	UpdatedSources            Key = "updated_sources"
@@ -204,6 +208,7 @@ var messages = map[Language]map[Key]string{
 		HelpSearch:                "search",
 		HelpFilter:                "filter",
 		HelpUpdate:                "update",
+		HelpUpdateAll:             "update all",
 		HelpLanguage:              "language",
 		HelpMore:                  "more",
 		HelpQuit:                  "quit",
@@ -221,7 +226,9 @@ var messages = map[Language]map[Key]string{
 		DisabledSkills:            "Disabled %d skill(s) for %s",
 		EnabledSkillAllClients:    "Enabled %s for all %d compatible clients",
 		DisabledSkillAllClients:   "Disabled %s for all %d compatible clients",
-		SelectSkillForAllClients:  "Select a Skill to toggle all clients",
+		EnabledSourceAllClients:   "Enabled %s across %d compatible projection(s)",
+		DisabledSourceAllClients:  "Disabled %s across all clients (%d compatible projections)",
+		SelectSkillForAllClients:  "Select a Skill or source to toggle all clients",
 		AllClientsSkillOnly:       "All-client toggle is available for Skills only",
 		NoCompatibleClients:       "%s has no compatible clients",
 		EnabledResource:           "Enabled %s for %s",
@@ -231,6 +238,7 @@ var messages = map[Language]map[Key]string{
 		NoSourceSelected:          "No source selected",
 		VendorOnlyUpdate:          "Only vendor sources can be updated",
 		UpdatingSource:            "Updating %s…",
+		UpdatingAllSources:        "Updating all %d vendor sources…",
 		UpdateFailed:              "Update failed",
 		UpdateReloadFailed:        "Updated sources, but catalog reload failed",
 		UpdatedSources:            "Updated %d source(s); %d changed",
@@ -359,6 +367,7 @@ var messages = map[Language]map[Key]string{
 		HelpSearch:                "搜索",
 		HelpFilter:                "筛选",
 		HelpUpdate:                "更新",
+		HelpUpdateAll:             "全部更新",
 		HelpLanguage:              "语言",
 		HelpMore:                  "更多",
 		HelpQuit:                  "退出",
@@ -376,7 +385,9 @@ var messages = map[Language]map[Key]string{
 		DisabledSkills:            "已停用 %d 个 Skill（%s）",
 		EnabledSkillAllClients:    "已在全部 %2$d 个兼容客户端启用 %1$s",
 		DisabledSkillAllClients:   "已在全部 %2$d 个兼容客户端停用 %1$s",
-		SelectSkillForAllClients:  "请选择一个 Skill，再切换全部客户端",
+		EnabledSourceAllClients:   "已为 %1$s 启用全部 %2$d 个兼容投影",
+		DisabledSourceAllClients:  "已在全部客户端停用 %1$s（%2$d 个兼容投影）",
+		SelectSkillForAllClients:  "请选择一个 Skill 或来源，再切换全部客户端",
 		AllClientsSkillOnly:       "全部客户端切换仅适用于 Skills",
 		NoCompatibleClients:       "%s 没有兼容的客户端",
 		EnabledResource:           "已为 %[2]s 启用 %[1]s",
@@ -386,6 +397,7 @@ var messages = map[Language]map[Key]string{
 		NoSourceSelected:          "未选择来源",
 		VendorOnlyUpdate:          "只有 vendor 来源可以更新",
 		UpdatingSource:            "正在更新 %s…",
+		UpdatingAllSources:        "正在更新全部 %d 个 vendor 来源…",
 		UpdateFailed:              "更新失败",
 		UpdateReloadFailed:        "来源已更新，但重新加载目录失败",
 		UpdatedSources:            "已更新 %d 个来源；%d 个发生变化",

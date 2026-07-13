@@ -95,7 +95,7 @@ func (m Model) renderSkillsTable() string {
 	tableWidth := m.tableWidth()
 	labelWidth := max(16, tableWidth-2-clientColumnWidth*visibleClientCount)
 	header := m.styles.tableHeader.Width(tableWidth).Render(
-		"  " + lipgloss.NewStyle().Width(labelWidth).Render(m.renderSkillHeader()) + m.renderClientHeaders(clientStart, clientEnd),
+		"  " + lipgloss.NewStyle().Width(labelWidth).Background(m.styles.tableHeader.GetBackground()).Render(m.renderSkillHeader()) + m.renderClientHeaders(clientStart, clientEnd),
 	)
 	rows := m.rows()
 	if len(rows) == 0 {
@@ -178,7 +178,7 @@ func (m Model) renderResourceTable(labels []string, cell func(string, catalog.Cl
 	tableWidth := m.tableWidth()
 	labelWidth := max(16, tableWidth-2-clientColumnWidth*visibleClientCount)
 	header := m.styles.tableHeader.Width(tableWidth).Render(
-		"  " + lipgloss.NewStyle().Width(labelWidth).Render(m.translator.Text(i18n.ResourceHeader)) + m.renderClientHeaders(clientStart, clientEnd),
+		"  " + lipgloss.NewStyle().Width(labelWidth).Background(m.styles.tableHeader.GetBackground()).Render(m.translator.Text(i18n.ResourceHeader)) + m.renderClientHeaders(clientStart, clientEnd),
 	)
 	if len(labels) == 0 {
 		return header + "\n" + m.styles.subtle.Padding(1, 2).Render(m.translator.Text(i18n.NoResourcesMatch))
@@ -189,14 +189,21 @@ func (m Model) renderResourceTable(labels []string, cell func(string, catalog.Cl
 	clients := m.catalog.Clients.IDs()
 	for index := start; index < end; index++ {
 		selected := index == m.cursor
+		rowBackground := m.styles.canvas
+		if selected {
+			rowBackground = m.styles.selected.GetBackground()
+		}
 		cursor := "  "
 		if selected {
-			cursor = m.styles.accent.Render("▌ ")
+			cursor = m.styles.accent.Background(rowBackground).Render("▌ ")
 		}
-		label := lipgloss.NewStyle().Width(labelWidth).MaxWidth(labelWidth).Render(m.styles.child.Render(labels[index]))
+		label := lipgloss.NewStyle().Width(labelWidth).MaxWidth(labelWidth).Background(rowBackground).Render(
+			m.styles.child.Background(rowBackground).Render(labels[index]),
+		)
 		var cells strings.Builder
 		for clientIndex := clientStart; clientIndex < clientEnd; clientIndex++ {
 			value, style := cell(labels[index], clients[clientIndex])
+			style = style.Background(rowBackground)
 			if selected && clientIndex == m.clientIndex {
 				style = m.styles.selectedCell
 			}
@@ -216,7 +223,7 @@ func (m Model) renderClientHeaders(start, end int) string {
 	clients := m.catalog.Clients.IDs()
 	for index := start; index < end; index++ {
 		client := clients[index]
-		style := m.styles.subtle
+		style := m.styles.tableHeader
 		if index == m.clientIndex {
 			style = m.styles.selectedCell
 		}
@@ -234,9 +241,13 @@ func (m Model) renderClientHeaders(start, end int) string {
 
 func (m Model) renderRow(item row, selected bool, labelWidth, clientStart, clientEnd, tableWidth int) string {
 	source := m.catalog.Sources[item.sourceIndex]
+	rowBackground := m.styles.canvas
+	if selected {
+		rowBackground = m.styles.selected.GetBackground()
+	}
 	cursor := "  "
 	if selected {
-		cursor = m.styles.accent.Render("▌ ")
+		cursor = m.styles.accent.Background(rowBackground).Render("▌ ")
 	}
 	var label string
 	if item.kind == sourceRow {
@@ -244,23 +255,26 @@ func (m Model) renderRow(item row, selected bool, labelWidth, clientStart, clien
 		if m.expanded[source.ID] || strings.TrimSpace(m.search.Value()) != "" {
 			disclosure = "▾"
 		}
-		kind := m.styles.scopeLabel.Width(sourceKindColumnWidth).Render(sourceKindLabel(source))
+		kind := m.styles.scopeLabel.Background(rowBackground).Width(sourceKindColumnWidth).Render(sourceKindLabel(source))
 		nameWidth := max(1, labelWidth-sourceKindColumnWidth-2)
 		name := truncate(sourceDisplayName(source), nameWidth)
-		label = kind + m.styles.group.Render(disclosure+" "+name)
+		label = kind + m.styles.group.Background(rowBackground).Render(disclosure+" "+name)
 	} else {
 		skill := source.Skills[item.skillIndex]
 		descriptionWidth := max(0, labelWidth-sourceKindColumnWidth-len([]rune(skill.Name))-6)
 		description := truncate(skill.Description, descriptionWidth)
-		label = strings.Repeat(" ", sourceKindColumnWidth) + m.styles.child.Render("  "+skill.Name) + m.styles.subtle.Render("  "+description)
+		label = strings.Repeat(" ", sourceKindColumnWidth) +
+			m.styles.child.Background(rowBackground).Render("  "+skill.Name) +
+			m.styles.subtle.Background(rowBackground).Render("  "+description)
 	}
-	label = lipgloss.NewStyle().Width(labelWidth).MaxWidth(labelWidth).Render(label)
+	label = lipgloss.NewStyle().Width(labelWidth).MaxWidth(labelWidth).Background(rowBackground).Render(label)
 
 	var cells strings.Builder
 	clients := m.catalog.Clients.IDs()
 	for clientIndex := clientStart; clientIndex < clientEnd; clientIndex++ {
 		client := clients[clientIndex]
 		value, style := m.cell(item, client)
+		style = style.Background(rowBackground)
 		if selected && clientIndex == m.clientIndex {
 			style = m.styles.selectedCell
 		}
@@ -485,16 +499,17 @@ func (m Model) filterLabel(filter filterMode) string {
 }
 
 func (m Model) renderFooter() string {
-	statusStyle := m.styles.status
+	barBackground := m.styles.statusBar.GetBackground()
+	statusStyle := m.styles.status.Background(barBackground)
 	status := m.status
-	icon := m.styles.accent.Render("●")
+	icon := m.styles.accent.Background(barBackground).Render("●")
 	if m.err != nil {
-		statusStyle = m.styles.error
+		statusStyle = m.styles.error.Background(barBackground)
 		status += ": " + m.err.Error()
-		icon = m.styles.error.Render("!")
+		icon = m.styles.error.Background(barBackground).Render("!")
 	}
 	if m.updating {
-		icon = m.styles.accent.Render("◌")
+		icon = m.styles.accent.Background(barBackground).Render("◌")
 	}
 	statusLine := m.styles.statusBar.Width(m.contentWidth()).Render(icon + "  " + statusStyle.Render(status))
 	return statusLine + "\n" + m.help.View(m.keys)

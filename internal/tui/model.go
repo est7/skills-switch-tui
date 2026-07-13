@@ -171,9 +171,26 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case updateFinishedMsg:
 		m.updating = false
+		reloaded, reloadErr := catalog.Load(m.catalog.Root, m.catalog.Clients)
+		if reloadErr == nil {
+			m.catalog = reloaded
+			m.projection = projection.New(m.project, reloaded)
+			if clients := m.catalog.Clients.IDs(); m.clientIndex >= len(clients) {
+				m.clientIndex = max(0, len(clients)-1)
+			}
+			m.clampCursor()
+		}
 		if message.err != nil {
 			m.err = message.err
+			if reloadErr != nil {
+				m.err = errors.Join(m.err, fmt.Errorf("reload catalog after failed update: %w", reloadErr))
+			}
 			m.status = m.translator.Text(i18n.UpdateFailed)
+			return m, nil
+		}
+		if reloadErr != nil {
+			m.err = fmt.Errorf("reload catalog after update: %w", reloadErr)
+			m.status = m.translator.Text(i18n.UpdateReloadFailed)
 			return m, nil
 		}
 		changed := 0
@@ -182,19 +199,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				changed++
 			}
 		}
-		if reloaded, err := catalog.Load(m.catalog.Root, m.catalog.Clients); err != nil {
-			m.err = fmt.Errorf("reload catalog after update: %w", err)
-			m.status = m.translator.Text(i18n.UpdateReloadFailed)
-			return m, nil
-		} else {
-			m.catalog = reloaded
-		}
-		if clients := m.catalog.Clients.IDs(); m.clientIndex >= len(clients) {
-			m.clientIndex = max(0, len(clients)-1)
-		}
 		m.err = nil
 		m.status = m.translator.Text(i18n.UpdatedSources, len(message.results), changed)
-		m.clampCursor()
 		return m, nil
 	}
 
@@ -240,9 +246,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case "space":
 		m.toggleSelection()
 	case "a":
-		m.toggleSkillAllClients()
+		m.toggleAllClients()
 	case "u":
-		return m.startUpdate()
+		return m.startUpdate(false)
+	case "U":
+		return m.startUpdate(true)
 	case "L":
 		m.toggleLanguage()
 	}
@@ -434,41 +442,55 @@ func (m *Model) toggleSkillSelection() {
 	m.status = m.translator.Text(resultKey, len(skills), client)
 }
 
-func (m *Model) toggleSkillAllClients() {
+func (m *Model) toggleAllClients() {
 	if m.tab != tabSkills {
 		m.status = m.translator.Text(i18n.AllClientsSkillOnly)
 		return
 	}
 	selected, ok := m.selectedRow()
-	if !ok || selected.kind != skillRow {
+	if !ok {
 		m.status = m.translator.Text(i18n.SelectSkillForAllClients)
 		return
 	}
 
 	source := m.catalog.Sources[selected.sourceIndex]
-	skill := source.Skills[selected.skillIndex]
+	skills := source.Skills
+	sourceSelection := selected.kind == sourceRow
+	if !sourceSelection {
+		skills = []catalog.Skill{source.Skills[selected.skillIndex]}
+	}
 	clients := m.catalog.Clients.IDs()
-	states := make(map[catalog.Client]projection.State, len(clients))
+	type stateKey struct {
+		skill  int
+		client catalog.Client
+	}
+	states := make(map[stateKey]projection.State, len(skills)*len(clients))
 	enable := false
 	compatibleCount := 0
-	for _, clientID := range clients {
-		state, err := m.projection.State(skill, clientID)
-		if err != nil {
-			m.err = err
-			m.status = m.translator.Text(i18n.InspectProjectFailed)
-			return
-		}
-		states[clientID] = state
-		if !skill.Supports(clientID) {
-			continue
-		}
-		compatibleCount++
-		if state != projection.StateEnabled {
-			enable = true
+	hasManagedProjection := false
+	for skillIndex, skill := range skills {
+		for _, clientID := range clients {
+			state, err := m.projection.State(skill, clientID)
+			if err != nil {
+				m.err = err
+				m.status = m.translator.Text(i18n.InspectProjectFailed)
+				return
+			}
+			states[stateKey{skill: skillIndex, client: clientID}] = state
+			if state == projection.StateEnabled || state == projection.StateIncompatibleEnabled {
+				hasManagedProjection = true
+			}
+			if !skill.Supports(clientID) {
+				continue
+			}
+			compatibleCount++
+			if state != projection.StateEnabled {
+				enable = true
+			}
 		}
 	}
-	if compatibleCount == 0 {
-		m.status = m.translator.Text(i18n.NoCompatibleClients, skill.ID)
+	if compatibleCount == 0 && !hasManagedProjection {
+		m.status = m.translator.Text(i18n.NoCompatibleClients, source.ID)
 		return
 	}
 	if source.IsArchived() && enable {
@@ -477,19 +499,29 @@ func (m *Model) toggleSkillAllClients() {
 		return
 	}
 
-	operations := make([]projection.Operation, 0, len(clients))
+	operations := make([]projection.Operation, 0, len(clients)*2)
 	for _, clientID := range clients {
-		state := states[clientID]
-		if enable {
-			if skill.Supports(clientID) {
-				operations = append(operations, projection.Operation{Skills: []catalog.Skill{skill}, Client: clientID, Enabled: true})
-			} else if state == projection.StateIncompatibleEnabled {
-				operations = append(operations, projection.Operation{Skills: []catalog.Skill{skill}, Client: clientID, Enabled: false})
+		toEnable := make([]catalog.Skill, 0, len(skills))
+		toDisable := make([]catalog.Skill, 0, len(skills))
+		for skillIndex, skill := range skills {
+			state := states[stateKey{skill: skillIndex, client: clientID}]
+			if enable {
+				if skill.Supports(clientID) {
+					toEnable = append(toEnable, skill)
+				} else if state == projection.StateIncompatibleEnabled {
+					toDisable = append(toDisable, skill)
+				}
+				continue
 			}
-			continue
+			if state == projection.StateEnabled || state == projection.StateIncompatibleEnabled {
+				toDisable = append(toDisable, skill)
+			}
 		}
-		if state == projection.StateEnabled || state == projection.StateIncompatibleEnabled {
-			operations = append(operations, projection.Operation{Skills: []catalog.Skill{skill}, Client: clientID, Enabled: false})
+		if len(toEnable) > 0 {
+			operations = append(operations, projection.Operation{Skills: toEnable, Client: clientID, Enabled: true})
+		}
+		if len(toDisable) > 0 {
+			operations = append(operations, projection.Operation{Skills: toDisable, Client: clientID, Enabled: false})
 		}
 	}
 	if err := m.projection.Apply(operations); err != nil {
@@ -498,6 +530,15 @@ func (m *Model) toggleSkillAllClients() {
 		return
 	}
 	m.err = nil
+	if sourceSelection {
+		resultKey := i18n.DisabledSourceAllClients
+		if enable {
+			resultKey = i18n.EnabledSourceAllClients
+		}
+		m.status = m.translator.Text(resultKey, source.ID, compatibleCount)
+		return
+	}
+	skill := skills[0]
 	resultKey := i18n.DisabledSkillAllClients
 	if enable {
 		resultKey = i18n.EnabledSkillAllClients
@@ -571,7 +612,7 @@ func (m *Model) togglePromptSelection() {
 	m.status = m.translator.Text(key, group.ID, clientID)
 }
 
-func (m Model) startUpdate() (tea.Model, tea.Cmd) {
+func (m Model) startUpdate(all bool) (tea.Model, tea.Cmd) {
 	if m.tab != tabSkills {
 		m.status = m.translator.Text(i18n.UpdatesUnavailable)
 		return m, nil
@@ -583,22 +624,40 @@ func (m Model) startUpdate() (tea.Model, tea.Cmd) {
 		m.status = m.translator.Text(i18n.UpdatesUnavailable)
 		return m, nil
 	}
-	selected, ok := m.selectedRow()
-	if !ok {
-		m.status = m.translator.Text(i18n.NoSourceSelected)
-		return m, nil
-	}
-	selectedSource := m.catalog.Sources[selected.sourceIndex]
-	if selectedSource.IsArchived() || !selectedSource.IsVendor() {
-		m.status = m.translator.Text(i18n.VendorOnlyUpdate)
-		return m, nil
+	selectedSources := make([]catalog.Source, 0, len(m.catalog.Sources))
+	if all {
+		for _, candidate := range m.catalog.Sources {
+			if candidate.IsVendor() && !candidate.IsArchived() {
+				selectedSources = append(selectedSources, candidate)
+			}
+		}
+		if len(selectedSources) == 0 {
+			m.status = m.translator.Text(i18n.NoVendorSources)
+			return m, nil
+		}
+	} else {
+		selected, ok := m.selectedRow()
+		if !ok {
+			m.status = m.translator.Text(i18n.NoSourceSelected)
+			return m, nil
+		}
+		selectedSource := m.catalog.Sources[selected.sourceIndex]
+		if selectedSource.IsArchived() || !selectedSource.IsVendor() {
+			m.status = m.translator.Text(i18n.VendorOnlyUpdate)
+			return m, nil
+		}
+		selectedSources = append(selectedSources, selectedSource)
 	}
 	m.updating = true
 	m.err = nil
-	m.status = m.translator.Text(i18n.UpdatingSource, selectedSource.ID)
+	if all {
+		m.status = m.translator.Text(i18n.UpdatingAllSources, len(selectedSources))
+	} else {
+		m.status = m.translator.Text(i18n.UpdatingSource, selectedSources[0].ID)
+	}
 	updater := *m.updater
 	return m, func() tea.Msg {
-		results, err := updater.Update(m.context, []catalog.Source{selectedSource}, false)
+		results, err := updater.Update(m.context, selectedSources, false)
 		return updateFinishedMsg{results: results, err: err}
 	}
 }
