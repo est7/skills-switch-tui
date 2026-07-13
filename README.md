@@ -53,13 +53,13 @@ When `defaults.targets` is omitted, new skills support every registered client. 
 
 ## Install and build
 
-Go 1.25 or newer is required.
+Install the released binary from the third-party Homebrew tap:
 
 ```sh
-go install github.com/est7/skills-switch-tui/cmd/skills-switch@latest
+brew install est7/tap/skills-switch
 ```
 
-For local development:
+For local development, Go 1.25 or newer is required:
 
 ```sh
 go test ./...
