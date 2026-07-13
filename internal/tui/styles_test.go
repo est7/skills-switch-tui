@@ -38,11 +38,18 @@ type contrastPair struct {
 }
 
 func themeContrastPairs(theme styles) []contrastPair {
+	canvas := theme.canvas
 	panel := theme.panel.GetBackground()
 	raised := theme.tableHeader.GetBackground()
 	selected := theme.selected.GetBackground()
 	selectedCell := theme.selectedCell.GetBackground()
 	return []contrastPair{
+		{name: "canvas title", foreground: theme.title.GetForeground(), background: canvas},
+		{name: "canvas secondary", foreground: theme.subtitle.GetForeground(), background: canvas},
+		{name: "canvas accent", foreground: theme.scopeLabel.GetForeground(), background: canvas},
+		{name: "canvas filter", foreground: theme.filter.GetForeground(), background: canvas},
+		{name: "canvas help key", foreground: theme.helpKey.GetForeground(), background: canvas},
+		{name: "canvas help description", foreground: theme.helpDesc.GetForeground(), background: canvas},
 		{name: "body", foreground: theme.child.GetForeground(), background: panel},
 		{name: "secondary", foreground: theme.subtle.GetForeground(), background: panel},
 		{name: "tab", foreground: theme.tab.GetForeground(), background: theme.tab.GetBackground()},

@@ -20,7 +20,15 @@ const (
 
 func (m Model) View() tea.View {
 	sections := []string{m.renderHeader(), m.renderTable(), m.renderDetail(), m.renderFooter()}
-	view := tea.NewView(lipgloss.NewStyle().Padding(1, m.horizontalPadding()).Render(strings.Join(sections, "\n")))
+	canvas := lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		Background(m.styles.canvas).
+		Foreground(m.styles.title.GetForeground()).
+		Padding(1, m.horizontalPadding())
+	view := tea.NewView(canvas.Render(strings.Join(sections, "\n")))
+	view.BackgroundColor = m.styles.canvas
+	view.ForegroundColor = m.styles.title.GetForeground()
 	view.AltScreen = true
 	view.WindowTitle = "skills-switch · " + filepath.Base(m.project)
 	return view

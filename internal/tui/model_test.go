@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"image/color"
 	"os"
 	"path/filepath"
 	"strings"
@@ -267,6 +268,40 @@ func TestPolishedViewFitsNarrowTerminalAndSurfacesAllClientAction(t *testing.T) 
 	}
 	if description := defaultKeyMap(i18n.New(i18n.Chinese)).ToggleAll.Help().Desc; description != "全部客户端" {
 		t.Fatalf("Chinese all-client help = %q", description)
+	}
+}
+
+func TestViewPaintsTheEntireTerminalCanvasInLightAndDarkModes(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		name       string
+		background color.Color
+	}{
+		{name: "dark", background: color.Black},
+		{name: "light", background: color.White},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+			updated, _ := model.Update(tea.BackgroundColorMsg{Color: tt.background})
+			updated, _ = updated.(Model).Update(tea.WindowSizeMsg{Width: 48, Height: 24})
+			view := updated.(Model).View()
+			if view.BackgroundColor == nil {
+				t.Fatal("terminal background remains transparent")
+			}
+			if width := lipgloss.Width(view.Content); width != 48 {
+				t.Fatalf("canvas width = %d, want 48", width)
+			}
+			if height := lipgloss.Height(view.Content); height != 24 {
+				t.Fatalf("canvas height = %d, want 24", height)
+			}
+		})
 	}
 }
 

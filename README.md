@@ -232,7 +232,7 @@ skills-switch source list --archive
 | `?` | Toggle full help |
 | `q` | Quit |
 
-Keyboard actions render immediately and intentionally have no decorative animation. Dark and light themes use separate terminal palettes; informational text and state colors are contrast-tested against their rendered backgrounds.
+Keyboard actions render immediately and intentionally have no decorative animation. Dark and light themes use separate opaque, full-window terminal canvases; informational text and state colors are contrast-tested against their rendered backgrounds.
 
 ## Language
 

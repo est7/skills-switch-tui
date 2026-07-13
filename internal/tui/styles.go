@@ -1,11 +1,14 @@
 package tui
 
 import (
+	"image/color"
+
 	"charm.land/bubbles/v2/help"
 	"charm.land/lipgloss/v2"
 )
 
 type styles struct {
+	canvas       color.Color
 	brandMark    lipgloss.Style
 	title        lipgloss.Style
 	subtitle     lipgloss.Style
@@ -37,6 +40,7 @@ type styles struct {
 
 func newStyles(isDark bool) styles {
 	choose := lipgloss.LightDark(isDark)
+	canvas := choose(lipgloss.Color("#F6F3FA"), lipgloss.Color("#100D17"))
 	foreground := choose(lipgloss.Color("#201D29"), lipgloss.Color("#F6F3FA"))
 	muted := choose(lipgloss.Color("#625D6B"), lipgloss.Color("#B4ADBF"))
 	accent := choose(lipgloss.Color("#5B34C4"), lipgloss.Color("#C4B0FF"))
@@ -50,6 +54,7 @@ func newStyles(isDark bool) styles {
 	red := choose(lipgloss.Color("#B4233A"), lipgloss.Color("#FF8999"))
 
 	return styles{
+		canvas:       canvas,
 		brandMark:    lipgloss.NewStyle().Foreground(accent).Bold(true),
 		title:        lipgloss.NewStyle().Foreground(foreground).Bold(true),
 		subtitle:     lipgloss.NewStyle().Foreground(muted),
