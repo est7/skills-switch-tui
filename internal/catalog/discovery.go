@@ -122,12 +122,13 @@ func PlanVendorDiscovery(root string, configuredPriority []DiscoveryStrategy, sk
 }
 
 // discoverManagedSource resolves a single managed source rooted at root using
-// the shared manifest-discovery pipeline. Vendor repositories call it with
-// fallbackToRoot=false, preserving their behavior of yielding an empty source
-// when no manifest matches. Local groups call it with fallbackToRoot=true so a
-// group without a recognized manifest (or with a manifest that declares no
-// discoverable skills) is walked from its root, matching the historical local
-// "collect every SKILL.md" behavior.
+// the shared manifest-discovery pipeline. With fallbackToRoot=true, a source
+// without a recognized manifest (or with a manifest that declares no
+// discoverable skills) is walked from its root, collecting every SKILL.md.
+// Both local groups and vendor repositories opt in, so a manifest-less repo of
+// flat skills (for example github.com/android/skills) discovers all of them and
+// the caller enables the ones it wants; explicit --skill-path or
+// --discovery-priority still scopes a repo that needs it.
 func discoverManagedSource(
 	id string,
 	root string,
@@ -136,7 +137,8 @@ func discoverManagedSource(
 	defaults map[Client]bool,
 	overrides map[string]overrideConfig,
 	clients client.Registry,
-	fallbackToRoot bool,
+	walkEmptyManifest bool,
+	walkNoManifest bool,
 ) (Source, error) {
 	if len(skillPaths) > 0 {
 		if len(configuredPriority) > 0 {
@@ -169,16 +171,17 @@ func discoverManagedSource(
 		if err != nil {
 			return Source{}, err
 		}
-		if fallbackToRoot && len(source.Skills) == 0 {
+		if walkEmptyManifest && len(source.Skills) == 0 {
 			// A manifest matched but declared no discoverable skills; fall back
-			// to treating the group root itself as the skill tree.
+			// to treating the group root itself as the skill tree. Vendor sources
+			// opt out so an explicit empty `skills: []` stays authoritatively empty.
 			break
 		}
 		source.DiscoveryStrategy = strategy
 		source.DiscoveryPriority = priority
 		return source, nil
 	}
-	if fallbackToRoot {
+	if walkNoManifest {
 		source, err := discoverSourceRoots(id, root, []string{root}, defaults, overrides, clients, false)
 		if err != nil {
 			return Source{}, err

@@ -53,6 +53,36 @@ func TestScaffoldLocalSkillProducesADiscoverableSkill(t *testing.T) {
 	}
 }
 
+func TestLoadRootWalksManifestlessVendorRepo(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	base := filepath.Join(sourcesRoot, "vendor", "shared", "android-skills")
+	// A curated skills repo with no manifest and no top-level skills/ dir, skills
+	// nested by category at varying depths (github.com/android/skills shape).
+	writeSkill(t, filepath.Join(base, "build", "agp", "agp-9-upgrade"), "---\nname: agp-9-upgrade\ndescription: x.\n---\n")
+	writeSkill(t, filepath.Join(base, "jetpack-compose", "theming", "styles"), "---\nname: styles\ndescription: x.\n---\n")
+	config := "version: 1\nsources:\n  vendor-shared/android-skills:\n    branch: main\n"
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{
+		"vendor-shared/android-skills/build/agp/agp-9-upgrade",
+		"vendor-shared/android-skills/jetpack-compose/theming/styles",
+	} {
+		if _, ok := loaded.Skill(id); !ok {
+			t.Fatalf("manifest-less vendor repo did not root-walk to %q", id)
+		}
+	}
+	source, _ := loaded.Source("vendor-shared/android-skills")
+	if source.DiscoveryStrategy != DiscoveryRootWalk {
+		t.Fatalf("discovery strategy = %q, want root-walk", source.DiscoveryStrategy)
+	}
+}
+
 func TestLoadExpandsContainerSkillPathIntoNestedSkills(t *testing.T) {
 	sourcesRoot := t.TempDir()
 	base := filepath.Join(sourcesRoot, "vendor", "shared", "android-cc-plugin")

@@ -406,7 +406,7 @@ func discoverLocalSources(root string, defaults map[Client]bool, overrides map[s
 		for _, group := range groups {
 			id := ScopedSourceID(SourceLocal, scope, group.Name())
 			path := filepath.Join(scopeRoot, group.Name())
-			source, discoverErr := discoverManagedSource(id, path, nil, nil, targets, overrides, clients, true)
+			source, discoverErr := discoverManagedSource(id, path, nil, nil, targets, overrides, clients, true, true)
 			if discoverErr != nil {
 				return nil, discoverErr
 			}
@@ -442,7 +442,7 @@ func discoverVendorSources(root string, defaults map[Client]bool, config configF
 			id := ScopedSourceID(SourceVendor, scope, repository.Name())
 			path := filepath.Join(scopeRoot, repository.Name())
 			policy := config.Sources[id]
-			source, discoverErr := discoverManagedSource(id, path, policy.DiscoveryPriority, policy.SkillPaths, targets, config.Overrides, clients, false)
+			source, discoverErr := discoverManagedSource(id, path, policy.DiscoveryPriority, policy.SkillPaths, targets, config.Overrides, clients, false, true)
 			if discoverErr != nil {
 				return nil, discoverErr
 			}
