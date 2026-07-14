@@ -141,7 +141,7 @@ func (m Model) openRepoForm() (tea.Model, tea.Cmd) {
 				if strings.TrimSpace(value) == "" {
 					return errors.New(m.translator.Text(i18n.AddRepoRequired))
 				}
-				_, err := source.ParseRepoURL(value)
+				_, err := source.ParseSourceRef(value)
 				return err
 			}),
 	))
@@ -252,7 +252,7 @@ func (m Model) completeForm() (tea.Model, tea.Cmd) {
 
 func (m Model) commitRepo(raw string) (tea.Model, tea.Cmd) {
 	m.active = nil
-	ref, err := source.ParseRepoURL(raw)
+	ref, err := source.ParseSourceRef(raw)
 	if err != nil {
 		m.err = err
 		m.status = m.translator.Text(i18n.NoChangesApplied)
@@ -263,8 +263,8 @@ func (m Model) commitRepo(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	request := source.AddRequest{Name: ref.Name, URL: ref.CloneURL, Branch: ref.Branch, Scope: "shared"}
-	if ref.SkillPath != "" {
-		request.SkillPaths = []string{ref.SkillPath}
+	if ref.Subpath != "" {
+		request.SkillPaths = []string{ref.Subpath}
 	}
 	m.updating = true
 	m.err = nil

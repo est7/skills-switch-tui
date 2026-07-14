@@ -166,10 +166,11 @@ func newSourceAddCommand(options *rootOptions) *cobra.Command {
 					cleanDiscoveryPriority = append(cleanDiscoveryPriority, catalog.DiscoveryStrategy(strategy))
 				}
 			}
-			// A GitHub/GitLab link fills in name, branch, and Skill subpath so the
-			// user can register a source from just a URL. Explicit flags win.
+			// An owner/repo shorthand or a GitHub/GitLab link fills in the clone
+			// URL, name, branch, and Skill subpath so the user can register a
+			// source from just a reference. Explicit flags win.
 			repositoryURL := args[0]
-			if ref, parseErr := source.ParseRepoURL(args[0]); parseErr == nil {
+			if ref, parseErr := source.ParseSourceRef(args[0]); parseErr == nil {
 				repositoryURL = ref.CloneURL
 				if name == "" {
 					name = ref.Name
@@ -177,8 +178,8 @@ func newSourceAddCommand(options *rootOptions) *cobra.Command {
 				if !command.Flags().Changed("branch") && ref.Branch != "" {
 					branch = ref.Branch
 				}
-				if len(cleanSkillPaths) == 0 && len(cleanDiscoveryPriority) == 0 && ref.SkillPath != "" {
-					cleanSkillPaths = []string{ref.SkillPath}
+				if len(cleanSkillPaths) == 0 && len(cleanDiscoveryPriority) == 0 && ref.Subpath != "" {
+					cleanSkillPaths = []string{ref.Subpath}
 				}
 			}
 			if name == "" {
