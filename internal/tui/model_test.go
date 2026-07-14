@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	huh "charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/est7/skills-switch-tui/internal/catalog"
 	"github.com/est7/skills-switch-tui/internal/client"
@@ -792,7 +793,7 @@ func TestMCPDeleteRemovesServerAfterConfirmation(t *testing.T) {
 	}
 }
 
-func TestMCPAddServerViaFormWritesTheCatalog(t *testing.T) {
+func TestMCPToggleAllClientsEnablesAndDisablesEveryClient(t *testing.T) {
 	sourcesRoot := t.TempDir()
 	projectRoot := t.TempDir()
 	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "demo", "alpha"), "alpha")
@@ -814,29 +815,207 @@ func TestMCPAddServerViaFormWritesTheCatalog(t *testing.T) {
 	})
 	model.tab = tabMCP
 
-	updated, _ := model.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
-	model = updated.(Model)
-	if model.mcpForm == nil || model.mcpForm.step != mcpFormName {
-		t.Fatalf("add form did not open at the name step: %#v", model.mcpForm)
+	configFiles := []string{
+		filepath.Join(projectRoot, ".codex", "config.toml"),
+		filepath.Join(projectRoot, ".mcp.json"),
+		filepath.Join(projectRoot, ".gemini", "settings.json"),
 	}
-	model.mcpForm.input.SetValue("grafana")
-	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	model = updated.(Model)
-	if model.mcpForm == nil || model.mcpForm.step != mcpFormEndpoint {
-		t.Fatalf("add form did not advance to the endpoint step: %#v", model.mcpForm)
-	}
-	model.mcpForm.input.SetValue("https://mcp.example.com")
-	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
 	model = updated.(Model)
 	if model.err != nil {
-		t.Fatalf("add failed: %v", model.err)
+		t.Fatalf("enable MCP for all clients: %v", model.err)
 	}
-	if model.mcpForm != nil {
+	for _, path := range configFiles {
+		data, err := os.ReadFile(path)
+		if err != nil || !strings.Contains(string(data), "context7") {
+			t.Fatalf("all-client MCP toggle did not enable %s: %s, %v", path, data, err)
+		}
+	}
+
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("disable MCP for all clients: %v", model.err)
+	}
+	for _, path := range configFiles {
+		if data, err := os.ReadFile(path); err == nil && strings.Contains(string(data), "context7") {
+			t.Fatalf("all-client MCP toggle did not disable %s:\n%s", path, data)
+		}
+	}
+}
+
+// submitForm drives an open huh dialog to completion deterministically: it sets
+// the fields the user would have entered, marks the form completed, then feeds a
+// message so the model runs its completion handler. This exercises the model's
+// form plumbing without depending on huh's internal focus/paste timing.
+func submitForm(t *testing.T, model Model, prepare func(*activeForm)) Model {
+	t.Helper()
+	if model.active == nil {
+		t.Fatal("no active form to submit")
+	}
+	prepare(model.active)
+	model.active.form.State = huh.StateCompleted
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	return updated.(Model)
+}
+
+func newMCPModel(t *testing.T, servers string) (Model, string) {
+	t.Helper()
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "demo", "alpha"), "alpha")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpPath := filepath.Join(t.TempDir(), "mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(servers), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mcpCatalog, err := mcp.LoadCatalog(mcpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English), Resources{
+		MCPCatalog: mcpCatalog,
+		MCPManager: mcp.NewManager(projectRoot, mcpCatalog, loaded.Clients),
+	})
+	model.tab = tabMCP
+	return model, projectRoot
+}
+
+func TestMCPAddViaJSONFormWritesWrapperAndBareObjects(t *testing.T) {
+	model, _ := newMCPModel(t, `{"version":1,"mcpServers":{"context7":{"command":"npx"}}}`)
+
+	// The n key opens the JSON paste form on the MCP tab.
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	model = updated.(Model)
+	if model.active == nil || model.active.kind != formAddMCP {
+		t.Fatalf("n did not open the MCP JSON form: %#v", model.active)
+	}
+
+	// A wrapper block adds every keyed server at once.
+	model = submitForm(t, model, func(form *activeForm) {
+		form.json = `{"mcpServers":{"grafana":{"url":"https://mcp.example.com"},"deno":{"command":"deno"}}}`
+	})
+	if model.err != nil {
+		t.Fatalf("wrapper add failed: %v", model.err)
+	}
+	if model.active != nil {
 		t.Fatal("form should close after a successful add")
 	}
-	server, ok := model.mcpCatalog.Server("grafana")
-	if !ok || server.Transport != mcp.TransportHTTP || server.URL != "https://mcp.example.com" {
-		t.Fatalf("added server missing or incorrect: %#v", server)
+	if server, ok := model.mcpCatalog.Server("grafana"); !ok || server.Transport != mcp.TransportHTTP {
+		t.Fatalf("grafana missing or incorrect: %#v", server)
+	}
+	if _, ok := model.mcpCatalog.Server("deno"); !ok {
+		t.Fatal("deno from wrapper not added")
+	}
+
+	// A bare object prompts for a name, then adds it.
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	model = updated.(Model)
+	model = submitForm(t, model, func(form *activeForm) { form.json = `{"command":"uvx"}` })
+	if model.active == nil || model.active.kind != formAddMCPName {
+		t.Fatalf("bare object did not prompt for a name: %#v", model.active)
+	}
+	model = submitForm(t, model, func(form *activeForm) { form.name = "uvxmcp" })
+	if model.err != nil {
+		t.Fatalf("named bare add failed: %v", model.err)
+	}
+	if _, ok := model.mcpCatalog.Server("uvxmcp"); !ok {
+		t.Fatal("named bare server not added")
+	}
+}
+
+func TestModalDialogRendersCenteredWithoutResizingCanvas(t *testing.T) {
+	model, _ := newMCPModel(t, `{"version":1,"mcpServers":{"context7":{"command":"npx"}}}`)
+	resized, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = resized.(Model)
+
+	// Baseline canvas size with no dialog open.
+	base := model.View().Content
+	baseWidth, baseHeight := lipgloss.Width(base), lipgloss.Height(base)
+
+	opened, _ := model.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	model = opened.(Model)
+	if model.active == nil {
+		t.Fatal("n did not open the MCP dialog")
+	}
+	view := model.View().Content
+	if got := lipgloss.Width(view); got != baseWidth {
+		t.Fatalf("dialog changed canvas width: %d != %d", got, baseWidth)
+	}
+	if got := lipgloss.Height(view); got != baseHeight {
+		t.Fatalf("dialog changed canvas height: %d != %d", got, baseHeight)
+	}
+	// The dialog is a rounded card carrying the form title.
+	for _, fragment := range []string{"╭", "╰", "Paste MCP JSON"} {
+		if !strings.Contains(view, fragment) {
+			t.Fatalf("modal view missing %q:\n%s", fragment, view)
+		}
+	}
+}
+
+func TestSkillsTabAddMenuCreatesLocalSkill(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "demo", "alpha"), "alpha")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	model = updated.(Model)
+	if model.active == nil || model.active.kind != formAddMenu {
+		t.Fatalf("n did not open the add menu on the Skills tab: %#v", model.active)
+	}
+	model = submitForm(t, model, func(form *activeForm) { form.choice = "create" })
+	if model.active == nil || model.active.kind != formCreateSkill {
+		t.Fatalf("menu selection did not open the create form: %#v", model.active)
+	}
+	model = submitForm(t, model, func(form *activeForm) {
+		form.name = "make-goal"
+		form.desc = "Draft a goal."
+	})
+	if model.err != nil {
+		t.Fatalf("create skill failed: %v", model.err)
+	}
+	if model.active != nil {
+		t.Fatal("form should close after creating a skill")
+	}
+	if _, err := os.Stat(filepath.Join(sourcesRoot, "local", "shared", "make-goal", "SKILL.md")); err != nil {
+		t.Fatalf("skill was not scaffolded: %v", err)
+	}
+	if _, ok := model.catalog.Skill("local-shared/make-goal/make-goal"); !ok {
+		t.Fatal("created skill is not in the reloaded catalog")
+	}
+}
+
+func TestSkillsTabAddMenuStartsRepoAdd(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "demo", "alpha"), "alpha")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), &source.Manager{}, i18n.New(i18n.English))
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	model = updated.(Model)
+	model = submitForm(t, model, func(form *activeForm) { form.choice = "repo" })
+	if model.active == nil || model.active.kind != formAddRepo {
+		t.Fatalf("menu selection did not open the repo form: %#v", model.active)
+	}
+	model = submitForm(t, model, func(form *activeForm) { form.url = "https://github.com/owner/repo" })
+	if model.active != nil {
+		t.Fatal("repo form should close when submitted")
+	}
+	if !model.updating {
+		t.Fatal("submitting a repo URL did not start an asynchronous add")
 	}
 }
 

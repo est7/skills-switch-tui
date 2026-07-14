@@ -106,3 +106,104 @@ func TestMCPAddAndRemoveRoundTrip(t *testing.T) {
 		t.Fatalf("unrelated server dropped: %s", out)
 	}
 }
+
+func TestSkillsCreateScaffoldsADiscoverableLocalSkill(t *testing.T) {
+	resourceRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"--resources", resourceRoot, "--project", projectRoot}
+
+	if _, err := execute(t, append(base, "skills", "create", "make-goal", "--description", "Draft a goal.")...); err != nil {
+		t.Fatalf("skills create: %v", err)
+	}
+	skillFile := filepath.Join(resourceRoot, "skills", "local", "shared", "make-goal", "SKILL.md")
+	if _, err := os.Stat(skillFile); err != nil {
+		t.Fatalf("scaffolded SKILL.md missing: %v", err)
+	}
+
+	out, err := execute(t, append(base, "skills", "list", "--json")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "local-shared/make-goal/make-goal") {
+		t.Fatalf("created skill not listed: %s", out)
+	}
+
+	// Re-creating the same skill fails.
+	if _, err := execute(t, append(base, "skills", "create", "make-goal")...); err == nil {
+		t.Fatal("duplicate skills create must fail")
+	}
+}
+
+func TestSourceAddRequiresDerivableNameOrExplicitFlag(t *testing.T) {
+	resourceRoot := t.TempDir()
+	_, err := execute(t, "--resources", resourceRoot, "source", "add", "https://example.com/")
+	if err == nil {
+		t.Fatal("source add with no derivable name must fail")
+	}
+	if !strings.Contains(err.Error(), "source name is required") {
+		t.Fatalf("error = %v, want name-required message", err)
+	}
+}
+
+func TestMCPImportAddsWrapperAndBareDefinitions(t *testing.T) {
+	resourceRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourcesRoot := filepath.Join(resourceRoot, "skills")
+	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "shared", "core", "alpha"), "alpha")
+	base := []string{"--resources", resourceRoot, "--project", projectRoot}
+
+	wrapper := `{"mcpServers":{"grafana":{"type":"http","url":"https://mcp.example.com"},"context7":{"command":"npx"}}}`
+	if _, err := execute(t, append(base, "mcp", "import", wrapper)...); err != nil {
+		t.Fatalf("import wrapper: %v", err)
+	}
+	out, err := execute(t, append(base, "mcp", "list", "--json")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "grafana") || !strings.Contains(string(out), "context7") {
+		t.Fatalf("imported wrapper servers not listed: %s", out)
+	}
+
+	if _, err := execute(t, append(base, "mcp", "import", `{"command":"deno"}`)...); err == nil {
+		t.Fatal("bare object without --name must fail")
+	}
+	if _, err := execute(t, append(base, "mcp", "import", `{"command":"deno"}`, "--name", "denomcp")...); err != nil {
+		t.Fatalf("import bare with --name: %v", err)
+	}
+
+	defFile := filepath.Join(t.TempDir(), "server.json")
+	if err := os.WriteFile(defFile, []byte(`{"mcpServers":{"fromfile":{"url":"https://f"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execute(t, append(base, "mcp", "import", "--file", defFile)...); err != nil {
+		t.Fatalf("import from file: %v", err)
+	}
+	out, err = execute(t, append(base, "mcp", "list", "--json")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"grafana", "context7", "denomcp", "fromfile"} {
+		if !strings.Contains(string(out), name) {
+			t.Fatalf("server %q missing after imports: %s", name, out)
+		}
+	}
+
+	// A wrapper where one name already exists is rejected whole: the new sibling
+	// must not be partially written.
+	if _, err := execute(t, append(base, "mcp", "import", `{"mcpServers":{"grafana":{"url":"https://y"},"brandnew":{"url":"https://z"}}}`)...); err == nil {
+		t.Fatal("import with a pre-existing name must fail")
+	}
+	out, err = execute(t, append(base, "mcp", "list", "--json")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "brandnew") {
+		t.Fatalf("partial import wrote a server despite a conflict: %s", out)
+	}
+}

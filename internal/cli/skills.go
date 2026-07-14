@@ -18,7 +18,41 @@ func newSkillsCommand(options *rootOptions) *cobra.Command {
 		Args:    cobra.NoArgs,
 	}
 	command.AddCommand(newListCommand(options))
+	command.AddCommand(newShowCommand(options))
+	command.AddCommand(newEnableCommand(options, true))
+	command.AddCommand(newEnableCommand(options, false))
+	command.AddCommand(newSkillCreateCommand(options))
 	command.AddCommand(newSkillDeleteCommand(options))
+	return command
+}
+
+func newSkillCreateCommand(options *rootOptions) *cobra.Command {
+	var group, scope, description string
+	var outputJSON bool
+	command := &cobra.Command{
+		Use:   "create <name>",
+		Short: "Scaffold a new local Skill skeleton",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			runtime, err := loadSourceMutationRuntime(options)
+			if err != nil {
+				return err
+			}
+			skillDir, err := catalog.ScaffoldLocalSkill(runtime.resources.SkillsRoot(), scope, group, args[0], description)
+			if err != nil {
+				return err
+			}
+			if outputJSON {
+				return writeJSON(command, map[string]string{"path": skillDir})
+			}
+			fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.SkillCreated, skillDir))
+			return nil
+		},
+	}
+	command.Flags().StringVar(&group, "group", "", "group directory (default: a standalone group named after the Skill)")
+	command.Flags().StringVar(&scope, "scope", "shared", "local scope (shared or a registered client id)")
+	command.Flags().StringVar(&description, "description", "", "Skill description for the frontmatter")
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
 	return command
 }
 

@@ -185,10 +185,58 @@ func mutateCatalogServers(path string, mutate func(map[string]any) error) error 
 	return atomicWrite(path, encoded, mode)
 }
 
-func normalizeServer(name string, raw rawServer) (Server, error) {
-	if strings.TrimSpace(name) == "" {
-		return Server{}, fmt.Errorf("name must not be empty")
+// ParseServers parses a pasted MCP definition. It accepts either a full
+// {"mcpServers": {...}} block (names come from the keys and several servers may
+// be returned, sorted by name) or a single bare server object such as
+// {"command": "npx", ...} / {"url": "..."} (returned as one Server with an empty
+// Name for the caller to fill and then validate through AddServer).
+func ParseServers(data []byte) ([]Server, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("empty MCP definition")
 	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &top); err != nil {
+		return nil, fmt.Errorf("parse MCP JSON object: %w", err)
+	}
+	if wrapper, ok := top["mcpServers"]; ok {
+		var raw map[string]rawServer
+		if err := json.Unmarshal(wrapper, &raw); err != nil {
+			return nil, fmt.Errorf("parse mcpServers: %w", err)
+		}
+		if len(raw) == 0 {
+			return nil, fmt.Errorf("mcpServers is empty")
+		}
+		names := make([]string, 0, len(raw))
+		for name := range raw {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		servers := make([]Server, 0, len(raw))
+		for _, name := range names {
+			server, err := normalizeServer(name, raw[name])
+			if err != nil {
+				return nil, fmt.Errorf("MCP server %q: %w", name, err)
+			}
+			servers = append(servers, server)
+		}
+		return servers, nil
+	}
+	var raw rawServer
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
+		return nil, fmt.Errorf("parse MCP server object: %w", err)
+	}
+	server, err := serverFromRaw("", raw)
+	if err != nil {
+		return nil, err
+	}
+	return []Server{server}, nil
+}
+
+// serverFromRaw builds a Server from a decoded entry and infers the transport
+// when omitted. It does not validate the name so a bare pasted object can be
+// named by the caller before AddServer validates it.
+func serverFromRaw(name string, raw rawServer) (Server, error) {
 	transport := Transport(raw.Type)
 	if transport == "" {
 		switch {
@@ -200,7 +248,7 @@ func normalizeServer(name string, raw rawServer) (Server, error) {
 			return Server{}, fmt.Errorf("cannot infer one unambiguous transport")
 		}
 	}
-	server := Server{
+	return Server{
 		Name:      name,
 		Transport: transport,
 		Command:   raw.Command,
@@ -209,6 +257,16 @@ func normalizeServer(name string, raw rawServer) (Server, error) {
 		CWD:       raw.CWD,
 		URL:       raw.URL,
 		Headers:   cloneStrings(raw.Headers),
+	}, nil
+}
+
+func normalizeServer(name string, raw rawServer) (Server, error) {
+	if strings.TrimSpace(name) == "" {
+		return Server{}, fmt.Errorf("name must not be empty")
+	}
+	server, err := serverFromRaw(name, raw)
+	if err != nil {
+		return Server{}, err
 	}
 	if err := validateServer(server); err != nil {
 		return Server{}, err

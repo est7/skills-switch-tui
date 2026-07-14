@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	huh "charm.land/huh/v2"
 	"github.com/est7/skills-switch-tui/internal/catalog"
 	"github.com/est7/skills-switch-tui/internal/i18n"
 	"github.com/est7/skills-switch-tui/internal/mcp"
@@ -94,21 +95,6 @@ type deleteFinishedMsg struct {
 	err  error
 }
 
-type mcpFormStep int
-
-const (
-	mcpFormName mcpFormStep = iota
-	mcpFormEndpoint
-)
-
-// mcpForm is the two-step inline form for adding an MCP server: first the name,
-// then the endpoint (a command for stdio or an http/https URL).
-type mcpForm struct {
-	step  mcpFormStep
-	name  string
-	input textinput.Model
-}
-
 type Model struct {
 	catalog       catalog.Catalog
 	project       string
@@ -135,7 +121,7 @@ type Model struct {
 	updating      bool
 	deleting      bool
 	pendingDelete *deletionPlan
-	mcpForm       *mcpForm
+	active        *activeForm
 	isDark        bool
 	styles        styles
 	translator    i18n.Translator
@@ -212,6 +198,13 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = max(message.Height, 16)
 		m.search.SetWidth(min(48, m.contentWidth()-8))
 		m.help.SetWidth(m.contentWidth())
+		if m.active != nil {
+			if model, _ := m.active.form.Update(message); model != nil {
+				if form, ok := model.(*huh.Form); ok {
+					m.active.form = form
+				}
+			}
+		}
 		m.clampCursor()
 		return m, nil
 	case updateFinishedMsg:
@@ -272,21 +265,42 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = m.translator.Text(resultKey, message.plan.label)
 		return m, nil
+	case addFinishedMsg:
+		m.updating = false
+		reloadErr := m.reloadCatalog()
+		if message.err != nil {
+			m.err = message.err
+			if reloadErr != nil {
+				m.err = errors.Join(m.err, reloadErr)
+			}
+			m.status = m.translator.Text(i18n.AddFailed)
+			return m, nil
+		}
+		if reloadErr != nil {
+			m.err = reloadErr
+			m.status = m.translator.Text(i18n.UpdateReloadFailed)
+			return m, nil
+		}
+		m.err = nil
+		m.status = m.translator.Text(i18n.SourceAddedStatus, message.label)
+		return m, nil
 	}
 
+	if key, isKey := message.(tea.KeyPressMsg); isKey && key.String() == "ctrl+c" {
+		m.cancel()
+		return m, tea.Quit
+	}
+	// An open huh dialog consumes every message (keys, paste, ticks) until it
+	// completes or is aborted.
+	if m.active != nil {
+		return m.updateForm(message)
+	}
 	key, ok := message.(tea.KeyPressMsg)
 	if !ok {
 		return m, nil
 	}
-	if key.String() == "ctrl+c" {
-		m.cancel()
-		return m, tea.Quit
-	}
 	if m.searching {
 		return m.updateSearch(key)
-	}
-	if m.mcpForm != nil {
-		return m.updateMCPForm(key)
 	}
 	if m.pendingDelete != nil {
 		return m.updateConfirm(key)
@@ -330,7 +344,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case "d":
 		m.requestDelete()
 	case "n":
-		return m.startMCPForm()
+		return m.startAdd()
 	case "L":
 		m.toggleLanguage()
 	}
@@ -497,95 +511,6 @@ func (m *Model) requestMCPDelete() {
 	}
 	name := names[m.cursor]
 	m.pendingDelete = &deletionPlan{kind: deleteMCPServer, server: name, label: name}
-}
-
-func (m Model) startMCPForm() (tea.Model, tea.Cmd) {
-	if m.tab != tabMCP {
-		m.status = m.translator.Text(i18n.AddMCPUnavailable)
-		return m, nil
-	}
-	if m.deleting || m.updating {
-		return m, nil
-	}
-	if m.mcpCatalog.Path == "" {
-		m.status = m.translator.Text(i18n.AddMCPUnavailable)
-		return m, nil
-	}
-	input := textinput.New()
-	input.Prompt = "> "
-	input.CharLimit = 200
-	input.SetWidth(min(48, m.contentWidth()-8))
-	input.SetVirtualCursor(true)
-	input.SetStyles(textinput.DefaultStyles(m.isDark))
-	input.Placeholder = m.translator.Text(i18n.MCPFormNamePrompt)
-	m.mcpForm = &mcpForm{step: mcpFormName, input: input}
-	m.err = nil
-	m.status = m.translator.Text(i18n.MCPFormTitle)
-	return m, m.mcpForm.input.Focus()
-}
-
-func (m Model) updateMCPForm(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch key.String() {
-	case "esc":
-		m.mcpForm = nil
-		m.status = m.translator.Text(i18n.Ready)
-		return m, nil
-	case "enter":
-		value := strings.TrimSpace(m.mcpForm.input.Value())
-		if m.mcpForm.step == mcpFormName {
-			if value == "" {
-				m.err = errors.New(m.translator.Text(i18n.MCPNameRequired))
-				return m, nil
-			}
-			if _, exists := m.mcpCatalog.Server(value); exists {
-				m.err = errors.New(m.translator.Text(i18n.MCPServerExists, value))
-				return m, nil
-			}
-			m.mcpForm.name = value
-			m.mcpForm.step = mcpFormEndpoint
-			m.mcpForm.input.Reset()
-			m.mcpForm.input.Placeholder = m.translator.Text(i18n.MCPFormEndpointPrompt)
-			m.err = nil
-			return m, nil
-		}
-		if value == "" {
-			m.err = errors.New(m.translator.Text(i18n.MCPEndpointRequired))
-			return m, nil
-		}
-		return m.commitMCPForm(m.mcpForm.name, value)
-	}
-	var command tea.Cmd
-	m.mcpForm.input, command = m.mcpForm.input.Update(key)
-	return m, command
-}
-
-func (m Model) commitMCPForm(name, endpoint string) (tea.Model, tea.Cmd) {
-	server := mcp.Server{Name: name}
-	if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
-		server.Transport = mcp.TransportHTTP
-		server.URL = endpoint
-	} else {
-		fields := strings.Fields(endpoint)
-		server.Transport = mcp.TransportStdio
-		server.Command = fields[0]
-		if len(fields) > 1 {
-			server.Args = fields[1:]
-		}
-	}
-	if err := mcp.AddServer(m.mcpCatalog.Path, server); err != nil {
-		m.err = err
-		m.status = m.translator.Text(i18n.NoChangesApplied)
-		return m, nil
-	}
-	m.mcpForm = nil
-	if err := m.reloadCatalog(); err != nil {
-		m.err = err
-		m.status = m.translator.Text(i18n.UpdateReloadFailed)
-		return m, nil
-	}
-	m.err = nil
-	m.status = m.translator.Text(i18n.MCPServerAdded, name)
-	return m, nil
 }
 
 func (m *Model) toggleLanguage() {
@@ -774,8 +699,12 @@ func (m *Model) toggleSkillSelection() {
 }
 
 func (m *Model) toggleAllClients() {
-	if m.tab != tabSkills {
-		m.status = m.translator.Text(i18n.AllClientsSkillOnly)
+	switch m.tab {
+	case tabMCP:
+		m.toggleAllClientsMCP()
+		return
+	case tabSystemPrompts:
+		m.status = m.translator.Text(i18n.AllClientsNotForPrompts)
 		return
 	}
 	selected, ok := m.selectedRow()
@@ -908,6 +837,70 @@ func (m *Model) toggleMCPSelection() {
 		key = i18n.EnabledResource
 	}
 	m.status = m.translator.Text(key, name, clientID)
+}
+
+// toggleAllClientsMCP enables or disables the selected MCP server across every
+// registered client at once. Direction mirrors the skill all-client toggle: if
+// any compatible client is not enabled it enables all, otherwise it disables
+// all. Incompatible clients are skipped.
+func (m *Model) toggleAllClientsMCP() {
+	names := m.mcpNames()
+	if len(names) == 0 || m.cursor >= len(names) {
+		m.status = m.translator.Text(i18n.NoSelection)
+		return
+	}
+	name := names[m.cursor]
+	clients := m.catalog.Clients.IDs()
+	states := make(map[catalog.Client]mcp.State, len(clients))
+	compatibleCount := 0
+	enable := false
+	for _, clientID := range clients {
+		state, err := m.mcpManager.State(name, clientID)
+		if err != nil {
+			m.err = err
+			m.status = m.translator.Text(i18n.InspectProjectFailed)
+			return
+		}
+		states[clientID] = state
+		if state == mcp.StateIncompatible {
+			continue
+		}
+		compatibleCount++
+		if state != mcp.StateEnabled {
+			enable = true
+		}
+	}
+	if compatibleCount == 0 {
+		m.status = m.translator.Text(i18n.NoCompatibleClients, name)
+		return
+	}
+	operations := make([]mcp.Operation, 0, len(clients))
+	for _, clientID := range clients {
+		state := states[clientID]
+		if state == mcp.StateIncompatible {
+			continue
+		}
+		if enable {
+			if state != mcp.StateEnabled {
+				operations = append(operations, mcp.Operation{Server: name, Client: clientID, Enabled: true})
+			}
+		} else if state == mcp.StateEnabled {
+			operations = append(operations, mcp.Operation{Server: name, Client: clientID, Enabled: false})
+		}
+	}
+	if len(operations) > 0 {
+		if err := m.mcpManager.Apply(operations); err != nil {
+			m.err = err
+			m.status = m.translator.Text(i18n.NoChangesApplied)
+			return
+		}
+	}
+	m.err = nil
+	key := i18n.DisabledMCPAllClients
+	if enable {
+		key = i18n.EnabledMCPAllClients
+	}
+	m.status = m.translator.Text(key, name, compatibleCount)
 }
 
 func (m *Model) togglePromptSelection() {

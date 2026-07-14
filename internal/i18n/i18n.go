@@ -64,7 +64,9 @@ const (
 	EnabledSourceAllClients     Key = "enabled_source_all_clients"
 	DisabledSourceAllClients    Key = "disabled_source_all_clients"
 	SelectSkillForAllClients    Key = "select_skill_for_all_clients"
-	AllClientsSkillOnly         Key = "all_clients_skill_only"
+	AllClientsNotForPrompts     Key = "all_clients_not_for_prompts"
+	EnabledMCPAllClients        Key = "enabled_mcp_all_clients"
+	DisabledMCPAllClients       Key = "disabled_mcp_all_clients"
 	NoCompatibleClients         Key = "no_compatible_clients"
 	EnabledResource             Key = "enabled_resource"
 	DisabledResource            Key = "disabled_resource"
@@ -139,6 +141,7 @@ const (
 	DiscoveryPriorityFlag       Key = "discovery_priority_flag"
 	DryRunFlag                  Key = "dry_run_flag"
 	SourceAdded                 Key = "source_added"
+	SourceNameRequired          Key = "source_name_required"
 	BranchHeader                Key = "branch_header"
 	CurrentHeader               Key = "current_header"
 	RemoteHeader                Key = "remote_header"
@@ -187,23 +190,40 @@ const (
 	DeleteUnavailable           Key = "delete_unavailable"
 	DeleteConfirmMCP            Key = "delete_confirm_mcp"
 	DeletedMCPServer            Key = "deleted_mcp_server"
-	HelpAddMCP                  Key = "help_add_mcp"
+	HelpAdd                     Key = "help_add"
+	AddUnavailable              Key = "add_unavailable"
+	AddMenuTitle                Key = "add_menu_title"
+	AddMenuRepo                 Key = "add_menu_repo"
+	AddMenuLocal                Key = "add_menu_local"
+	AddRepoTitle                Key = "add_repo_title"
+	AddRepoRequired             Key = "add_repo_required"
+	AddRepoUnavailable          Key = "add_repo_unavailable"
+	AddingRepo                  Key = "adding_repo"
+	AddFailed                   Key = "add_failed"
+	SourceAddedStatus           Key = "source_added_status"
+	CreateSkillNameTitle        Key = "create_skill_name_title"
+	CreateSkillNameInvalid      Key = "create_skill_name_invalid"
+	CreateSkillDescTitle        Key = "create_skill_desc_title"
 	AddMCPUnavailable           Key = "add_mcp_unavailable"
 	MCPFormTitle                Key = "mcp_form_title"
-	MCPFormNamePrompt           Key = "mcp_form_name_prompt"
-	MCPFormEndpointPrompt       Key = "mcp_form_endpoint_prompt"
-	MCPFormHint                 Key = "mcp_form_hint"
+	MCPNamePromptTitle          Key = "mcp_name_prompt_title"
 	MCPNameRequired             Key = "mcp_name_required"
-	MCPEndpointRequired         Key = "mcp_endpoint_required"
 	MCPServerExists             Key = "mcp_server_exists"
+	MCPServersAdded             Key = "mcp_servers_added"
 	MCPServerAdded              Key = "mcp_server_added"
 	MCPTransportAmbiguous       Key = "mcp_transport_ambiguous"
 	DeleteNeedsConfirmation     Key = "delete_needs_confirmation"
 	DeleteUnknownTarget         Key = "delete_unknown_target"
 	DeleteVendorViaSourceRemove Key = "delete_vendor_via_source_remove"
 	SkillsCommandShort          Key = "skills_command_short"
+	SkillsCreateShort           Key = "skills_create_short"
+	SkillCreated                Key = "skill_created"
 	SkillsDeleteShort           Key = "skills_delete_short"
 	MCPAddShort                 Key = "mcp_add_short"
+	MCPImportShort              Key = "mcp_import_short"
+	MCPImportFileFlag           Key = "mcp_import_file_flag"
+	MCPImportNameFlag           Key = "mcp_import_name_flag"
+	MCPImportNameRequired       Key = "mcp_import_name_required"
 	MCPRemoveShort              Key = "mcp_remove_short"
 )
 
@@ -261,7 +281,9 @@ var messages = map[Language]map[Key]string{
 		EnabledSourceAllClients:     "Enabled %s across %d compatible projection(s)",
 		DisabledSourceAllClients:    "Disabled %s across all clients (%d compatible projections)",
 		SelectSkillForAllClients:    "Select a Skill or source to toggle all clients",
-		AllClientsSkillOnly:         "All-client toggle is available for Skills only",
+		AllClientsNotForPrompts:     "All-client toggle does not apply to system prompts",
+		EnabledMCPAllClients:        "Enabled %s for all %d clients",
+		DisabledMCPAllClients:       "Disabled %s for all %d clients",
 		NoCompatibleClients:         "%s has no compatible clients",
 		EnabledResource:             "Enabled %s for %s",
 		DisabledResource:            "Disabled %s for %s",
@@ -336,6 +358,7 @@ var messages = map[Language]map[Key]string{
 		DiscoveryPriorityFlag:       "source discovery strategy priority (repeatable)",
 		DryRunFlag:                  "inspect updates without changing submodules",
 		SourceAdded:                 "added source %s\n",
+		SourceNameRequired:          "source name is required (could not derive it from the URL); pass --name",
 		BranchHeader:                "BRANCH",
 		CurrentHeader:               "CURRENT",
 		RemoteHeader:                "REMOTE",
@@ -384,23 +407,40 @@ var messages = map[Language]map[Key]string{
 		DeleteUnavailable:           "Deletion is only available for skill sources",
 		DeleteConfirmMCP:            "Remove MCP server %s from the catalog. This cannot be undone.",
 		DeletedMCPServer:            "Removed MCP server %s",
-		HelpAddMCP:                  "add MCP",
+		HelpAdd:                     "new",
 		AddMCPUnavailable:           "Adding servers is only available on the MCP tab",
-		MCPFormTitle:                "Add MCP server",
-		MCPFormNamePrompt:           "server name",
-		MCPFormEndpointPrompt:       "command (stdio) or http(s) URL",
-		MCPFormHint:                 "[enter] next/confirm   [esc] cancel",
+		AddUnavailable:              "adding is available on the Skills and MCP tabs",
+		AddMenuTitle:                "Add to the Skills catalog",
+		AddMenuRepo:                 "Add a remote repo source",
+		AddMenuLocal:                "Create a local Skill",
+		AddRepoTitle:                "Repository URL (GitHub or GitLab)",
+		AddRepoRequired:             "a repository URL is required",
+		AddRepoUnavailable:          "adding a remote source is unavailable here",
+		AddingRepo:                  "adding source %s…",
+		AddFailed:                   "add failed",
+		SourceAddedStatus:           "added source %s",
+		CreateSkillNameTitle:        "Skill name",
+		CreateSkillNameInvalid:      "use letters, digits, dot, dash, or underscore",
+		CreateSkillDescTitle:        "Description (optional)",
+		MCPFormTitle:                "Paste MCP JSON",
+		MCPNamePromptTitle:          "Server name for the pasted object",
 		MCPNameRequired:             "server name is required",
-		MCPEndpointRequired:         "command or URL is required",
 		MCPServerExists:             "MCP server already exists: %s",
+		MCPServersAdded:             "added %d MCP servers",
 		MCPServerAdded:              "Added MCP server %s",
 		MCPTransportAmbiguous:       "cannot infer transport; pass --command for stdio or --url for http",
 		DeleteNeedsConfirmation:     "%s will be permanently deleted from disk; re-run with --yes to confirm",
 		DeleteUnknownTarget:         "unknown Skill or source: %s",
 		DeleteVendorViaSourceRemove: "%s is a vendor source; use `source remove` instead",
-		SkillsCommandShort:          "Manage catalog skills and delete local skills or groups",
+		SkillsCommandShort:          "List, show, enable, disable, create, or delete catalog skills",
+		SkillsCreateShort:           "Scaffold a new local Skill skeleton",
+		SkillCreated:                "created local Skill at %s",
 		SkillsDeleteShort:           "Delete a local Skill or group directory from the resource SSOT",
 		MCPAddShort:                 "Register a new MCP server in the catalog",
+		MCPImportShort:              "Add MCP servers from a pasted JSON definition",
+		MCPImportFileFlag:           "read the JSON definition from a file",
+		MCPImportNameFlag:           "server name for a bare (unkeyed) object",
+		MCPImportNameRequired:       "a bare MCP object needs --name",
 		MCPRemoveShort:              "Remove an MCP server from the catalog",
 	},
 	Chinese: {
@@ -447,12 +487,14 @@ var messages = map[Language]map[Key]string{
 		NoChangesApplied:            "未应用任何变更",
 		EnabledSkills:               "已启用 %d 个 Skill（%s）",
 		DisabledSkills:              "已停用 %d 个 Skill（%s）",
-		EnabledSkillAllClients:      "已在全部 %2$d 个兼容客户端启用 %1$s",
-		DisabledSkillAllClients:     "已在全部 %2$d 个兼容客户端停用 %1$s",
-		EnabledSourceAllClients:     "已为 %1$s 启用全部 %2$d 个兼容投影",
-		DisabledSourceAllClients:    "已在全部客户端停用 %1$s（%2$d 个兼容投影）",
+		EnabledSkillAllClients:      "已在全部 %[2]d 个兼容客户端启用 %[1]s",
+		DisabledSkillAllClients:     "已在全部 %[2]d 个兼容客户端停用 %[1]s",
+		EnabledSourceAllClients:     "已为 %[1]s 启用全部 %[2]d 个兼容投影",
+		DisabledSourceAllClients:    "已在全部客户端停用 %[1]s（%[2]d 个兼容投影）",
 		SelectSkillForAllClients:    "请选择一个 Skill 或来源，再切换全部客户端",
-		AllClientsSkillOnly:         "全部客户端切换仅适用于 Skills",
+		AllClientsNotForPrompts:     "全部客户端切换不适用于系统提示词",
+		EnabledMCPAllClients:        "已在全部 %[2]d 个客户端启用 %[1]s",
+		DisabledMCPAllClients:       "已在全部 %[2]d 个客户端停用 %[1]s",
 		NoCompatibleClients:         "%s 没有兼容的客户端",
 		EnabledResource:             "已为 %[2]s 启用 %[1]s",
 		DisabledResource:            "已为 %[2]s 停用 %[1]s",
@@ -527,6 +569,7 @@ var messages = map[Language]map[Key]string{
 		DiscoveryPriorityFlag:       "来源发现策略优先级（可重复）",
 		DryRunFlag:                  "只检查更新，不修改 submodule",
 		SourceAdded:                 "已添加来源 %s\n",
+		SourceNameRequired:          "需要来源名称（无法从 URL 推导）；请传 --name",
 		BranchHeader:                "分支",
 		CurrentHeader:               "当前版本",
 		RemoteHeader:                "远端版本",
@@ -575,23 +618,40 @@ var messages = map[Language]map[Key]string{
 		DeleteUnavailable:           "仅技能来源支持删除",
 		DeleteConfirmMCP:            "将从目录删除 MCP 服务器 %s,不可撤销。",
 		DeletedMCPServer:            "已删除 MCP 服务器 %s",
-		HelpAddMCP:                  "添加 MCP",
+		HelpAdd:                     "新建",
 		AddMCPUnavailable:           "仅 MCP 标签页支持添加服务器",
-		MCPFormTitle:                "添加 MCP 服务器",
-		MCPFormNamePrompt:           "服务器名称",
-		MCPFormEndpointPrompt:       "命令(stdio)或 http(s) URL",
-		MCPFormHint:                 "[enter] 下一步/确认   [esc] 取消",
+		AddUnavailable:              "新建仅在 Skills 和 MCP 标签页可用",
+		AddMenuTitle:                "添加到 Skills 目录",
+		AddMenuRepo:                 "添加远程 repo 来源",
+		AddMenuLocal:                "创建本地 Skill",
+		AddRepoTitle:                "仓库 URL(GitHub 或 GitLab)",
+		AddRepoRequired:             "需要仓库 URL",
+		AddRepoUnavailable:          "此处无法添加远程来源",
+		AddingRepo:                  "正在添加来源 %s…",
+		AddFailed:                   "添加失败",
+		SourceAddedStatus:           "已添加来源 %s",
+		CreateSkillNameTitle:        "Skill 名称",
+		CreateSkillNameInvalid:      "只能用字母、数字、点、连字符或下划线",
+		CreateSkillDescTitle:        "描述(可选)",
+		MCPFormTitle:                "粘贴 MCP JSON",
+		MCPNamePromptTitle:          "为粘贴的对象指定服务器名称",
 		MCPNameRequired:             "需要服务器名称",
-		MCPEndpointRequired:         "需要命令或 URL",
 		MCPServerExists:             "MCP 服务器已存在:%s",
+		MCPServersAdded:             "已添加 %d 个 MCP 服务器",
 		MCPServerAdded:              "已添加 MCP 服务器 %s",
 		MCPTransportAmbiguous:       "无法推断 transport;stdio 用 --command,http 用 --url",
 		DeleteNeedsConfirmation:     "%s 将从磁盘永久删除;请加 --yes 确认",
 		DeleteUnknownTarget:         "未知的技能或来源:%s",
 		DeleteVendorViaSourceRemove: "%s 是 vendor 来源,请改用 `source remove`",
-		SkillsCommandShort:          "管理目录技能,删除本地技能或组",
+		SkillsCommandShort:          "列出、查看、启用、停用、创建或删除目录技能",
+		SkillsCreateShort:           "生成一个新的本地 Skill 骨架",
+		SkillCreated:                "已在 %s 创建本地 Skill",
 		SkillsDeleteShort:           "从资源 SSOT 删除本地技能或组目录",
 		MCPAddShort:                 "在目录中注册新的 MCP 服务器",
+		MCPImportShort:              "从粘贴的 JSON 定义添加 MCP 服务器",
+		MCPImportFileFlag:           "从文件读取 JSON 定义",
+		MCPImportNameFlag:           "为裸(无键)对象指定服务器名称",
+		MCPImportNameRequired:       "裸 MCP 对象需要 --name",
 		MCPRemoveShort:              "从目录移除 MCP 服务器",
 	},
 }

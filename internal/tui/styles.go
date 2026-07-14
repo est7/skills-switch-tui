@@ -61,7 +61,7 @@ func newStyles(isDark bool) styles {
 		subtle:       lipgloss.NewStyle().Foreground(muted).Background(canvas),
 		accent:       lipgloss.NewStyle().Foreground(accent).Background(canvas).Bold(true),
 		scopeLabel:   lipgloss.NewStyle().Foreground(accent).Background(canvas).Bold(true),
-		tab:          lipgloss.NewStyle().Foreground(muted).Background(panelRaised).Padding(0, 1),
+		tab:          lipgloss.NewStyle().Foreground(muted).Background(canvas).Padding(0, 1),
 		activeTab:    lipgloss.NewStyle().Foreground(accentContrast).Background(accentStrong).Bold(true).Padding(0, 1),
 		filter:       lipgloss.NewStyle().Foreground(muted).Background(canvas).Padding(0, 1),
 		activeFilter: lipgloss.NewStyle().Foreground(accent).Background(accentSoft).Bold(true).Padding(0, 1),

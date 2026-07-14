@@ -9,6 +9,50 @@ import (
 	"github.com/est7/skills-switch-tui/internal/client"
 )
 
+func TestScaffoldLocalSkillProducesADiscoverableSkill(t *testing.T) {
+	sourcesRoot := t.TempDir()
+
+	// Standalone group named after the skill.
+	dir, err := ScaffoldLocalSkill(sourcesRoot, "shared", "", "make-goal", "Draft a goal.")
+	if err != nil {
+		t.Fatalf("scaffold standalone: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err != nil {
+		t.Fatalf("SKILL.md missing: %v", err)
+	}
+
+	// Grouped skill.
+	if _, err := ScaffoldLocalSkill(sourcesRoot, "shared", "core", "review", ""); err != nil {
+		t.Fatalf("scaffold grouped: %v", err)
+	}
+
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"local-shared/make-goal/make-goal", "local-shared/core/review"} {
+		if _, ok := loaded.Skill(id); !ok {
+			t.Fatalf("scaffolded skill %q is not discoverable", id)
+		}
+	}
+
+	// Duplicate is refused.
+	if _, err := ScaffoldLocalSkill(sourcesRoot, "shared", "", "make-goal", ""); err == nil {
+		t.Fatal("scaffolding an existing skill must fail")
+	}
+	// Invalid name is refused.
+	if _, err := ScaffoldLocalSkill(sourcesRoot, "shared", "", "bad name", ""); err == nil {
+		t.Fatal("invalid skill name must fail")
+	}
+	// A traversal scope must not escape the local tree.
+	if _, err := ScaffoldLocalSkill(sourcesRoot, "../../evil", "", "x", ""); err == nil {
+		t.Fatal("path-traversal scope must be rejected")
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(sourcesRoot), "evil")); !os.IsNotExist(err) {
+		t.Fatal("scaffold wrote outside the resources tree")
+	}
+}
+
 func TestLoadDiscoversSourceGroupsAndAppliesCompatibilityOverrides(t *testing.T) {
 	sourcesRoot := t.TempDir()
 	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "codex-tools", "codex-dynamic-workflows"), `---

@@ -21,14 +21,16 @@ const (
 )
 
 func (m Model) View() tea.View {
-	detail := m.renderDetail()
-	if m.mcpForm != nil {
-		detail = m.renderMCPForm()
+	var body string
+	switch {
+	case m.active != nil:
+		body = m.renderModalRegion(m.renderFormCard())
+	case m.pendingDelete != nil:
+		body = m.renderModalRegion(m.renderConfirmCard())
+	default:
+		body = m.renderTable() + "\n" + m.renderDetail()
 	}
-	if m.pendingDelete != nil {
-		detail = m.renderConfirm()
-	}
-	sections := []string{m.renderHeader(), m.renderTable(), detail, m.renderFooter()}
+	sections := []string{m.renderHeader(), body, m.renderFooter()}
 	canvas := lipgloss.NewStyle().
 		Width(m.width).
 		Height(m.height).
@@ -452,7 +454,47 @@ func (m Model) renderDetail() string {
 	return m.styles.detail.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
 }
 
-func (m Model) renderConfirm() string {
+// renderModalRegion centers a dialog card over the vertical space the table and
+// detail pane normally occupy, so header and footer stay pinned and the overall
+// canvas height is unchanged whether or not a dialog is open.
+func (m Model) renderModalRegion(card string) string {
+	// The region fills exactly the rows the table and detail pane would occupy:
+	// canvas vertical padding (2) + the two newline joins (2) + header + footer.
+	// On a terminal too short to hold the card, the max() keeps the card intact
+	// and the fixed-height canvas clips the footer rather than the dialog.
+	overhead := 4 + lipgloss.Height(m.renderHeader()) + lipgloss.Height(m.renderFooter())
+	height := max(lipgloss.Height(card), m.height-overhead)
+	backdrop := lipgloss.NewStyle().Background(m.styles.canvas)
+	return lipgloss.Place(
+		m.contentWidth(), height,
+		lipgloss.Center, lipgloss.Center,
+		card,
+		lipgloss.WithWhitespaceStyle(backdrop),
+	)
+}
+
+// modalWidth is the outer width of a dialog card; modalInnerWidth is its content
+// width (minus the rounded border and horizontal padding) and is what bound huh
+// forms are sized to so their lines never overflow the card border.
+func (m Model) modalWidth() int {
+	return min(m.contentWidth()-4, max(40, m.contentWidth()*2/3))
+}
+
+func (m Model) modalInnerWidth() int {
+	return m.modalWidth() - 6
+}
+
+func (m Model) modalCard(content string) string {
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.styles.accent.GetForeground()).
+		Background(m.styles.canvas).
+		Padding(0, 2).
+		Width(m.modalInnerWidth()).
+		Render(content)
+}
+
+func (m Model) renderConfirmCard() string {
 	plan := m.pendingDelete
 	var body string
 	switch plan.kind {
@@ -465,24 +507,15 @@ func (m Model) renderConfirm() string {
 	}
 	lines := []string{
 		m.styles.error.Render(m.translator.Text(i18n.DeleteConfirmTitle)),
-		truncate(body, m.detailTextWidth()),
+		"",
+		truncate(body, m.detailTextWidth()-6),
 		m.styles.subtle.Render(m.translator.Text(i18n.DeleteConfirmHint)),
 	}
-	return m.styles.detail.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
+	return m.modalCard(strings.Join(lines, "\n"))
 }
 
-func (m Model) renderMCPForm() string {
-	prompt := m.translator.Text(i18n.MCPFormNamePrompt)
-	if m.mcpForm.step == mcpFormEndpoint {
-		prompt = m.translator.Text(i18n.MCPFormEndpointPrompt) + "  ·  " + m.mcpForm.name
-	}
-	lines := []string{
-		m.styles.accent.Render(m.translator.Text(i18n.MCPFormTitle)),
-		m.styles.subtle.Render(truncate(prompt, m.detailTextWidth())),
-		m.mcpForm.input.View(),
-		m.styles.subtle.Render(m.translator.Text(i18n.MCPFormHint)),
-	}
-	return m.styles.detail.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
+func (m Model) renderFormCard() string {
+	return m.modalCard(m.active.form.View())
 }
 
 func (m Model) renderMCPDetail() string {

@@ -115,7 +115,7 @@ func TestEnableThenListReportsProjectState(t *testing.T) {
 	if _, err := execute(t,
 		"--resources", resourceRoot,
 		"--project", projectRoot,
-		"enable", "local-shared/demo/worktrunk",
+		"skills", "enable", "local-shared/demo/worktrunk",
 		"--client", "codex",
 	); err != nil {
 		t.Fatalf("enable command: %v", err)
@@ -124,7 +124,7 @@ func TestEnableThenListReportsProjectState(t *testing.T) {
 	output, err := execute(t,
 		"--resources", resourceRoot,
 		"--project", projectRoot,
-		"list", "--json",
+		"skills", "list", "--json",
 	)
 	if err != nil {
 		t.Fatalf("list command: %v", err)
@@ -165,7 +165,7 @@ func TestConfiguredClientCanBeEnabledWithoutCodeChanges(t *testing.T) {
 	if _, err := execute(t,
 		"--resources", resourceRoot,
 		"--project", projectRoot,
-		"enable", "local-shared/base/portable",
+		"skills", "enable", "local-shared/base/portable",
 		"--client", "pi",
 	); err != nil {
 		t.Fatalf("enable pi: %v", err)
@@ -228,7 +228,7 @@ func TestChineseLanguageLocalizesHelpAndHumanListHeaders(t *testing.T) {
 		"--lang", "zh",
 		"--resources", resourceRoot,
 		"--project", projectRoot,
-		"list",
+		"skills", "list",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -328,11 +328,11 @@ func TestArchivedSkillsRequireExplicitListingAndCannotBeEnabled(t *testing.T) {
 	}
 	writeCLISkill(t, filepath.Join(sourcesRoot, "archived", "shared", "waza", "read"), "waza-read")
 
-	withoutArchive, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "list", "--json")
+	withoutArchive, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "skills", "list", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	withArchive, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "list", "--archive", "--json")
+	withArchive, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "skills", "list", "--archive", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestArchivedSkillsRequireExplicitListingAndCannotBeEnabled(t *testing.T) {
 	_, err = execute(t,
 		"--resources", resourceRoot,
 		"--project", projectRoot,
-		"enable", "archived-shared/waza/read",
+		"skills", "enable", "archived-shared/waza/read",
 		"--client", "codex",
 	)
 	if err == nil {
@@ -366,11 +366,11 @@ func TestShowStatusAndDoctorExposeStableJSON(t *testing.T) {
 	}
 	writeCLISkill(t, filepath.Join(sourcesRoot, "local", "shared", "base", "portable"), "portable")
 	base := []string{"--resources", resourceRoot, "--project", projectRoot}
-	if _, err := execute(t, append(base, "enable", "local-shared/base/portable", "--client", "codex")...); err != nil {
+	if _, err := execute(t, append(base, "skills", "enable", "local-shared/base/portable", "--client", "codex")...); err != nil {
 		t.Fatal(err)
 	}
 
-	show, err := execute(t, append(base, "show", "local-shared/base/portable", "--json")...)
+	show, err := execute(t, append(base, "skills", "show", "local-shared/base/portable", "--json")...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +411,7 @@ func TestMultiClientEnableIsAtomicAcrossClientDirectories(t *testing.T) {
 	_, err := execute(t,
 		"--resources", resourceRoot,
 		"--project", projectRoot,
-		"enable", "local-shared/base/portable",
+		"skills", "enable", "local-shared/base/portable",
 		"--client", "codex",
 		"--client", "claude",
 	)

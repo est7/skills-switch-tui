@@ -7,6 +7,46 @@ import (
 	"testing"
 )
 
+func TestParseServersHandlesWrapperAndBareObjects(t *testing.T) {
+	wrapper := `{"mcpServers":{"grafana":{"type":"http","url":"https://mcp.example.com"},"context7":{"command":"npx","args":["-y","ctx7"]}}}`
+	servers, err := ParseServers([]byte(wrapper))
+	if err != nil {
+		t.Fatalf("parse wrapper: %v", err)
+	}
+	if len(servers) != 2 {
+		t.Fatalf("wrapper server count = %d, want 2", len(servers))
+	}
+	// Names come from the keys, sorted deterministically.
+	if servers[0].Name != "context7" || servers[0].Transport != TransportStdio {
+		t.Fatalf("first server = %#v", servers[0])
+	}
+	if servers[1].Name != "grafana" || servers[1].Transport != TransportHTTP || servers[1].URL != "https://mcp.example.com" {
+		t.Fatalf("second server = %#v", servers[1])
+	}
+
+	bareStdio, err := ParseServers([]byte(`{"command":"npx","args":["-y","pkg"]}`))
+	if err != nil {
+		t.Fatalf("parse bare stdio: %v", err)
+	}
+	if len(bareStdio) != 1 || bareStdio[0].Name != "" || bareStdio[0].Transport != TransportStdio {
+		t.Fatalf("bare stdio = %#v", bareStdio)
+	}
+
+	bareHTTP, err := ParseServers([]byte(`{"url":"https://x"}`))
+	if err != nil {
+		t.Fatalf("parse bare http: %v", err)
+	}
+	if len(bareHTTP) != 1 || bareHTTP[0].Transport != TransportHTTP {
+		t.Fatalf("bare http = %#v", bareHTTP)
+	}
+
+	for _, invalid := range []string{"", "not json", "[]", `{"mcpServers":{}}`, `{"command":"a","url":"b"}`} {
+		if _, err := ParseServers([]byte(invalid)); err == nil {
+			t.Fatalf("ParseServers(%q) succeeded, want error", invalid)
+		}
+	}
+}
+
 func TestLoadCatalogAcceptsLegacyOneMCPMetadataWithoutOwningIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mcp.json")
 	data := `{

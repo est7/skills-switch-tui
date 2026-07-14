@@ -275,6 +275,49 @@ func RemoveLocalResource(root, target string) error {
 	return os.RemoveAll(absTarget)
 }
 
+// ScaffoldLocalSkill writes a minimal, discoverable SKILL.md skeleton for a new
+// local skill and returns its directory. With an empty group the skill becomes a
+// standalone group named after itself (skills/local/<scope>/<name>/SKILL.md);
+// with a group it is nested (skills/local/<scope>/<group>/<name>/SKILL.md). It
+// fails if a SKILL.md already exists at the target.
+func ScaffoldLocalSkill(skillsRoot, scope, group, name, description string) (string, error) {
+	if scope == "" {
+		scope = "shared"
+	}
+	if !skillNamePattern.MatchString(scope) {
+		return "", fmt.Errorf("invalid scope %q", scope)
+	}
+	if !skillNamePattern.MatchString(name) {
+		return "", fmt.Errorf("invalid skill name %q", name)
+	}
+	if group != "" && !skillNamePattern.MatchString(group) {
+		return "", fmt.Errorf("invalid group name %q", group)
+	}
+	segments := []string{skillsRoot, string(SourceLocal), scope}
+	if group != "" {
+		segments = append(segments, group)
+	}
+	segments = append(segments, name)
+	skillDir := filepath.Join(segments...)
+	skillFile := filepath.Join(skillDir, "SKILL.md")
+	if _, err := os.Stat(skillFile); err == nil {
+		return "", fmt.Errorf("skill already exists: %s", skillFile)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect skill target: %w", err)
+	}
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		return "", fmt.Errorf("create skill directory: %w", err)
+	}
+	if strings.TrimSpace(description) == "" {
+		description = fmt.Sprintf("Describe what %s does.", name)
+	}
+	content := fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n\n# %s\n\nDocument the skill workflow here.\n", name, description, name)
+	if err := os.WriteFile(skillFile, []byte(content), 0o644); err != nil {
+		return "", fmt.Errorf("write SKILL.md: %w", err)
+	}
+	return skillDir, nil
+}
+
 func validateVendorSourceID(id string) error {
 	namespace, name, found := strings.Cut(id, "/")
 	if !found || name == "" || !strings.HasPrefix(namespace, "vendor-") {

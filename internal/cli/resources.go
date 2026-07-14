@@ -3,6 +3,8 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"text/tabwriter"
 
@@ -22,8 +24,76 @@ func newMCPCommand(options *rootOptions) *cobra.Command {
 	command.AddCommand(newMCPToggleCommand(options, true))
 	command.AddCommand(newMCPToggleCommand(options, false))
 	command.AddCommand(newMCPAddCommand(options))
+	command.AddCommand(newMCPImportCommand(options))
 	command.AddCommand(newMCPRemoveCommand(options))
 	return command
+}
+
+func newMCPImportCommand(options *rootOptions) *cobra.Command {
+	var file, name string
+	command := &cobra.Command{
+		Use:   "import [json]",
+		Short: "Add MCP servers from a pasted JSON definition",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			runtime, err := loadRuntime(options)
+			if err != nil {
+				return err
+			}
+			data, err := readImportJSON(command, args, file)
+			if err != nil {
+				return err
+			}
+			servers, err := mcp.ParseServers(data)
+			if err != nil {
+				return err
+			}
+			for index := range servers {
+				if servers[index].Name == "" {
+					if name == "" {
+						return errors.New(runtime.translator.Text(i18n.MCPImportNameRequired))
+					}
+					servers[index].Name = name
+				}
+			}
+			// Preflight every name so a mid-list conflict never leaves a partial import.
+			for _, server := range servers {
+				if _, exists := runtime.mcpCatalog.Server(server.Name); exists {
+					return errors.New(runtime.translator.Text(i18n.MCPServerExists, server.Name))
+				}
+			}
+			for _, server := range servers {
+				if err := mcp.AddServer(runtime.mcpCatalog.Path, server); err != nil {
+					return err
+				}
+				fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.MCPServerAdded, server.Name))
+			}
+			return nil
+		},
+	}
+	command.Flags().StringVar(&file, "file", "", "read the JSON definition from a file")
+	command.Flags().StringVar(&name, "name", "", "server name for a bare (unkeyed) object")
+	return command
+}
+
+// readImportJSON reads the pasted MCP definition from a positional argument, a
+// --file path, or standard input (in that order of precedence).
+func readImportJSON(command *cobra.Command, args []string, file string) ([]byte, error) {
+	if len(args) == 1 {
+		return []byte(args[0]), nil
+	}
+	if file != "" {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("read MCP definition file: %w", err)
+		}
+		return data, nil
+	}
+	data, err := io.ReadAll(command.InOrStdin())
+	if err != nil {
+		return nil, fmt.Errorf("read MCP definition from stdin: %w", err)
+	}
+	return data, nil
 }
 
 func newMCPAddCommand(options *rootOptions) *cobra.Command {

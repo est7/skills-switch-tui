@@ -75,17 +75,12 @@ func NewRootCommand(version string) *cobra.Command {
 	command.PersistentFlags().StringVar(&options.resourcesRoot, "resources", "", translator.Text(i18n.ResourcesFlag))
 	command.PersistentFlags().StringVar(&options.projectRoot, "project", "", translator.Text(i18n.ProjectFlag))
 	command.PersistentFlags().StringVar(&options.language, "lang", defaultLanguage, translator.Text(i18n.LanguageFlag))
-	command.AddCommand(newListCommand(options))
 	command.AddCommand(newSkillsCommand(options))
-	command.AddCommand(newEnableCommand(options, true))
-	command.AddCommand(newEnableCommand(options, false))
-	command.AddCommand(newShowCommand(options))
 	command.AddCommand(newStatusCommand(options))
 	command.AddCommand(newInitCommand(options))
 	command.AddCommand(newSourceCommand(options))
 	command.AddCommand(newMCPCommand(options))
 	command.AddCommand(newPromptCommand(options))
-	command.AddCommand(newUpdateCommand(options))
 	command.AddCommand(newDoctorCommand(options))
 	command.AddCommand(newTUICommand(options))
 	command.AddCommand(newVersionCommand(version))
@@ -435,20 +430,8 @@ func localizeCommandTree(root *cobra.Command, translator i18n.Translator) {
 	}
 	for _, command := range root.Commands() {
 		switch command.Name() {
-		case "list":
-			command.Short = translator.Text(i18n.ListShort)
-			localizeOutputFlags(command, translator)
-		case "enable":
-			command.Short = translator.Text(i18n.EnableShort)
-			localizeToggleFlags(command, translator)
-		case "disable":
-			command.Short = translator.Text(i18n.DisableShort)
-			localizeToggleFlags(command, translator)
 		case "version":
 			command.Short = translator.Text(i18n.VersionShort)
-		case "show":
-			command.Short = translator.Text(i18n.ShowShort)
-			localizeOutputFlags(command, translator)
 		case "status":
 			command.Short = translator.Text(i18n.StatusShort)
 			localizeOutputFlags(command, translator)
@@ -458,12 +441,6 @@ func localizeCommandTree(root *cobra.Command, translator i18n.Translator) {
 		case "doctor":
 			command.Short = translator.Text(i18n.DoctorShort)
 			localizeOutputFlags(command, translator)
-		case "update":
-			command.Short = translator.Text(i18n.UpdateShort)
-			localizeOutputFlags(command, translator)
-			if flag := command.Flags().Lookup("dry-run"); flag != nil {
-				flag.Usage = translator.Text(i18n.DryRunFlag)
-			}
 		case "tui":
 			command.Short = translator.Text(i18n.TUIShort)
 		case "source":
@@ -490,6 +467,18 @@ func localizeSkillsCommands(command *cobra.Command, translator i18n.Translator) 
 		case "list":
 			child.Short = translator.Text(i18n.ListShort)
 			localizeOutputFlags(child, translator)
+		case "show":
+			child.Short = translator.Text(i18n.ShowShort)
+			localizeOutputFlags(child, translator)
+		case "enable":
+			child.Short = translator.Text(i18n.EnableShort)
+			localizeToggleFlags(child, translator)
+		case "disable":
+			child.Short = translator.Text(i18n.DisableShort)
+			localizeToggleFlags(child, translator)
+		case "create":
+			child.Short = translator.Text(i18n.SkillsCreateShort)
+			localizeOutputFlags(child, translator)
 		case "delete":
 			child.Short = translator.Text(i18n.SkillsDeleteShort)
 			if flag := child.Flags().Lookup("client"); flag != nil {
@@ -510,6 +499,14 @@ func localizeResourceCommands(command *cobra.Command, translator i18n.Translator
 			child.Short = translator.Text(i18n.MCPDisableShort)
 		case "mcp/add":
 			child.Short = translator.Text(i18n.MCPAddShort)
+		case "mcp/import":
+			child.Short = translator.Text(i18n.MCPImportShort)
+			if flag := child.Flags().Lookup("file"); flag != nil {
+				flag.Usage = translator.Text(i18n.MCPImportFileFlag)
+			}
+			if flag := child.Flags().Lookup("name"); flag != nil {
+				flag.Usage = translator.Text(i18n.MCPImportNameFlag)
+			}
 		case "mcp/remove":
 			child.Short = translator.Text(i18n.MCPRemoveShort)
 		case "prompt/list":
@@ -593,6 +590,12 @@ func localizeSourceCommands(command *cobra.Command, translator i18n.Translator) 
 			}
 			if flag := child.Flags().Lookup("discovery-priority"); flag != nil {
 				flag.Usage = translator.Text(i18n.DiscoveryPriorityFlag)
+			}
+		case "update":
+			child.Short = translator.Text(i18n.UpdateShort)
+			localizeOutputFlags(child, translator)
+			if flag := child.Flags().Lookup("dry-run"); flag != nil {
+				flag.Usage = translator.Text(i18n.DryRunFlag)
 			}
 		case "remove":
 			child.Short = translator.Text(i18n.SourceRemoveShort)

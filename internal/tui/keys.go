@@ -17,7 +17,7 @@ type keyMap struct {
 	Update    key.Binding
 	UpdateAll key.Binding
 	Delete    key.Binding
-	AddMCP    key.Binding
+	Add       key.Binding
 	Language  key.Binding
 	Help      key.Binding
 	Quit      key.Binding
@@ -36,7 +36,7 @@ func defaultKeyMap(translator i18n.Translator) keyMap {
 		Update:    key.NewBinding(key.WithKeys("u"), key.WithHelp("u", translator.Text(i18n.HelpUpdate))),
 		UpdateAll: key.NewBinding(key.WithKeys("U"), key.WithHelp("U", translator.Text(i18n.HelpUpdateAll))),
 		Delete:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", translator.Text(i18n.HelpDelete))),
-		AddMCP:    key.NewBinding(key.WithKeys("n"), key.WithHelp("n", translator.Text(i18n.HelpAddMCP))),
+		Add:       key.NewBinding(key.WithKeys("n"), key.WithHelp("n", translator.Text(i18n.HelpAdd))),
 		Language:  key.NewBinding(key.WithKeys("L"), key.WithHelp("L", translator.Text(i18n.HelpLanguage))),
 		Help:      key.NewBinding(key.WithKeys("?"), key.WithHelp("?", translator.Text(i18n.HelpMore))),
 		Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", translator.Text(i18n.HelpQuit))),
@@ -50,7 +50,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Navigate, k.Resource, k.Client, k.Toggle, k.ToggleAll, k.Expand},
-		{k.Search, k.Filter, k.Update, k.UpdateAll, k.Delete, k.AddMCP, k.Language},
+		{k.Search, k.Filter, k.Update, k.UpdateAll, k.Delete, k.Add, k.Language},
 		{k.Help, k.Quit},
 	}
 }

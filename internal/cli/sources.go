@@ -20,6 +20,7 @@ func newSourceCommand(options *rootOptions) *cobra.Command {
 	}
 	command.AddCommand(newSourceListCommand(options))
 	command.AddCommand(newSourceAddCommand(options))
+	command.AddCommand(newUpdateCommand(options))
 	command.AddCommand(newSourceRemoveCommand(options))
 	return command
 }
@@ -165,9 +166,27 @@ func newSourceAddCommand(options *rootOptions) *cobra.Command {
 					cleanDiscoveryPriority = append(cleanDiscoveryPriority, catalog.DiscoveryStrategy(strategy))
 				}
 			}
+			// A GitHub/GitLab link fills in name, branch, and Skill subpath so the
+			// user can register a source from just a URL. Explicit flags win.
+			repositoryURL := args[0]
+			if ref, parseErr := source.ParseRepoURL(args[0]); parseErr == nil {
+				repositoryURL = ref.CloneURL
+				if name == "" {
+					name = ref.Name
+				}
+				if !command.Flags().Changed("branch") && ref.Branch != "" {
+					branch = ref.Branch
+				}
+				if len(cleanSkillPaths) == 0 && len(cleanDiscoveryPriority) == 0 && ref.SkillPath != "" {
+					cleanSkillPaths = []string{ref.SkillPath}
+				}
+			}
+			if name == "" {
+				return errors.New(runtime.translator.Text(i18n.SourceNameRequired))
+			}
 			if err := runtime.manager.Add(command.Context(), source.AddRequest{
 				Name:              name,
-				URL:               args[0],
+				URL:               repositoryURL,
 				Branch:            branch,
 				Scope:             scope,
 				SkillPaths:        cleanSkillPaths,
@@ -187,7 +206,6 @@ func newSourceAddCommand(options *rootOptions) *cobra.Command {
 	command.Flags().StringSliceVar(&skillPaths, "skill-path", nil, "authoritative Skill directory path (repeatable)")
 	command.Flags().StringSliceVar(&sparsePaths, "sparse", nil, "additional sparse-checkout path (repeatable)")
 	command.Flags().StringSliceVar(&discoveryPriority, "discovery-priority", nil, "source discovery strategy priority (repeatable)")
-	_ = command.MarkFlagRequired("name")
 	return command
 }
 
