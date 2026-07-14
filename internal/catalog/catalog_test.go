@@ -53,6 +53,37 @@ func TestScaffoldLocalSkillProducesADiscoverableSkill(t *testing.T) {
 	}
 }
 
+func TestLoadParsesStringFormPluginSkillsField(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	base := filepath.Join(sourcesRoot, "vendor", "shared", "plugin")
+	writeSkill(t, filepath.Join(base, "skills", "one"), "---\nname: one\ndescription: x.\n---\n")
+	manifest := filepath.Join(base, ".claude-plugin", "plugin.json")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Real plugin manifests write "skills" as a string pointing at the skills dir,
+	// not an array of paths.
+	if err := os.WriteFile(manifest, []byte(`{"name":"plugin","skills":"./skills/"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := "version: 1\nsources:\n  vendor-shared/plugin:\n    branch: main\n"
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loaded.Skill("vendor-shared/plugin/skills/one"); !ok {
+		t.Fatal("string-form plugin.json skills field was not parsed")
+	}
+	source, _ := loaded.Source("vendor-shared/plugin")
+	if source.DiscoveryStrategy != DiscoveryClaudePlugin {
+		t.Fatalf("discovery strategy = %q, want claude-plugin", source.DiscoveryStrategy)
+	}
+}
+
 func TestLoadRootWalksManifestlessVendorRepo(t *testing.T) {
 	sourcesRoot := t.TempDir()
 	base := filepath.Join(sourcesRoot, "vendor", "shared", "android-skills")
@@ -413,6 +444,33 @@ description: Invalid local source fixture.
 	}
 }
 
+func TestLoadRecoversFrontmatterWithAnUnquotedColonInTheDescription(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	// A very common real-world skill: the description contains an unquoted ':'
+	// (e.g. a "word: word" phrase), which strict YAML rejects. It must still be
+	// discovered with its name and full description intact — no metadata issue.
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "repo", "skills", "reader"), "---\nname: reader\ndescription: Read a doc. Trigger on a link — including a bare URL: providing it is the request.\n---\n")
+	config := "version: 1\nsources:\n  vendor-shared/repo:\n    branch: main\n"
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill, ok := loaded.Skill("vendor-shared/repo/skills/reader")
+	if !ok {
+		t.Fatal("skill with an unquoted-colon description was not discovered")
+	}
+	if skill.MetadataIssue != "" {
+		t.Fatalf("recoverable frontmatter reported a metadata issue: %q", skill.MetadataIssue)
+	}
+	if skill.Name != "reader" || !strings.Contains(skill.Description, "bare URL: providing it") {
+		t.Fatalf("recovered fields wrong: name=%q description=%q", skill.Name, skill.Description)
+	}
+}
+
 func TestLoadDegradesMalformedArchivedFrontmatterWithoutBlockingCatalog(t *testing.T) {
 	sourcesRoot := t.TempDir()
 	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "active", "healthy"), `---
@@ -420,11 +478,9 @@ name: healthy
 description: Active Skill remains available.
 ---
 `)
-	writeSkill(t, filepath.Join(sourcesRoot, "archived", "shared", "legacy", "broken"), `---
-name: broken
-description: invalid: unquoted colon
----
-`)
+	// Tab-indented frontmatter is invalid YAML and carries no recoverable
+	// top-level name/description, so it degrades to a metadata issue.
+	writeSkill(t, filepath.Join(sourcesRoot, "archived", "shared", "legacy", "broken"), "---\n\tbad: value\n---\n")
 
 	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
 	if err != nil {

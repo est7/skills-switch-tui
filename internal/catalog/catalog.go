@@ -406,7 +406,7 @@ func discoverLocalSources(root string, defaults map[Client]bool, overrides map[s
 		for _, group := range groups {
 			id := ScopedSourceID(SourceLocal, scope, group.Name())
 			path := filepath.Join(scopeRoot, group.Name())
-			source, discoverErr := discoverManagedSource(id, path, nil, nil, targets, overrides, clients, true, true)
+			source, discoverErr := discoverManagedSource(id, path, nil, nil, targets, overrides, clients, fallbackAlways)
 			if discoverErr != nil {
 				return nil, discoverErr
 			}
@@ -442,7 +442,7 @@ func discoverVendorSources(root string, defaults map[Client]bool, config configF
 			id := ScopedSourceID(SourceVendor, scope, repository.Name())
 			path := filepath.Join(scopeRoot, repository.Name())
 			policy := config.Sources[id]
-			source, discoverErr := discoverManagedSource(id, path, policy.DiscoveryPriority, policy.SkillPaths, targets, config.Overrides, clients, false, true)
+			source, discoverErr := discoverManagedSource(id, path, policy.DiscoveryPriority, policy.SkillPaths, targets, config.Overrides, clients, fallbackWhenNoManifest)
 			if discoverErr != nil {
 				return nil, discoverErr
 			}
@@ -682,21 +682,64 @@ func readFrontmatter(path string) (skillFrontmatter, error) {
 		return skillFrontmatter{}, errors.New("missing frontmatter opening delimiter")
 	}
 	var yamlLines []string
+	closed := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.TrimSpace(line) == "---" {
-			var frontmatter skillFrontmatter
-			if err := yaml.Unmarshal([]byte(strings.Join(yamlLines, "\n")), &frontmatter); err != nil {
-				return skillFrontmatter{}, fmt.Errorf("parse frontmatter: %w", err)
-			}
-			return frontmatter, nil
+			closed = true
+			break
 		}
 		yamlLines = append(yamlLines, line)
 	}
 	if err := scanner.Err(); err != nil {
 		return skillFrontmatter{}, err
 	}
-	return skillFrontmatter{}, errors.New("missing frontmatter closing delimiter")
+	if !closed {
+		return skillFrontmatter{}, errors.New("missing frontmatter closing delimiter")
+	}
+	var frontmatter skillFrontmatter
+	if err := yaml.Unmarshal([]byte(strings.Join(yamlLines, "\n")), &frontmatter); err == nil {
+		return frontmatter, nil
+	}
+	// Tolerant fallback: skill frontmatter is conventionally flat `key: value`
+	// lines, but authors routinely leave an unquoted ':' inside a description,
+	// which strict YAML rejects. Recover name/description from the top-level
+	// scalar lines so the skill stays usable instead of failing its whole source.
+	recovered := recoverFrontmatterScalars(yamlLines)
+	if recovered.Name == "" && recovered.Description == "" {
+		return skillFrontmatter{}, errors.New("parse frontmatter: unrecognized structure")
+	}
+	return recovered, nil
+}
+
+// recoverFrontmatterScalars extracts name/description from frontmatter that is
+// not strictly valid YAML, reading each top-level `key: value` line and taking
+// the whole remainder after the first colon (so an unquoted ':' in the value is
+// preserved). Indented, comment, and list-item lines are skipped.
+func recoverFrontmatterScalars(lines []string) skillFrontmatter {
+	var frontmatter skillFrontmatter
+	for _, line := range lines {
+		if line == "" || strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") ||
+			strings.HasPrefix(strings.TrimSpace(line), "#") || strings.HasPrefix(strings.TrimSpace(line), "-") {
+			continue
+		}
+		key, value, found := strings.Cut(line, ":")
+		if !found {
+			continue
+		}
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		switch strings.TrimSpace(key) {
+		case "name":
+			if frontmatter.Name == "" {
+				frontmatter.Name = value
+			}
+		case "description":
+			if frontmatter.Description == "" {
+				frontmatter.Description = value
+			}
+		}
+	}
+	return frontmatter
 }
 
 func targetSet(ids []Client, registry client.Registry) (map[Client]bool, error) {

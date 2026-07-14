@@ -36,7 +36,34 @@ var defaultVendorDiscoveryPriority = []DiscoveryStrategy{
 }
 
 type pluginManifest struct {
-	Skills *[]string `json:"skills"`
+	Skills manifestSkills `json:"skills"`
+}
+
+// manifestSkills decodes a plugin manifest "skills" field, which real manifests
+// write either as an array of paths (["./skills/a", ...]) or as a single string
+// pointing at a skills directory ("./skills/"). An absent field (present=false)
+// falls back to the conventional skills/ dir, while an explicit empty array stays
+// authoritatively empty.
+type manifestSkills struct {
+	present bool
+	paths   []string
+}
+
+func (m *manifestSkills) UnmarshalJSON(data []byte) error {
+	m.present = true
+	var list []string
+	if err := json.Unmarshal(data, &list); err == nil {
+		m.paths = list
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(data, &single); err != nil {
+		return fmt.Errorf(`manifest "skills" must be a string or an array of strings`)
+	}
+	if single != "" {
+		m.paths = []string{single}
+	}
+	return nil
 }
 
 type marketplaceManifest struct {
@@ -121,13 +148,29 @@ func PlanVendorDiscovery(root string, configuredPriority []DiscoveryStrategy, sk
 	return DiscoveryPlan{}, nil
 }
 
-// discoverManagedSource resolves a single managed source rooted at root using
-// the shared manifest-discovery pipeline. With fallbackToRoot=true, a source
-// without a recognized manifest (or with a manifest that declares no
-// discoverable skills) is walked from its root, collecting every SKILL.md.
-// Both local groups and vendor repositories opt in, so a manifest-less repo of
-// flat skills (for example github.com/android/skills) discovers all of them and
-// the caller enables the ones it wants; explicit --skill-path or
+// fallbackMode controls what happens when the manifest strategies do not yield
+// skills. Both modes root-walk when no manifest matched at all (so a manifest-less
+// repo of flat skills, e.g. github.com/android/skills, discovers every SKILL.md);
+// they differ only on a manifest that matched but declared no skills.
+type fallbackMode int
+
+const (
+	// fallbackWhenNoManifest root-walks only when no manifest matched. A manifest
+	// that matched but is empty (an explicit plugin `skills: []`) stays
+	// authoritatively empty. Used by vendor repositories.
+	fallbackWhenNoManifest fallbackMode = iota
+	// fallbackAlways additionally root-walks when a matched manifest declared no
+	// skills, matching the historical "collect every SKILL.md" behavior of local
+	// groups.
+	fallbackAlways
+)
+
+// discoverManagedSource resolves a single managed source rooted at root using the
+// shared discovery pipeline, which recognizes these layouts in priority order:
+// explicit --skill-path (container-aware, via explicitSkillRoots); marketplace
+// (.agents/plugins or .claude-plugin marketplace.json); plugin-dir (.codex-plugin
+// or .claude-plugin plugin.json); skills-dir (a top-level skills/); and a flat
+// root-walk fallback governed by fallback. Explicit --skill-path or
 // --discovery-priority still scopes a repo that needs it.
 func discoverManagedSource(
 	id string,
@@ -137,8 +180,7 @@ func discoverManagedSource(
 	defaults map[Client]bool,
 	overrides map[string]overrideConfig,
 	clients client.Registry,
-	walkEmptyManifest bool,
-	walkNoManifest bool,
+	fallback fallbackMode,
 ) (Source, error) {
 	if len(skillPaths) > 0 {
 		if len(configuredPriority) > 0 {
@@ -171,25 +213,24 @@ func discoverManagedSource(
 		if err != nil {
 			return Source{}, err
 		}
-		if walkEmptyManifest && len(source.Skills) == 0 {
-			// A manifest matched but declared no discoverable skills; fall back
-			// to treating the group root itself as the skill tree. Vendor sources
-			// opt out so an explicit empty `skills: []` stays authoritatively empty.
+		if fallback == fallbackAlways && len(source.Skills) == 0 {
+			// A manifest matched but declared no discoverable skills; fall back to
+			// treating the root itself as the skill tree. Vendor sources use
+			// fallbackWhenNoManifest, so an explicit empty `skills: []` returns here
+			// and stays authoritatively empty.
 			break
 		}
 		source.DiscoveryStrategy = strategy
 		source.DiscoveryPriority = priority
 		return source, nil
 	}
-	if walkNoManifest {
-		source, err := discoverSourceRoots(id, root, []string{root}, defaults, overrides, clients, false)
-		if err != nil {
-			return Source{}, err
-		}
-		source.DiscoveryStrategy = DiscoveryRootWalk
-		return source, nil
+	// No manifest matched: walk the root and collect every SKILL.md.
+	source, err := discoverSourceRoots(id, root, []string{root}, defaults, overrides, clients, false)
+	if err != nil {
+		return Source{}, err
 	}
-	return Source{ID: id, Path: root, DiscoveryPriority: priority}, nil
+	source.DiscoveryStrategy = DiscoveryRootWalk
+	return source, nil
 }
 
 func explicitSkillRoots(root string, skillPaths []string) ([]string, error) {
@@ -349,7 +390,7 @@ func pluginManifestRoots(sourceRoot, pluginRoot, manifestPath string) ([]string,
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return nil, true, fmt.Errorf("parse %s: %w", manifestPath, err)
 	}
-	if manifest.Skills == nil {
+	if !manifest.Skills.present {
 		skillsRoot := filepath.Join(pluginRoot, "skills")
 		info, err := os.Stat(skillsRoot)
 		if errors.Is(err, os.ErrNotExist) {
@@ -363,8 +404,8 @@ func pluginManifestRoots(sourceRoot, pluginRoot, manifestPath string) ([]string,
 		}
 		return []string{skillsRoot}, true, nil
 	}
-	roots := make([]string, 0, len(*manifest.Skills))
-	for _, declared := range *manifest.Skills {
+	roots := make([]string, 0, len(manifest.Skills.paths))
+	for _, declared := range manifest.Skills.paths {
 		resolved, err := resolveDeclaredPath(sourceRoot, pluginRoot, declared)
 		if err != nil {
 			return nil, true, fmt.Errorf("skill path %q: %w", declared, err)
