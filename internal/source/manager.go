@@ -103,7 +103,7 @@ func (m Manager) Add(ctx context.Context, request AddRequest) (returnErr error) 
 		if completed {
 			return
 		}
-		if _, rollbackErr := m.Git.Output(context.WithoutCancel(ctx), repositoryRoot, "rm", "--", filepath.ToSlash(relativePath)); rollbackErr != nil {
+		if _, rollbackErr := m.Git.Output(context.WithoutCancel(ctx), repositoryRoot, "rm", "-f", "--", filepath.ToSlash(relativePath)); rollbackErr != nil {
 			returnErr = errors.Join(returnErr, fmt.Errorf("rollback added submodule: %w", rollbackErr))
 		}
 	}()
@@ -185,7 +185,7 @@ func (m Manager) Remove(ctx context.Context, source catalog.Source) error {
 	if err != nil || relativePath == "." || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("source path is outside repository root %s: %s", repositoryRoot, source.Path)
 	}
-	if _, err := m.Git.Output(ctx, repositoryRoot, "rm", "--", filepath.ToSlash(relativePath)); err != nil {
+	if _, err := m.Git.Output(ctx, repositoryRoot, "rm", "-f", "--", filepath.ToSlash(relativePath)); err != nil {
 		return fmt.Errorf("remove %s submodule: %w", source.ID, err)
 	}
 	if err := catalog.UnregisterSource(m.SkillsRoot, source.ID); err != nil {

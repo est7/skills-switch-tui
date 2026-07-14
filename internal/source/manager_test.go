@@ -148,8 +148,8 @@ func TestRemoveUsesGitRMAndUnregistersCatalogPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	git := &recordingGit{responses: map[string]string{
-		target + "|status --porcelain":                             "",
-		agentsRoot + "|rm -- resources/skills/vendor/shared/clean": "",
+		target + "|status --porcelain":                                "",
+		agentsRoot + "|rm -f -- resources/skills/vendor/shared/clean": "",
 	}}
 	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: git}
 
@@ -158,7 +158,7 @@ func TestRemoveUsesGitRMAndUnregistersCatalogPolicy(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(git.calls) != 2 || git.calls[1] != "rm -- resources/skills/vendor/shared/clean" {
+	if len(git.calls) != 2 || git.calls[1] != "rm -f -- resources/skills/vendor/shared/clean" {
 		t.Fatalf("unexpected remove calls: %v", git.calls)
 	}
 	updated, err := os.ReadFile(filepath.Join(sourcesRoot, "catalog.yaml"))
@@ -333,7 +333,7 @@ func TestAddRollsBackSubmoduleWhenDiscoveryFails(t *testing.T) {
 	target := filepath.Join(sourcesRoot, "vendor", "shared", "empty")
 	git := &recordingGit{responses: map[string]string{
 		agentsRoot + "|submodule add -b main https://example.invalid/empty.git resources/skills/vendor/shared/empty": "",
-		agentsRoot + "|rm -- resources/skills/vendor/shared/empty":                                                   "",
+		agentsRoot + "|rm -f -- resources/skills/vendor/shared/empty":                                                "",
 	}}
 	git.onCall = func(key string) {
 		if strings.Contains(key, "|submodule add ") {
@@ -350,7 +350,7 @@ func TestAddRollsBackSubmoduleWhenDiscoveryFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("empty source unexpectedly succeeded")
 	}
-	if len(git.calls) != 3 || git.calls[2] != "rm -- resources/skills/vendor/shared/empty" {
+	if len(git.calls) != 3 || git.calls[2] != "rm -f -- resources/skills/vendor/shared/empty" {
 		t.Fatalf("failed add did not roll back submodule: %v", git.calls)
 	}
 }
