@@ -91,20 +91,28 @@ skills-switch source add <url> --name <repo> --discovery-priority skills-dir
 
 `--discovery-priority` and `--skill-path` are mutually exclusive; passing both is refused.
 
-### Use --skill-path only as an escape hatch
+### Use --skill-path to scope, including inside a marketplace repo
 
-Pass `--skill-path` (authoritative, repeatable) ONLY when:
+Pass `--skill-path` (authoritative, repeatable) when:
 
 - the user names a specific Skill subtree, or
 - the repo has no manifest and no top-level `skills/` directory, or
-- you must register a strict subset of the discoverable Skills.
+- you must register a strict subset of the discoverable Skills, or
+- the user wants one plugin (or a few) out of a **marketplace-of-plugins** repo.
 
-Each `--skill-path` must point at a directory that **directly contains a `SKILL.md`**; a parent directory holding several Skills is rejected (`does not contain SKILL.md`). Use `--sparse` (repeatable) for extra checkout paths a Skill depends on but that are not themselves Skill roots.
+Each `--skill-path` may point at either a **leaf Skill directory** (one that directly contains a `SKILL.md`) or a **container directory** whose `SKILL.md` files live beneath it — for example a plugin directory like `plugins/<name>` in a repo that nests many plugins under `plugins/`. A container is walked and expands to the Skills inside it; only a subtree that contains no `SKILL.md` at all is rejected. Discovery and sparse checkout are scoped to exactly the listed paths, so unlisted plugins are neither registered nor checked out. Use `--sparse` (repeatable) for extra checkout paths a Skill depends on but that are not themselves Skill roots.
 
 ```bash
-skills-switch source add <url> --name <repo> --branch <branch> \
-  --skill-path path/to/one-skill --skill-path path/to/another-skill
+# a single plugin from a marketplace repo (its Skills expand automatically)
+skills-switch source add <url> --skill-path plugins/android-debug-tools
+
+# select several plugins into one source, still one clone
+skills-switch source add <url> \
+  --skill-path plugins/android-debug-tools \
+  --skill-path plugins/android-ui-tools
 ```
+
+One repository is one vendor source (a single git submodule), so plugins selected from the same repo share one source id; their Skill ids carry the `plugins/<name>/...` path that distinguishes them, and each Skill still enables/disables independently. `--name` defaults to the repository name; pass it to override.
 
 Restrict the whole source to a single client with `--client <client>`; on `source add` this flag is single-valued (one client per source), unlike the repeatable `--client` on `skills enable`/`skills disable`.
 

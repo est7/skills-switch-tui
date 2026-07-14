@@ -127,6 +127,14 @@ skills-switch source add https://github.com/majiayu000/spellbook.git \
   --skill-path skills/codebase-audit
 ```
 
+A `--skill-path` may point at a leaf Skill directory (one holding a `SKILL.md`) or a container directory whose `SKILL.md` files live beneath it — a plugin directory such as `plugins/<name>` in a marketplace-of-plugins repo. A container expands to the Skills inside it and scopes discovery and sparse checkout to that subtree, so selecting one or several plugins from a large repo checks out only those:
+
+```sh
+skills-switch source add <marketplace-repo-url> \
+  --skill-path plugins/android-debug-tools \
+  --skill-path plugins/android-ui-tools
+```
+
 The default scope is `shared`. Restrict a complete vendor source to a registered client with `--client`; this stores it under the matching physical scope and exposes the corresponding logical ID:
 
 ```sh
