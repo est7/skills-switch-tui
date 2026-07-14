@@ -1,6 +1,6 @@
 ---
 name: skills-switch
-description: Manage Agent Skill source repositories, project-level Skill projections, project-level MCP servers, and user-global system prompts through the skills-switch CLI. Use when the user asks to add, register, update, query, or remove a GitHub Skill repository; enable or disable a Skill or source for one or all registered clients in the current project; add, remove, enable, or disable a project MCP server; delete a local Skill or group from the resource catalog; or manage a client system prompt. Trigger on requests such as "add this GitHub skill for all clients", "delete this skill repo", "disable this skill in this project", "delete this local skill", "add this MCP server", "remove this MCP server", "turn off this MCP here", "更新 skills", or equivalent Chinese requests.
+description: Manage Agent Skill source repositories, project-level Skill projections, project-level MCP servers, and user-global system prompts through the skills-switch CLI. Use when the user asks to add, register, update, query, or remove a GitHub or GitLab Skill repository; enable or disable a Skill or source for one or all registered clients in the current project; scaffold a new local Skill; add (including from a pasted JSON block), import, remove, enable, or disable a project MCP server; delete a local Skill or group from the resource catalog; or manage a client system prompt. Trigger on requests such as "add this GitHub skill for all clients", "delete this skill repo", "disable this skill in this project", "create a local skill", "delete this local skill", "add this MCP server", "import this MCP json", "remove this MCP server", "turn off this MCP here", "更新 skills", or equivalent Chinese requests.
 ---
 
 # Skills Switch
@@ -37,7 +37,7 @@ Use `skills-switch` as the only mutation boundary. Let it preserve unmanaged pro
 
    ```bash
    skills-switch source list --json
-   skills-switch --project "$PROJECT" list --json
+   skills-switch --project "$PROJECT" skills list --json
    skills-switch --project "$PROJECT" mcp list --json
    ```
 
@@ -48,7 +48,7 @@ Pass every target client to one command with repeated `--client` flags. Do not l
 For example, if `status --json` reports `codex`, `claude`, and `gemini`:
 
 ```bash
-skills-switch --project "$PROJECT" enable <skill-id> \
+skills-switch --project "$PROJECT" skills enable <skill-id> \
   --client codex --client claude --client gemini
 ```
 
@@ -60,7 +60,7 @@ Interpret “add/register this GitHub Skill” as catalog source registration. I
 
 ### Normalize the URL and name
 
-Normalize a GitHub tree or blob URL to the clone URL. Convert `https://github.com/<owner>/<repo>/tree/<branch>/<path>` into repository URL `https://github.com/<owner>/<repo>.git`, branch `<branch>`, and — only if the user pointed at a specific subtree — Skill directory `<path>`. Choose a stable lowercase source name, normally the repository name.
+`source add <url>` derives the clone URL, source name, branch, and (for a tree/blob link) the Skill subpath directly from a GitHub or GitLab web link, plain repository URL, or scp-style SSH remote. So `--name` is optional when it can be derived — a `https://github.com/<owner>/<repo>/tree/<branch>/<path>` link registers `<repo>` on `<branch>` with Skill subtree `<path>` on its own. Pass `--name`, `--branch`, or `--skill-path` only to override a derived value, and always pass `--name` for an input the parser cannot resolve (it fails with a clear "source name is required" error rather than guessing).
 
 ### Prefer automatic discovery — do not hand-list paths
 
@@ -106,14 +106,14 @@ skills-switch source add <url> --name <repo> --branch <branch> \
   --skill-path path/to/one-skill --skill-path path/to/another-skill
 ```
 
-Restrict the whole source to a single client with `--client <client>`; on `source add` this flag is single-valued (one client per source), unlike the repeatable `--client` on `enable`/`disable`.
+Restrict the whole source to a single client with `--client <client>`; on `source add` this flag is single-valued (one client per source), unlike the repeatable `--client` on `skills enable`/`skills disable`.
 
 ### Confirm and enable
 
-Re-run `source list --json` and `list --json`. Find the new source ID (normally `vendor-shared/<repo>`), confirm the recorded `discoveryStrategy`, and read its discovered Skill IDs. If immediate use was requested, enable the Skill or the entire source for every compatible registered client in one atomic command:
+Re-run `source list --json` and `skills list --json`. Find the new source ID (normally `vendor-shared/<repo>`), confirm the recorded `discoveryStrategy`, and read its discovered Skill IDs. If immediate use was requested, enable the Skill or the entire source for every compatible registered client in one atomic command:
 
 ```bash
-skills-switch --project "$PROJECT" enable \
+skills-switch --project "$PROJECT" skills enable \
   --source vendor-shared/<repo> \
   --client <client-1> --client <client-2>
 ```
@@ -123,19 +123,19 @@ skills-switch --project "$PROJECT" enable \
 Treat “disable/remove this Skill from this project” as projection removal, not source deletion. Preserve the SSOT in the catalog.
 
 ```bash
-skills-switch --project "$PROJECT" disable <skill-id> \
+skills-switch --project "$PROJECT" skills disable <skill-id> \
   --client <client-1> --client <client-2>
 ```
 
 Operate on a whole source when requested:
 
 ```bash
-skills-switch --project "$PROJECT" disable \
+skills-switch --project "$PROJECT" skills disable \
   --source <source-id> \
   --client <client-1> --client <client-2>
 ```
 
-Use `enable` with the same argument shape to re-enable it. If the user says “this project” without naming a client, target all currently registered compatible clients in one command.
+Use `skills enable` with the same argument shape to re-enable it. If the user says “this project” without naming a client, target all currently registered compatible clients in one command.
 
 ## Manage Project MCP Servers
 
@@ -162,6 +162,20 @@ skills-switch mcp add <server> \
 skills-switch mcp add <server> --url https://<host>/mcp --header KEY=VALUE
 ```
 
+When the user pastes a client-style JSON block, register it with `mcp import` instead of translating it into flags. It accepts either a full `{"mcpServers": {...}}` wrapper (names come from the keys; several servers may be added at once) or a single bare object such as `{"command": "npx", ...}` / `{"url": "..."}` (supply the name with `--name`). Read the JSON from an argument, `--file`, or standard input:
+
+```bash
+# full wrapper (names from keys)
+skills-switch mcp import '{"mcpServers":{"context7":{"command":"npx","args":["-y","ctx7"]}}}'
+
+# bare object needs a name
+skills-switch mcp import '{"url":"https://mcp.example.com"}' --name grafana
+
+# from a file or stdin
+skills-switch mcp import --file servers.json
+pbpaste | skills-switch mcp import
+```
+
 Remove a server definition from the catalog. This first clears its enabled projection from every registered client, then deletes the catalog entry. Adding is catalog-level, so it takes no `--client`; removing cleans the current `--project`:
 
 ```bash
@@ -175,8 +189,8 @@ Interpret “add/register this MCP server” as `mcp add` (catalog definition) a
 Preview and then update one vendor source:
 
 ```bash
-skills-switch update <source-id> --dry-run
-skills-switch update <source-id>
+skills-switch source update <source-id> --dry-run
+skills-switch source update <source-id>
 ```
 
 Update every clean vendor source by omitting the source ID. The CLI follows each submodule's tracked branch and stops before mutation when a selected source is dirty.
@@ -211,6 +225,17 @@ skills-switch --project "$PROJECT" skills delete local-<scope>/<group> --yes
 
 `skills delete` refuses to run without `--yes`, and rejects vendor sources (use `source remove`), read-only vendor Skills, archived references, and unknown ids. It first clears the target's projections across every registered client in `--project`, then removes the directory. Confirm the exact user intent before deleting, since the Skill source cannot be restored except from version control.
 
+## Scaffold a Local Skill
+
+Interpret “create/scaffold a new local skill” as `skills create <name>`. It writes a minimal discoverable `SKILL.md` skeleton (frontmatter `name` + `description`, placeholder body) under the resource SSOT and does not touch the project until the user enables it. By default the Skill becomes its own standalone group at `skills/local/shared/<name>/SKILL.md` (id `local-shared/<name>/<name>`); pass `--group` to nest it under an existing or new group, `--scope` to target a client-only scope, and `--description` to fill the frontmatter:
+
+```bash
+skills-switch skills create <name> --description "<one line>"
+skills-switch skills create <name> --group <group> --scope <client>
+```
+
+It refuses to overwrite an existing Skill and rejects invalid names. After scaffolding, the user edits the generated `SKILL.md`; enable it into a project with `skills enable` like any other Skill.
+
 ## Manage User-global System Prompts
 
 System prompt operations are user-global, unlike Skills and MCP servers:
@@ -227,8 +252,8 @@ State that scope explicitly before mutation when the request could be mistaken f
 
 Run the nearest read command after each change:
 
-- Skill or source projection: `skills-switch --project "$PROJECT" list --json`
-- Local Skill or group deletion: `skills-switch skills list --json` (the id is gone)
+- Skill or source projection: `skills-switch --project "$PROJECT" skills list --json`
+- Local Skill scaffold or deletion: `skills-switch skills list --json` (the id appears or is gone)
 - MCP server projection or definition: `skills-switch --project "$PROJECT" mcp list --json`
 - Source repository: `skills-switch source list --json`
 - System prompt: `skills-switch prompt list --json`

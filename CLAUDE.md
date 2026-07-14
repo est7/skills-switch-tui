@@ -75,7 +75,7 @@ Run against the real catalog without mutating it:
   tui
 ```
 
-The TUI uses `Space` for the selected client, `a` for every compatible client, and `L` to switch between English and Chinese.
+The TUI uses `Space` for the selected client, `a` for every compatible client (Skills, sources, and MCP servers), `n` for the context-appropriate "new" dialog (add repo / create local Skill / paste MCP JSON, built on `charm.land/huh/v2`), `d` to delete with confirmation, and `L` to switch between English and Chinese.
 
 Validate the bundled Skill and marketplace after changing either:
 
@@ -171,10 +171,10 @@ Release only from a clean `main` that has been pushed to `origin`.
      jq '.[] | select(.id == "vendor-shared/skills-switch-tui")'
    skills-switch \
      --project /Users/est9/EstProjects/skills-switch-tui \
-     list --json | \
+     skills list --json | \
      jq '.skills[] | select(.id == "vendor-shared/skills-switch-tui/skills/skills-switch")'
    ```
 
 ## Git Scope
 
-Before committing, inspect the worktree and stage only files owned by this task. Use English Conventional Commit messages. Do not include generated `dist/` artifacts. When the repository is updated after a release, update the registered vendor gitlink through `skills-switch update vendor-shared/skills-switch-tui`; do not edit the submodule checkout directly.
+Before committing, inspect the worktree and stage only files owned by this task. Use English Conventional Commit messages. Do not include generated `dist/` artifacts. When the repository is updated after a release, update the registered vendor gitlink through `skills-switch source update vendor-shared/skills-switch-tui`; do not edit the submodule checkout directly.

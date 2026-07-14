@@ -102,7 +102,14 @@ go build -o dist/skills-switch ./cmd/skills-switch
 
 ## Vendor sources
 
-Add an upstream repository as a submodule tracking `main`. Discovery uses the first available strategy in this default priority:
+Add an upstream repository as a submodule tracking `main`. `source add <url>` derives the source name, branch, and — for a `/tree/<branch>/<path>` or `/blob/...` link — the Skill subpath directly from a GitHub or GitLab web link, plain repository URL, or scp-style SSH remote, so `--name` is optional when it can be derived and explicit flags override:
+
+```sh
+# registers "skills" on branch "main" with Skill subtree "codex-dynamic-workflows"
+skills-switch source add https://github.com/DannyMac180/skills/tree/main/codex-dynamic-workflows
+```
+
+Discovery uses the first available strategy in this default priority:
 
 1. `agents-marketplace` — `.agents/plugins/marketplace.json`
 2. `claude-marketplace` — `.claude-plugin/marketplace.json`
@@ -168,13 +175,13 @@ Inspect and explicitly update vendor sources:
 
 ```sh
 skills-switch source list
-skills-switch update --dry-run
-skills-switch update
-skills-switch update vendor-shared/worktrunk
+skills-switch source update --dry-run
+skills-switch source update
+skills-switch source update vendor-shared/worktrunk
 skills-switch source remove vendor-shared/worktrunk
 ```
 
-Launching the TUI never updates submodules automatically. Press `u` for the selected vendor source, `U` for every vendor source, or use `update` without a source ID. After an update, the catalog is rediscovered from the new upstream snapshot; added and removed Skills immediately change each source's enabled/total counts. `source remove` refuses dirty submodules and updates the gitlink, `.gitmodules`, and catalog policy as one managed operation.
+Launching the TUI never updates submodules automatically. Press `u` for the selected vendor source, `U` for every vendor source, or use `source update` without a source ID. After an update, the catalog is rediscovered from the new upstream snapshot; added and removed Skills immediately change each source's enabled/total counts. `source remove` refuses dirty submodules and updates the gitlink, `.gitmodules`, and catalog policy as one managed operation.
 
 ## Operations
 
@@ -187,14 +194,16 @@ skills-switch
 Common non-interactive commands:
 
 ```sh
-skills-switch list
-skills-switch show vendor-shared/worktrunk/plugins/worktrunk/skills/worktrunk
+skills-switch skills list
+skills-switch skills show vendor-shared/worktrunk/plugins/worktrunk/skills/worktrunk
+skills-switch skills create make-goal --description "Draft a goal."
 skills-switch status
-skills-switch enable --source vendor-shared/worktrunk --client codex --client claude
-skills-switch disable local-shared/make-goal --client codex
+skills-switch skills enable --source vendor-shared/worktrunk --client codex --client claude
+skills-switch skills disable local-shared/make-goal --client codex
 skills-switch mcp list
 skills-switch mcp enable context7 --client claude --client codex --client gemini
 skills-switch mcp disable context7 --client claude --client codex --client gemini
+skills-switch mcp import '{"mcpServers":{"context7":{"command":"npx","args":["-y","ctx7"]}}}'
 skills-switch prompt list
 skills-switch prompt enable claude-prompt
 skills-switch prompt disable claude-prompt
@@ -212,7 +221,7 @@ Each `<client>-prompt` directory is one atomic user-global group. Markdown files
 Archived sources are hidden by default and reference-only:
 
 ```sh
-skills-switch list --archive
+skills-switch skills list --archive
 skills-switch source list --archive
 ```
 
@@ -224,7 +233,9 @@ skills-switch source list --archive
 | `↑` / `↓`, `j` / `k` | Navigate resource rows |
 | `←` / `→`, `h` / `l` | Select a client column |
 | `Space` | Toggle the selected resource or Skill source group for the selected client |
-| `a` | Toggle the selected Skill or entire source for every compatible client atomically |
+| `a` | Toggle the selected Skill, source, or MCP server for every compatible client atomically |
+| `n` | New: on Skills, a menu to add a remote repo source or scaffold a local Skill; on MCP, paste a JSON server definition |
+| `d` | Delete the selected source, local Skill/group, or MCP server (two-step confirmation) |
 | `Enter` | Expand or collapse a Skill source |
 | `/` | Search the active resource tab |
 | `f` | Cycle all, enabled, issues, and Skill archive views |
