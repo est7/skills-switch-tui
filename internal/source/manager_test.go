@@ -148,8 +148,9 @@ func TestRemoveUsesGitRMAndUnregistersCatalogPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	git := &recordingGit{responses: map[string]string{
-		target + "|status --porcelain":                                "",
-		agentsRoot + "|rm -f -- resources/skills/vendor/shared/clean": "",
+		target + "|status --porcelain":                                                    "",
+		agentsRoot + "|rm -f -- resources/skills/vendor/shared/clean":                     "",
+		agentsRoot + "|rev-parse --git-path modules/resources/skills/vendor/shared/clean": ".git/modules/resources/skills/vendor/shared/clean",
 	}}
 	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: git}
 
@@ -158,7 +159,7 @@ func TestRemoveUsesGitRMAndUnregistersCatalogPolicy(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(git.calls) != 2 || git.calls[1] != "rm -f -- resources/skills/vendor/shared/clean" {
+	if len(git.calls) < 2 || git.calls[1] != "rm -f -- resources/skills/vendor/shared/clean" {
 		t.Fatalf("unexpected remove calls: %v", git.calls)
 	}
 	updated, err := os.ReadFile(filepath.Join(sourcesRoot, "catalog.yaml"))
@@ -305,6 +306,43 @@ func TestAddRegistersExplicitSkillPathsAndChecksOutOnlyThosePaths(t *testing.T) 
 	}
 }
 
+func TestAddAcceptsContainerSkillPathPointingAtAPluginDir(t *testing.T) {
+	agentsRoot := t.TempDir()
+	sourcesRoot := filepath.Join(agentsRoot, "sources")
+	target := filepath.Join(sourcesRoot, "vendor", "shared", "android-cc-plugin")
+	git := &recordingGit{responses: map[string]string{
+		agentsRoot + "|submodule add -b main ssh://git@host:1022/lihang/android-cc-plugin.git sources/vendor/shared/android-cc-plugin": "",
+		target + "|sparse-checkout init --cone":                     "",
+		target + "|sparse-checkout set plugins/android-debug-tools": "",
+	}}
+	git.onCall = func(key string) {
+		if strings.Contains(key, "|submodule add ") {
+			// A tree URL points at a plugin directory, not a leaf skill.
+			writeSourceSkill(t, filepath.Join(target, "plugins", "android-debug-tools", "skills", "adb-logcat"))
+			writeSourceFile(t, filepath.Join(target, "plugins", "android-debug-tools", ".claude-plugin", "plugin.json"), `{"name":"android-debug-tools"}`)
+		}
+	}
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: git}
+
+	if err := manager.Add(context.Background(), AddRequest{
+		Name:       "android-cc-plugin",
+		URL:        "ssh://git@host:1022/lihang/android-cc-plugin.git",
+		Branch:     "main",
+		SkillPaths: []string{"plugins/android-debug-tools"},
+	}); err != nil {
+		t.Fatalf("Add with a container skill path: %v", err)
+	}
+	config, err := os.ReadFile(filepath.Join(sourcesRoot, "catalog.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{"skillPaths:", "- plugins/android-debug-tools"} {
+		if !strings.Contains(string(config), fragment) {
+			t.Fatalf("catalog config does not contain %q:\n%s", fragment, config)
+		}
+	}
+}
+
 func TestAddRejectsExistingCatalogPolicyBeforeGitMutation(t *testing.T) {
 	agentsRoot := t.TempDir()
 	sourcesRoot := filepath.Join(agentsRoot, "sources")
@@ -334,6 +372,7 @@ func TestAddRollsBackSubmoduleWhenDiscoveryFails(t *testing.T) {
 	git := &recordingGit{responses: map[string]string{
 		agentsRoot + "|submodule add -b main https://example.invalid/empty.git resources/skills/vendor/shared/empty": "",
 		agentsRoot + "|rm -f -- resources/skills/vendor/shared/empty":                                                "",
+		agentsRoot + "|rev-parse --git-path modules/resources/skills/vendor/shared/empty":                            ".git/modules/resources/skills/vendor/shared/empty",
 	}}
 	git.onCall = func(key string) {
 		if strings.Contains(key, "|submodule add ") {
@@ -350,7 +389,7 @@ func TestAddRollsBackSubmoduleWhenDiscoveryFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("empty source unexpectedly succeeded")
 	}
-	if len(git.calls) != 3 || git.calls[2] != "rm -f -- resources/skills/vendor/shared/empty" {
+	if len(git.calls) < 3 || git.calls[2] != "rm -f -- resources/skills/vendor/shared/empty" {
 		t.Fatalf("failed add did not roll back submodule: %v", git.calls)
 	}
 }

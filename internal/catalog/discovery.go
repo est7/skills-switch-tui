@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -196,8 +197,14 @@ func explicitSkillRoots(root string, skillPaths []string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("skill path %q: %w", declared, err)
 		}
+		// A path that directly holds SKILL.md is a single skill root. Otherwise it
+		// is a container — a plugin directory or a skills/ tree, as a GitHub/GitLab
+		// tree URL commonly points at — whose SKILL.md files are found by walking
+		// it. Only a subtree with no SKILL.md at all is an error.
 		if _, err := os.Stat(filepath.Join(resolved, "SKILL.md")); err != nil {
-			return nil, fmt.Errorf("skill path %q does not contain SKILL.md: %w", declared, err)
+			if !containsSkillManifest(resolved) {
+				return nil, fmt.Errorf("skill path %q contains no SKILL.md", declared)
+			}
 		}
 		if !seen[resolved] {
 			seen[resolved] = true
@@ -205,6 +212,25 @@ func explicitSkillRoots(root string, skillPaths []string) ([]string, error) {
 		}
 	}
 	return roots, nil
+}
+
+// containsSkillManifest reports whether dir holds a SKILL.md anywhere beneath it.
+func containsSkillManifest(dir string) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(_ string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry.IsDir() && entry.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		if !entry.IsDir() && entry.Name() == "SKILL.md" {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 func discoveryRoots(root string, strategy DiscoveryStrategy) ([]string, bool, error) {

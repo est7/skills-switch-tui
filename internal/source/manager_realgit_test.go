@@ -11,6 +11,75 @@ import (
 	"github.com/est7/skills-switch-tui/internal/catalog"
 )
 
+// TestAddRollbackCleansSubmoduleGitdirForReAdd proves that when an add fails
+// after cloning and rolls back, the leftover .git/modules gitdir is removed so a
+// subsequent add of the same path is not refused as an existing local repo.
+func TestAddRollbackCleansSubmoduleGitdirForReAdd(t *testing.T) {
+	gitBinary, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
+	t.Setenv("GIT_CONFIG_VALUE_0", "always")
+	t.Setenv("GIT_TERMINAL_PROMPT", "0")
+
+	base := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		command := exec.Command(gitBinary, args...)
+		command.Dir = dir
+		command.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e",
+		)
+		if out, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	remote := filepath.Join(base, "remote")
+	if err := os.MkdirAll(filepath.Join(remote, "skills", "tool"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "skills", "tool", "SKILL.md"), []byte("---\nname: tool\ndescription: t\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(remote, "init", "-q", "-b", "main")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "init")
+
+	agentsRoot := filepath.Join(base, "parent")
+	sourcesRoot := filepath.Join(agentsRoot, "resources", "skills")
+	if err := os.MkdirAll(sourcesRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(agentsRoot, "init", "-q", "-b", "main")
+	run(agentsRoot, "commit", "-q", "--allow-empty", "-m", "init")
+
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: GitCommander{}}
+
+	// First add fails: the skill path does not exist, so discovery errors after
+	// the clone and the rollback runs.
+	if err := manager.Add(context.Background(), AddRequest{
+		Name: "repo", URL: remote, Branch: "main", SkillPaths: []string{"does-not-exist"},
+	}); err == nil {
+		t.Fatal("add with a missing skill path unexpectedly succeeded")
+	}
+	relative := filepath.FromSlash("resources/skills/vendor/shared/repo")
+	if _, err := os.Stat(filepath.Join(agentsRoot, ".git", "modules", relative)); !os.IsNotExist(err) {
+		t.Fatalf("rollback left the submodule gitdir behind: %v", err)
+	}
+
+	// Re-adding the same path now succeeds instead of failing with "a git
+	// directory ... is found locally".
+	if err := manager.Add(context.Background(), AddRequest{
+		Name: "repo", URL: remote, Branch: "main",
+	}); err != nil {
+		t.Fatalf("re-add after rollback failed: %v", err)
+	}
+}
+
 // TestRemoveHandlesStagedSubmodule exercises the real git binary to prove the
 // fix for a submodule that was `git submodule add`-ed but not yet committed: its
 // own worktree is clean (so it passes the dirty preflight) while its gitlink is

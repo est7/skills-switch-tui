@@ -53,6 +53,47 @@ func TestScaffoldLocalSkillProducesADiscoverableSkill(t *testing.T) {
 	}
 }
 
+func TestLoadExpandsContainerSkillPathIntoNestedSkills(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	base := filepath.Join(sourcesRoot, "vendor", "shared", "android-cc-plugin")
+	// A GitHub/GitLab tree URL commonly points at a plugin directory (a manifest
+	// plus a skills/ tree), not a single leaf skill. Registering that directory
+	// as an explicit skillPath must expand to the skills beneath it.
+	writeSkill(t, filepath.Join(base, "plugins", "android-debug-tools", "skills", "adb-logcat"), "---\nname: adb-logcat\ndescription: Tail logcat.\n---\n")
+	writeSkill(t, filepath.Join(base, "plugins", "android-debug-tools", "skills", "adb-input"), "---\nname: adb-input\ndescription: Send input.\n---\n")
+	manifest := filepath.Join(base, "plugins", "android-debug-tools", ".claude-plugin", "plugin.json")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte(`{"name":"android-debug-tools"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// An unrelated plugin that must NOT be discovered when the skillPath scopes to
+	// android-debug-tools only.
+	writeSkill(t, filepath.Join(base, "plugins", "other-plugin", "skills", "unrelated"), "---\nname: unrelated\ndescription: nope.\n---\n")
+
+	config := "version: 1\nsources:\n  vendor-shared/android-cc-plugin:\n    branch: main\n    skillPaths:\n      - plugins/android-debug-tools\n"
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{
+		"vendor-shared/android-cc-plugin/plugins/android-debug-tools/skills/adb-logcat",
+		"vendor-shared/android-cc-plugin/plugins/android-debug-tools/skills/adb-input",
+	} {
+		if _, ok := loaded.Skill(id); !ok {
+			t.Fatalf("container skillPath did not expand to %q", id)
+		}
+	}
+	if _, ok := loaded.Skill("vendor-shared/android-cc-plugin/plugins/other-plugin/skills/unrelated"); ok {
+		t.Fatal("skillPath scoping leaked an unrelated plugin's skill")
+	}
+}
+
 func TestLoadDiscoversSourceGroupsAndAppliesCompatibilityOverrides(t *testing.T) {
 	sourcesRoot := t.TempDir()
 	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "codex-tools", "codex-dynamic-workflows"), `---

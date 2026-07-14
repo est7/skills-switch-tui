@@ -103,9 +103,13 @@ func (m Manager) Add(ctx context.Context, request AddRequest) (returnErr error) 
 		if completed {
 			return
 		}
-		if _, rollbackErr := m.Git.Output(context.WithoutCancel(ctx), repositoryRoot, "rm", "-f", "--", filepath.ToSlash(relativePath)); rollbackErr != nil {
+		rollbackCtx := context.WithoutCancel(ctx)
+		if _, rollbackErr := m.Git.Output(rollbackCtx, repositoryRoot, "rm", "-f", "--", filepath.ToSlash(relativePath)); rollbackErr != nil {
 			returnErr = errors.Join(returnErr, fmt.Errorf("rollback added submodule: %w", rollbackErr))
 		}
+		// `git rm` leaves the cloned gitdir under .git/modules; remove it so a
+		// later add of the same path is not refused as an existing local repo.
+		m.removeSubmoduleGitdir(rollbackCtx, repositoryRoot, relativePath)
 	}()
 	discovery, err := catalog.PlanVendorDiscovery(targetPath, request.DiscoveryPriority, request.SkillPaths)
 	if err != nil {
@@ -199,7 +203,27 @@ func (m Manager) Remove(ctx context.Context, source catalog.Source) error {
 		}
 		return operationErr
 	}
+	// Drop the leftover .git/modules gitdir so re-adding the same path succeeds.
+	m.removeSubmoduleGitdir(ctx, repositoryRoot, relativePath)
 	return nil
+}
+
+// removeSubmoduleGitdir deletes the submodule's private gitdir under
+// .git/modules, which `git rm` leaves behind. It is best-effort: a failure to
+// resolve or remove it does not fail the surrounding operation.
+func (m Manager) removeSubmoduleGitdir(ctx context.Context, repositoryRoot, relativePath string) {
+	out, err := m.Git.Output(ctx, repositoryRoot, "rev-parse", "--git-path", "modules/"+filepath.ToSlash(relativePath))
+	if err != nil {
+		return
+	}
+	gitdir := strings.TrimSpace(string(out))
+	if gitdir == "" {
+		return
+	}
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(repositoryRoot, gitdir)
+	}
+	_ = os.RemoveAll(gitdir)
 }
 
 func (e *DirtyError) Error() string {
