@@ -56,45 +56,67 @@ Use only compatible clients reported for the selected Skill. For source-level en
 
 ## Add a GitHub Skill Repository
 
-Interpret “add/register this GitHub Skill” as catalog registration. Interpret “for all clients” as both shared source registration and project enablement for all compatible registered clients.
+Interpret “add/register this GitHub Skill” as catalog source registration. Interpret “for all clients” as shared source registration plus project enablement for every compatible registered client.
 
-1. Normalize a GitHub tree or blob URL to the repository clone URL. Convert:
+### Normalize the URL and name
 
-   ```text
-   https://github.com/<owner>/<repo>/tree/<branch>/<path>
-   ```
+Normalize a GitHub tree or blob URL to the clone URL. Convert `https://github.com/<owner>/<repo>/tree/<branch>/<path>` into repository URL `https://github.com/<owner>/<repo>.git`, branch `<branch>`, and — only if the user pointed at a specific subtree — Skill directory `<path>`. Choose a stable lowercase source name, normally the repository name.
 
-   into repository URL `https://github.com/<owner>/<repo>.git`, branch `<branch>`, and Skill directory `<path>`.
+### Prefer automatic discovery — do not hand-list paths
 
-2. Choose a stable lowercase source name, normally the repository name.
-3. Prefer the repository's registered manifest paths. Add `--skill-path` only when the user names a specific directory or the repository has no trustworthy manifest. A `--skill-path` is authoritative and repeatable.
-4. Register a shared source:
+`source add` **without** `--skill-path` auto-discovers the repository's Skills by walking its manifests. This is the default and correct path for any repo that ships a plugin manifest or a top-level `skills/` directory. Do not enumerate `--skill-path` for such a repo; a plain add reads its manifest and checks out exactly the declared Skills.
 
-   ```bash
-   skills-switch source add https://github.com/<owner>/<repo>.git \
-     --name <repo> \
-     --branch <branch>
-   ```
+```bash
+skills-switch source add https://github.com/<owner>/<repo>.git \
+  --name <repo> --branch <branch>          # --branch defaults to "main"
+```
 
-   For an explicit Skill subtree:
+Discovery tries these strategies in priority order and stops at the first that matches the repo root:
 
-   ```bash
-   skills-switch source add https://github.com/<owner>/<repo>.git \
-     --name <repo> \
-     --branch <branch> \
-     --skill-path <path/to/skill>
-   ```
+| strategy | matches when the root has | checks out |
+|---|---|---|
+| `agents-marketplace` | `.agents/plugins/marketplace.json` | each listed plugin's `.codex-plugin/plugin.json` skills |
+| `claude-marketplace` | `.claude-plugin/marketplace.json` | each listed plugin's `.claude-plugin/plugin.json` skills |
+| `codex-plugin` | `.codex-plugin/plugin.json` | that manifest's `skills` array |
+| `claude-plugin` | `.claude-plugin/plugin.json` | that manifest's `skills` array |
+| `skills-dir` | a top-level `skills/` directory | every Skill under `skills/` |
 
-5. Re-run `source list --json` and `list --json`. Find the exact new source ID, normally `vendor-shared/<repo>`, and its discovered Skill IDs.
-6. If the user requested immediate use in this project, enable the Skill or entire source with all compatible registered clients in one command:
+A `plugin.json` whose `skills` array is present checks out exactly those directories. A `plugin.json` with no `skills` field, or a marketplace plugin that has no manifest, falls back to that plugin's `skills/` directory.
 
-   ```bash
-   skills-switch --project "$PROJECT" enable \
-     --source vendor-shared/<repo> \
-     --client <client-1> --client <client-2>
-   ```
+Restrict or reorder the chain with `--discovery-priority` (repeatable strategy names from the table). For example, force the top-level `skills/` tree and ignore any manifest:
 
-If the user requests one client only, register the entire source with `source add ... --client <client>` or pass only that client during enablement, according to whether the repository itself is client-specific.
+```bash
+skills-switch source add <url> --name <repo> --discovery-priority skills-dir
+```
+
+`--discovery-priority` and `--skill-path` are mutually exclusive; passing both is refused.
+
+### Use --skill-path only as an escape hatch
+
+Pass `--skill-path` (authoritative, repeatable) ONLY when:
+
+- the user names a specific Skill subtree, or
+- the repo has no manifest and no top-level `skills/` directory, or
+- you must register a strict subset of the discoverable Skills.
+
+Each `--skill-path` must point at a directory that **directly contains a `SKILL.md`**; a parent directory holding several Skills is rejected (`does not contain SKILL.md`). Use `--sparse` (repeatable) for extra checkout paths a Skill depends on but that are not themselves Skill roots.
+
+```bash
+skills-switch source add <url> --name <repo> --branch <branch> \
+  --skill-path path/to/one-skill --skill-path path/to/another-skill
+```
+
+Restrict the whole source to a single client with `--client <client>`; on `source add` this flag is single-valued (one client per source), unlike the repeatable `--client` on `enable`/`disable`.
+
+### Confirm and enable
+
+Re-run `source list --json` and `list --json`. Find the new source ID (normally `vendor-shared/<repo>`), confirm the recorded `discoveryStrategy`, and read its discovered Skill IDs. If immediate use was requested, enable the Skill or the entire source for every compatible registered client in one atomic command:
+
+```bash
+skills-switch --project "$PROJECT" enable \
+  --source vendor-shared/<repo> \
+  --client <client-1> --client <client-2>
+```
 
 ## Disable or Re-enable Project Skills
 
