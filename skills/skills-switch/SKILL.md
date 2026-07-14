@@ -58,9 +58,16 @@ Use only compatible clients reported for the selected Skill. For source-level en
 
 Interpret “add/register this GitHub Skill” as catalog source registration. Interpret “for all clients” as shared source registration plus project enablement for every compatible registered client.
 
-### Normalize the URL and name
+### Normalize the reference and name
 
-`source add <url>` derives the clone URL, source name, branch, and (for a tree/blob link) the Skill subpath directly from a GitHub or GitLab web link, plain repository URL, or scp-style SSH remote. So `--name` is optional when it can be derived — a `https://github.com/<owner>/<repo>/tree/<branch>/<path>` link registers `<repo>` on `<branch>` with Skill subtree `<path>` on its own. Pass `--name`, `--branch`, or `--skill-path` only to override a derived value, and always pass `--name` for an input the parser cannot resolve (it fails with a clear "source name is required" error rather than guessing).
+`source add <ref>` derives the clone URL, source name, branch, and (for a tree/blob link or an `owner/repo/subpath` shorthand) the Skill subpath from any of these forms:
+
+- `owner/repo` and `owner/repo/sub/path` — GitHub shorthand
+- `github:owner/repo`, `gitlab:owner/repo` — host prefix
+- `https://github.com/<owner>/<repo>/tree/<branch>/<path>` (or `/blob/`), and the GitLab `/-/tree/` form
+- a plain repository URL, `<repo>.git`, or an scp-style `git@host:owner/repo`
+
+So `--name` is optional when it can be derived — a tree link or `owner/repo/plugins/<x>` registers `<repo>` with Skill subtree `<x>` on its own. Pass `--name`, `--branch`, or `--skill-path` only to override a derived value, and always pass `--name` for an input the parser cannot resolve (it fails with a clear "source name is required" error rather than guessing). Local filesystem paths are not accepted — author local Skills with `skills create`.
 
 ### Prefer automatic discovery — do not hand-list paths
 
@@ -81,7 +88,7 @@ Discovery tries these strategies in priority order and stops at the first that m
 | `claude-plugin` | `.claude-plugin/plugin.json` | that manifest's `skills` array |
 | `skills-dir` | a top-level `skills/` directory | every Skill under `skills/` |
 
-A `plugin.json` whose `skills` array is present checks out exactly those directories. A `plugin.json` with no `skills` field, or a marketplace plugin that has no manifest, falls back to that plugin's `skills/` directory.
+A `plugin.json` `skills` field may be an array of paths (checked out exactly) or a string pointing at a skills directory (e.g. `"./skills/"`); a `plugin.json` with no `skills` field, or a marketplace plugin that has no manifest, falls back to that plugin's `skills/` directory. When a repo has **no manifest and no top-level `skills/`** (a curated repo of skills laid out by category, like `github.com/android/skills`), discovery **root-walks the whole repo** and registers every `SKILL.md` — so `source add <owner>/<repo>` on such a repo discovers all of them and you enable the ones you want. A skill whose frontmatter is not strictly valid YAML (a common unquoted `:` in the description) is still read, not dropped.
 
 Restrict or reorder the chain with `--discovery-priority` (repeatable strategy names from the table). For example, force the top-level `skills/` tree and ignore any manifest:
 

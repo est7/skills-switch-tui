@@ -102,12 +102,14 @@ go build -o dist/skills-switch ./cmd/skills-switch
 
 ## Vendor sources
 
-Add an upstream repository as a submodule tracking `main`. `source add <url>` derives the source name, branch, and — for a `/tree/<branch>/<path>` or `/blob/...` link — the Skill subpath directly from a GitHub or GitLab web link, plain repository URL, or scp-style SSH remote, so `--name` is optional when it can be derived and explicit flags override:
+Add an upstream repository as a submodule tracking `main`. `source add <ref>` accepts an `owner/repo` (or `owner/repo/sub/path`) GitHub shorthand, a `github:`/`gitlab:` prefix, a full web link (including `/tree/<branch>/<path>` and the GitLab `/-/tree/` form), a plain `<repo>.git`, or an scp-style `git@host:owner/repo`. It derives the source name, branch, and Skill subpath, so `--name` is optional when it can be derived and explicit flags override:
 
 ```sh
-# registers "skills" on branch "main" with Skill subtree "codex-dynamic-workflows"
+skills-switch source add DannyMac180/skills                                   # owner/repo shorthand
 skills-switch source add https://github.com/DannyMac180/skills/tree/main/codex-dynamic-workflows
 ```
+
+A repository with no manifest and no top-level `skills/` (a curated repo laid out by category, e.g. `github.com/android/skills`) is discovered by root-walking every `SKILL.md`; you then enable the ones you want.
 
 Discovery uses the first available strategy in this default priority:
 
