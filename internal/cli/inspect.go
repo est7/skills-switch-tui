@@ -282,6 +282,14 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 			}
 		}
 	}
+	orphans, err := runtime.projection.OrphanedProjections(activeSources(runtime.catalog))
+	if err != nil {
+		return doctorOutput{}, err
+	}
+	for _, orphan := range orphans {
+		result.Healthy = false
+		result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: orphan.Name, Client: string(orphan.Client), State: "orphaned", Path: orphan.Path})
+	}
 	for _, name := range runtime.mcpCatalog.Names() {
 		for _, clientID := range runtime.catalog.Clients.IDs() {
 			state, err := runtime.mcpManager.State(name, clientID)

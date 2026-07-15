@@ -375,6 +375,72 @@ func loadSourceMutationRuntime(options *rootOptions) (catalogRuntime, error) {
 	return loadCatalogRuntime(options)
 }
 
+// activeSources returns the catalog's non-archived sources: the set whose
+// projections the tool manages and can reconcile. Archived sources are excluded
+// because a link into an intentionally archived collection is preserved, not
+// orphaned.
+func activeSources(loaded catalog.Catalog) []catalog.Source {
+	sources := make([]catalog.Source, 0, len(loaded.Sources))
+	for _, candidate := range loaded.Sources {
+		if candidate.IsArchived() {
+			continue
+		}
+		sources = append(sources, candidate)
+	}
+	return sources
+}
+
+// autoPruneAfterUpdate removes projections in the current project whose skill
+// disappeared from one of the just-updated sources. It reloads the catalog so
+// detection sees the post-update skill set, scopes cleanup to the sources that
+// actually changed, and only ever removes managed symlinks that lost their
+// provider (see projection.OrphanedProjections for the empty-source guard).
+//
+// It is a best-effort side effect of `source update`: when the command is not
+// run inside a project, or the project root cannot be resolved, it cleans
+// nothing and returns no error, because updating a source mutates the resource
+// catalog, not any particular consuming project. Cleanup failures are returned
+// as a non-fatal warning so the update itself still reports success.
+func autoPruneAfterUpdate(options *rootOptions, results []source.UpdateResult) ([]projection.Orphan, error) {
+	changed := make(map[string]bool)
+	for _, result := range results {
+		if result.Changed {
+			changed[result.SourceID] = true
+		}
+	}
+	if len(changed) == 0 {
+		return nil, nil
+	}
+	start := options.projectRoot
+	if start == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, nil
+		}
+		start = cwd
+	}
+	projectRoot, err := project.FindRoot(start)
+	if err != nil {
+		return nil, nil
+	}
+	base, err := loadCatalogRuntime(options)
+	if err != nil {
+		return nil, fmt.Errorf("reload catalog for cleanup: %w", err)
+	}
+	scoped := make([]catalog.Source, 0, len(changed))
+	for _, candidate := range base.catalog.Sources {
+		if changed[candidate.ID] {
+			scoped = append(scoped, candidate)
+		}
+	}
+	manager := projection.New(projectRoot, base.catalog)
+	orphans, err := manager.OrphanedProjections(scoped)
+	if err != nil {
+		return nil, err
+	}
+	return manager.PruneOrphans(orphans)
+}
+
 func resolveResourcesRoot(configured string) (string, error) {
 	if configured != "" {
 		return filepath.Abs(configured)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/est7/skills-switch-tui/internal/catalog"
 	"github.com/est7/skills-switch-tui/internal/i18n"
+	"github.com/est7/skills-switch-tui/internal/projection"
 	"github.com/est7/skills-switch-tui/internal/source"
 	"github.com/spf13/cobra"
 )
@@ -231,8 +232,16 @@ func newUpdateCommand(options *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var pruned []projection.Orphan
+			if !dryRun {
+				var pruneWarning error
+				pruned, pruneWarning = autoPruneAfterUpdate(options, results)
+				if pruneWarning != nil {
+					fmt.Fprintln(command.ErrOrStderr(), runtime.translator.Text(i18n.UpdatePruneFailed, pruneWarning))
+				}
+			}
 			if outputJSON {
-				return writeJSON(command, results)
+				return writeJSON(command, updateOutput{Updates: results, Pruned: toPrunedLinks(pruned)})
 			}
 			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n",
@@ -255,12 +264,61 @@ func newUpdateCommand(options *rootOptions) *cobra.Command {
 					changed,
 				)
 			}
-			return writer.Flush()
+			if err := writer.Flush(); err != nil {
+				return err
+			}
+			return renderPrunedProjections(command, runtime.translator, pruned)
 		},
 	}
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "inspect updates without changing submodules")
 	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
 	return command
+}
+
+type updateOutput struct {
+	Updates []source.UpdateResult `json:"updates"`
+	Pruned  []prunedLink          `json:"pruned"`
+}
+
+type prunedLink struct {
+	Client string `json:"client"`
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Target string `json:"target"`
+}
+
+func toPrunedLinks(orphans []projection.Orphan) []prunedLink {
+	links := make([]prunedLink, 0, len(orphans))
+	for _, orphan := range orphans {
+		links = append(links, prunedLink{
+			Client: string(orphan.Client),
+			Name:   orphan.Name,
+			Path:   orphan.Path,
+			Target: orphan.Target,
+		})
+	}
+	return links
+}
+
+func renderPrunedProjections(command *cobra.Command, translator i18n.Translator, pruned []projection.Orphan) error {
+	if len(pruned) == 0 {
+		return nil
+	}
+	fmt.Fprintln(command.OutOrStdout(), translator.Text(i18n.UpdatePrunedSummary, len(pruned)))
+	return writeOrphanTable(command, translator, pruned)
+}
+
+func writeOrphanTable(command *cobra.Command, translator i18n.Translator, orphans []projection.Orphan) error {
+	writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
+	fmt.Fprintf(writer, "%s\t%s\t%s\n",
+		translator.Text(i18n.ClientHeader),
+		translator.Text(i18n.ResourceHeader),
+		translator.Text(i18n.PathHeader),
+	)
+	for _, orphan := range orphans {
+		fmt.Fprintf(writer, "%s\t%s\t%s\n", orphan.Client, orphan.Name, orphan.Path)
+	}
+	return writer.Flush()
 }
 
 func selectVendorSources(loaded catalog.Catalog, args []string, translator i18n.Translator) ([]catalog.Source, error) {

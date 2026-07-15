@@ -23,6 +23,71 @@ func newSkillsCommand(options *rootOptions) *cobra.Command {
 	command.AddCommand(newEnableCommand(options, false))
 	command.AddCommand(newSkillCreateCommand(options))
 	command.AddCommand(newSkillDeleteCommand(options))
+	command.AddCommand(newSkillPruneCommand(options))
+	return command
+}
+
+type pruneOutput struct {
+	Applied  bool         `json:"applied"`
+	Orphaned []prunedLink `json:"orphaned"`
+	Pruned   []prunedLink `json:"pruned"`
+}
+
+// newSkillPruneCommand removes project projections whose skill disappeared from
+// its source — the residue an upstream `source update` leaves when a skill is
+// dropped. It lists candidates by default and only removes them with --yes,
+// mirroring `skills delete`. Detection reuses the same guard as the automatic
+// post-update cleanup: an empty (unavailable) source is never treated as a
+// wholesale removal.
+func newSkillPruneCommand(options *rootOptions) *cobra.Command {
+	var assumeYes bool
+	var outputJSON bool
+	command := &cobra.Command{
+		Use:   "prune",
+		Short: "Remove project projections whose skill left its source",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			runtime, err := loadRuntime(options)
+			if err != nil {
+				return err
+			}
+			orphans, err := runtime.projection.OrphanedProjections(activeSources(runtime.catalog))
+			if err != nil {
+				return err
+			}
+			if !assumeYes {
+				if outputJSON {
+					return writeJSON(command, pruneOutput{Applied: false, Orphaned: toPrunedLinks(orphans), Pruned: []prunedLink{}})
+				}
+				if len(orphans) == 0 {
+					fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.PruneNoOrphans))
+					return nil
+				}
+				fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.PruneDryRunSummary, len(orphans)))
+				return writeOrphanTable(command, runtime.translator, orphans)
+			}
+			pruned, pruneErr := runtime.projection.PruneOrphans(orphans)
+			if outputJSON {
+				if err := writeJSON(command, pruneOutput{Applied: true, Orphaned: toPrunedLinks(orphans), Pruned: toPrunedLinks(pruned)}); err != nil {
+					return err
+				}
+				return pruneErr
+			}
+			if len(pruned) == 0 && pruneErr == nil {
+				fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.PruneNoOrphans))
+				return nil
+			}
+			if len(pruned) > 0 {
+				fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.UpdatePrunedSummary, len(pruned)))
+				if err := writeOrphanTable(command, runtime.translator, pruned); err != nil {
+					return err
+				}
+			}
+			return pruneErr
+		},
+	}
+	command.Flags().BoolVar(&assumeYes, "yes", false, "remove the orphaned projections (default: list only)")
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
 	return command
 }
 
