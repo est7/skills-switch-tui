@@ -100,6 +100,49 @@ go test ./...
 go build -o dist/skills-switch ./cmd/skills-switch
 ```
 
+## Usage
+
+Every mutating capability is a first-class CLI subcommand grouped under its resource noun — `skills`, `mcp`, `source`, `prompt` — alongside the top-level `init`, `status`, `doctor`, `tui`, and `version`. Any command accepts `--json` for scripting and `--lang en|zh` for language; project commands act on the nearest Git root or an explicit `--project`. The TUI never does anything the CLI cannot: humans can use either surface, while agents and scripts drive the CLI.
+
+A complete end-to-end flow, from an empty machine to enabled resources:
+
+```sh
+# 1. install and bootstrap the ~/.agents/resources catalog (idempotent)
+brew install est7/tap/skills-switch
+skills-switch init
+
+# 2. register an upstream Skill repository — owner/repo shorthand is enough
+skills-switch source add vercel-labs/agent-skills
+
+# 3. inspect what was discovered and which clients each Skill supports
+skills-switch source list
+skills-switch skills list
+
+# 4. enable a Skill (or a whole --source) for this project, across clients atomically
+cd ~/my-project
+skills-switch skills enable <skill-id> --client claude --client codex
+
+# 5. register and enable a project MCP server
+skills-switch mcp import '{"mcpServers":{"context7":{"command":"npx","args":["-y","ctx7"]}}}'
+skills-switch mcp enable context7 --client claude
+
+# 6. project a user-global system prompt (not project-local)
+skills-switch prompt enable claude-prompt
+
+# 7. verify the project, or drive the same operations interactively
+skills-switch doctor
+skills-switch            # opens the TUI in the current Git project
+```
+
+Author a local Skill instead of vendoring one, then enable it like any other:
+
+```sh
+skills-switch skills create make-goal --description "Draft a project goal."
+skills-switch skills enable local-shared/make-goal/make-goal --client claude
+```
+
+The sections below detail each surface: vendor source registration and discovery, non-interactive operations, and TUI keys.
+
 ## Vendor sources
 
 Add an upstream repository as a submodule tracking `main`. `source add <ref>` accepts an `owner/repo` (or `owner/repo/sub/path`) GitHub shorthand, a `github:`/`gitlab:` prefix, a full web link (including `/tree/<branch>/<path>` and the GitLab `/-/tree/` form), a plain `<repo>.git`, or an scp-style `git@host:owner/repo`. It derives the source name, branch, and Skill subpath, so `--name` is optional when it can be derived and explicit flags override:
