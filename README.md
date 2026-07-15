@@ -236,6 +236,8 @@ skills-switch source remove vendor-shared/worktrunk
 
 Launching the TUI never updates submodules automatically. Press `u` for the selected vendor source, `U` for every vendor source, or use `source update` without a source ID. After an update, the catalog is rediscovered from the new upstream snapshot; added and removed Skills immediately change each source's enabled/total counts. `source remove` refuses dirty submodules and updates the gitlink, `.gitmodules`, and catalog policy as one managed operation.
 
+When an update drops a Skill the current project had enabled, its projection is left pointing at a target that no longer exists. `source update` reconciles this automatically: after a successful update it removes such dangling managed links in the current project, scoped to the sources that changed, and reports them (its `--json` output is an object `{updates, pruned}`). Cleanup is best-effort — it never fails the update, and does nothing when the command is not run inside a project. A Skill that is merely no longer discovered but still present on disk is never removed. Run `skills prune` at any time to review these orphaned projections (`--yes` removes them), and `doctor` now reports them as unhealthy.
+
 ## Operations
 
 Run the TUI anywhere inside a Git worktree. The nearest Git root receives Skills and MCP changes; the System Prompts tab always manages the current user's client directories:
@@ -253,6 +255,7 @@ skills-switch skills create make-goal --description "Draft a goal."
 skills-switch status
 skills-switch skills enable --source vendor-shared/worktrunk --client codex --client claude
 skills-switch skills disable local-shared/make-goal --client codex
+skills-switch skills prune            # list projections orphaned by upstream removals; add --yes to remove
 skills-switch mcp list
 skills-switch mcp enable context7 --client claude --client codex --client gemini
 skills-switch mcp disable context7 --client claude --client codex --client gemini
