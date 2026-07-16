@@ -51,7 +51,7 @@ func (m Model) View() tea.View {
 func (m Model) renderHeader() string {
 	scopeLabel := i18n.ProjectLabel
 	scopePath := m.project
-	if m.tab == tabAgents || m.tab == tabOutputStyles || m.tab == tabSystemPrompts {
+	if (m.tab == tabSkills && m.skillScope == projection.ScopeGlobal) || m.tab == tabAgents || m.tab == tabOutputStyles || m.tab == tabSystemPrompts {
 		scopeLabel = i18n.UserLabel
 		scopePath = m.userHome
 	}
@@ -397,23 +397,30 @@ func (m Model) cell(item row, client catalog.Client) (string, lipgloss.Style) {
 	}
 	compatible := 0
 	enabled := 0
+	global := 0
 	for _, skill := range source.Skills {
-		state, err := m.projection.State(skill, client)
-		if err != nil || state == projection.StateConflict || state == projection.StateBroken || state == projection.StateIncompatibleEnabled {
+		state, err := m.skillState(skill, client)
+		if err != nil || state == projection.StateConflict || state == projection.StateBroken || state == projection.StateIncompatibleEnabled || state == projection.StateDuplicate {
 			return "!", m.styles.issue
 		}
 		if !skill.Supports(client) {
 			continue
 		}
 		compatible++
-		if state == projection.StateEnabled {
+		if state == projection.StateEnabled || state == projection.StateGlobal {
 			enabled++
+		}
+		if state == projection.StateGlobal {
+			global++
 		}
 	}
 	if compatible == 0 {
 		return "·", m.styles.incompatible
 	}
 	value := fmt.Sprintf("%d/%d", enabled, compatible)
+	if global > 0 {
+		value = "G " + value
+	}
 	if enabled == compatible {
 		return value, m.styles.enabled
 	}
@@ -421,18 +428,20 @@ func (m Model) cell(item row, client catalog.Client) (string, lipgloss.Style) {
 }
 
 func (m Model) stateCell(skill catalog.Skill, client catalog.Client) (string, lipgloss.Style) {
-	state, err := m.projection.State(skill, client)
+	state, err := m.skillState(skill, client)
 	if err != nil {
 		return "!", m.styles.issue
 	}
 	switch state {
 	case projection.StateEnabled:
 		return "●", m.styles.enabled
+	case projection.StateGlobal:
+		return "G", m.styles.enabled
 	case projection.StateDisabled:
 		return "○", m.styles.disabled
 	case projection.StateIncompatible:
 		return "·", m.styles.incompatible
-	case projection.StateIncompatibleEnabled, projection.StateConflict:
+	case projection.StateIncompatibleEnabled, projection.StateConflict, projection.StateDuplicate:
 		return "!", m.styles.issue
 	case projection.StateBroken:
 		return "×", m.styles.issue

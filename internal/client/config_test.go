@@ -13,6 +13,7 @@ func TestLoadRegistryExtendsBuiltins(t *testing.T) {
 clients:
   pi:
     projectSkillsDir: .pi/skills
+    userSkillsDir: .pi/skills
     userPromptDir: .pi
 `
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
@@ -25,6 +26,9 @@ clients:
 	}
 	if !registry.Has(Codex) || !registry.Has("pi") {
 		t.Fatalf("registry IDs = %v, want builtins and pi", registry.IDs())
+	}
+	if target, targetErr := registry.UserSkillsTargetDir("/tmp/home", "pi"); targetErr != nil || target != filepath.Join("/tmp/home", ".pi", "skills") {
+		t.Fatalf("Pi user Skill dir = %q, %v", target, targetErr)
 	}
 }
 

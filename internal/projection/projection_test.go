@@ -95,6 +95,83 @@ func TestSetEnabledUsesConfiguredClientProjectionDirectory(t *testing.T) {
 	assertLinkTarget(t, filepath.Join(projectRoot, ".pi", "skills", "portable"), skill.Path)
 }
 
+func TestGlobalEnableAtomicallyRetiresProjectAndLocksProjectScope(t *testing.T) {
+	projectRoot := t.TempDir()
+	userHome := t.TempDir()
+	skill := newSkill(t, t.TempDir(), "core")
+	loaded := catalog.Catalog{Clients: client.DefaultRegistry(), Sources: []catalog.Source{{ID: "local-shared/core", Skills: []catalog.Skill{skill}}}}
+	manager := NewWithUserHome(projectRoot, userHome, loaded)
+	if err := manager.SetEnabled([]catalog.Skill{skill}, catalog.ClientCodex, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Apply([]Operation{{Skills: []catalog.Skill{skill}, Client: catalog.ClientCodex, Enabled: true, Scope: ScopeGlobal}}); err != nil {
+		t.Fatal(err)
+	}
+	assertMissing(t, filepath.Join(projectRoot, ".agents", "skills", "core"))
+	assertLinkTarget(t, filepath.Join(userHome, ".agents", "skills", "core"), skill.Path)
+	if state, err := manager.State(skill, catalog.ClientCodex); err != nil || state != StateGlobal {
+		t.Fatalf("project state = %q, %v; want global", state, err)
+	}
+	if err := manager.SetEnabled([]catalog.Skill{skill}, catalog.ClientCodex, true); err == nil || !strings.Contains(err.Error(), "globally configured") {
+		t.Fatalf("project enable error = %v", err)
+	}
+	if err := manager.Apply([]Operation{{Skills: []catalog.Skill{skill}, Client: catalog.ClientCodex, Enabled: false, Scope: ScopeGlobal}}); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := manager.State(skill, catalog.ClientCodex); err != nil || state != StateDisabled {
+		t.Fatalf("project state after global disable = %q, %v", state, err)
+	}
+}
+
+func TestStateReportsHistoricalGlobalProjectDuplicate(t *testing.T) {
+	projectRoot := t.TempDir()
+	userHome := t.TempDir()
+	skill := newSkill(t, t.TempDir(), "core")
+	loaded := catalog.Catalog{Clients: client.DefaultRegistry(), Sources: []catalog.Source{{ID: "local-shared/core", Skills: []catalog.Skill{skill}}}}
+	manager := NewWithUserHome(projectRoot, userHome, loaded)
+	for _, path := range []string{
+		filepath.Join(projectRoot, ".agents", "skills", "core"),
+		filepath.Join(userHome, ".agents", "skills", "core"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(skill.Path, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if state, err := manager.State(skill, catalog.ClientCodex); err != nil || state != StateDuplicate {
+		t.Fatalf("project state = %q, %v; want duplicate", state, err)
+	}
+}
+
+func TestGlobalPromotionConflictPreservesProjectProjection(t *testing.T) {
+	projectRoot := t.TempDir()
+	userHome := t.TempDir()
+	skill := newSkill(t, t.TempDir(), "core")
+	loaded := catalog.Catalog{Clients: client.DefaultRegistry(), Sources: []catalog.Source{{ID: "local-shared/core", Skills: []catalog.Skill{skill}}}}
+	manager := NewWithUserHome(projectRoot, userHome, loaded)
+	if err := manager.SetEnabled([]catalog.Skill{skill}, catalog.ClientCodex, true); err != nil {
+		t.Fatal(err)
+	}
+	projectLink := filepath.Join(projectRoot, ".agents", "skills", "core")
+	globalPath := filepath.Join(userHome, ".agents", "skills", "core")
+	if err := os.MkdirAll(globalPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := manager.SetEnabledAt([]catalog.Skill{skill}, catalog.ClientCodex, true, ScopeGlobal)
+	var conflict *ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("global promotion error = %v, want ConflictError", err)
+	}
+	assertLinkTarget(t, projectLink, skill.Path)
+	info, statErr := os.Stat(globalPath)
+	if statErr != nil || !info.IsDir() {
+		t.Fatalf("global conflict was mutated: %v", statErr)
+	}
+}
+
 func TestStateReportsEnabledLinkThatBecameIncompatible(t *testing.T) {
 	projectRoot := t.TempDir()
 	sourceRoot := t.TempDir()

@@ -579,6 +579,66 @@ func TestShowStatusAndDoctorExposeStableJSON(t *testing.T) {
 	}
 }
 
+func TestSkillGlobalScopePromotesAndLocksProjectScope(t *testing.T) {
+	resourceRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillPath := filepath.Join(resourceRoot, "skills", "local", "shared", "base", "portable")
+	writeCLISkill(t, skillPath, "portable")
+	base := []string{"--resources", resourceRoot, "--project", projectRoot}
+	skillID := "local-shared/base/portable"
+
+	if _, err := execute(t, append(base, "skills", "enable", skillID, "--client", "codex")...); err != nil {
+		t.Fatal(err)
+	}
+	projectLink := filepath.Join(projectRoot, ".agents", "skills", "portable")
+	globalLink := filepath.Join(userHome, ".agents", "skills", "portable")
+	if _, err := execute(t, append(base, "skills", "enable", skillID, "--client", "codex", "--scope", "global")...); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(projectLink); !os.IsNotExist(err) {
+		t.Fatalf("project link survived global promotion: %v", err)
+	}
+	if target, err := os.Readlink(globalLink); err != nil || filepath.Clean(target) != filepath.Clean(skillPath) {
+		t.Fatalf("global link = %q, %v", target, err)
+	}
+
+	listed, err := execute(t, append(base, "skills", "list", "--scope", "project", "--json")...)
+	if err != nil || !bytes.Contains(listed, []byte(`"scope": "project"`)) || !bytes.Contains(listed, []byte(`"codex": "global"`)) {
+		t.Fatalf("project list did not expose global lock: %v\n%s", err, listed)
+	}
+	if _, err := execute(t, append(base, "skills", "enable", skillID, "--client", "codex", "--scope", "project")...); err == nil || !strings.Contains(err.Error(), "globally configured") {
+		t.Fatalf("project enable was not rejected: %v", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(projectLink), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(skillPath, projectLink); err != nil {
+		t.Fatal(err)
+	}
+	diagnosis, err := execute(t, append(base, "doctor", "--json")...)
+	if err == nil || !bytes.Contains(diagnosis, []byte(`"scope": "project"`)) || !bytes.Contains(diagnosis, []byte(`"state": "duplicate"`)) {
+		t.Fatalf("doctor did not report cross-scope duplicate: %v\n%s", err, diagnosis)
+	}
+	if err := os.Remove(projectLink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execute(t, append(base, "skills", "disable", skillID, "--client", "codex", "--scope", "global")...); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execute(t, append(base, "skills", "enable", skillID, "--client", "codex")...); err != nil {
+		t.Fatalf("project scope remained locked after global disable: %v", err)
+	}
+	if _, err := execute(t, append(base, "skills", "list", "--scope", "invalid")...); err == nil {
+		t.Fatal("invalid Skill scope was accepted")
+	}
+}
+
 func TestMultiClientEnableIsAtomicAcrossClientDirectories(t *testing.T) {
 	resourceRoot := t.TempDir()
 	sourcesRoot := filepath.Join(resourceRoot, "skills")

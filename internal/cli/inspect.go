@@ -191,13 +191,13 @@ func buildStatus(runtime runtime) (statusOutput, error) {
 					return statusOutput{}, err
 				}
 				switch state {
-				case projection.StateEnabled:
+				case projection.StateEnabled, projection.StateGlobal:
 					summary.Enabled++
 				case projection.StateDisabled:
 					summary.Disabled++
 				case projection.StateIncompatible:
 					summary.Incompatible++
-				case projection.StateIncompatibleEnabled, projection.StateConflict, projection.StateBroken:
+				case projection.StateIncompatibleEnabled, projection.StateConflict, projection.StateBroken, projection.StateDuplicate:
 					summary.Issues++
 				}
 			}
@@ -211,6 +211,7 @@ type doctorIssue struct {
 	Kind     string `json:"kind"`
 	Resource string `json:"resource"`
 	Client   string `json:"client"`
+	Scope    string `json:"scope,omitempty"`
 	State    string `json:"state"`
 	Path     string `json:"path"`
 }
@@ -245,9 +246,9 @@ func newDoctorCommand(options *rootOptions) *cobra.Command {
 				fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.DoctorHealthy))
 			} else {
 				writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
-				fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", runtime.translator.Text(i18n.KindHeader), runtime.translator.Text(i18n.ResourceHeader), runtime.translator.Text(i18n.ClientHeader), runtime.translator.Text(i18n.StateHeader), runtime.translator.Text(i18n.PathHeader))
+				fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\n", runtime.translator.Text(i18n.KindHeader), runtime.translator.Text(i18n.ResourceHeader), runtime.translator.Text(i18n.ClientHeader), runtime.translator.Text(i18n.ScopeHeader), runtime.translator.Text(i18n.StateHeader), runtime.translator.Text(i18n.PathHeader))
 				for _, issue := range result.Issues {
-					fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", issue.Kind, issue.Resource, issue.Client, issue.State, issue.Path)
+					fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\n", issue.Kind, issue.Resource, issue.Client, issue.Scope, issue.State, issue.Path)
 				}
 				if err := writer.Flush(); err != nil {
 					return err
@@ -279,15 +280,28 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 				if err != nil {
 					return doctorOutput{}, err
 				}
-				if state != projection.StateIncompatibleEnabled && state != projection.StateConflict && state != projection.StateBroken {
-					continue
+				if state == projection.StateIncompatibleEnabled || state == projection.StateConflict || state == projection.StateBroken || state == projection.StateDuplicate {
+					path, pathErr := runtime.projection.TargetPath(skill, client)
+					if pathErr != nil {
+						return doctorOutput{}, pathErr
+					}
+					result.Healthy = false
+					result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: skill.ID, Client: string(client), Scope: string(projection.ScopeProject), State: string(state), Path: path})
 				}
-				path, err := runtime.projection.TargetPath(skill, client)
-				if err != nil {
-					return doctorOutput{}, err
+				if runtime.projection.SupportsScope(client, projection.ScopeGlobal) {
+					state, err := runtime.projection.StateAt(skill, client, projection.ScopeGlobal)
+					if err != nil {
+						return doctorOutput{}, err
+					}
+					if state == projection.StateIncompatibleEnabled || state == projection.StateConflict || state == projection.StateBroken {
+						path, pathErr := runtime.projection.TargetPathAt(skill, client, projection.ScopeGlobal)
+						if pathErr != nil {
+							return doctorOutput{}, pathErr
+						}
+						result.Healthy = false
+						result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: skill.ID, Client: string(client), Scope: string(projection.ScopeGlobal), State: string(state), Path: path})
+					}
 				}
-				result.Healthy = false
-				result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: skill.ID, Client: string(client), State: string(state), Path: path})
 			}
 		}
 	}
@@ -297,7 +311,15 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 	}
 	for _, orphan := range orphans {
 		result.Healthy = false
-		result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: orphan.Name, Client: string(orphan.Client), State: "orphaned", Path: orphan.Path})
+		result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: orphan.Name, Client: string(orphan.Client), Scope: string(projection.ScopeProject), State: "orphaned", Path: orphan.Path})
+	}
+	globalOrphans, err := runtime.projection.OrphanedProjectionsAt(activeSources(runtime.catalog), projection.ScopeGlobal)
+	if err != nil {
+		return doctorOutput{}, err
+	}
+	for _, orphan := range globalOrphans {
+		result.Healthy = false
+		result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: orphan.Name, Client: string(orphan.Client), Scope: string(projection.ScopeGlobal), State: "orphaned", Path: orphan.Path})
 	}
 	for _, name := range runtime.mcpCatalog.Names() {
 		for _, clientID := range runtime.catalog.Clients.IDs() {

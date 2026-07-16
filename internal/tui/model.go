@@ -125,6 +125,7 @@ type Model struct {
 	outputStyleMgr userresource.Manager
 	updater        *source.Manager
 	tab            resourceTab
+	skillScope     projection.Scope
 	clientIndex    int
 	cursor         int
 	offset         int
@@ -184,6 +185,7 @@ func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Man
 		catalog:    loaded,
 		project:    projectRoot,
 		projection: manager,
+		skillScope: projection.ScopeProject,
 		updater:    updater,
 		width:      100,
 		height:     30,
@@ -248,7 +250,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		reloaded, reloadErr := catalog.Load(m.catalog.Root, m.catalog.Clients)
 		if reloadErr == nil {
 			m.catalog = reloaded
-			m.projection = projection.New(m.project, reloaded)
+			m.projection = projection.NewWithUserHome(m.project, m.userHome, reloaded)
 			if clients := m.catalog.Clients.IDs(); m.clientIndex >= len(clients) {
 				m.clientIndex = max(0, len(clients)-1)
 			}
@@ -372,6 +374,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.cycleResource(-1)
 	case "f":
 		m.cycleFilter(1)
+	case "s":
+		m.toggleSkillScope()
 	case "up", "k":
 		m.moveCursor(-1)
 	case "down", "j":
@@ -514,9 +518,12 @@ func (m Model) executeDelete() (tea.Model, tea.Cmd) {
 	ctx := m.context
 	updater := m.updater
 	return m, func() tea.Msg {
-		operations := make([]projection.Operation, 0, len(clients))
+		operations := make([]projection.Operation, 0, len(clients)*2)
 		for _, clientID := range clients {
-			operations = append(operations, projection.Operation{Skills: plan.skills, Client: clientID, Enabled: false})
+			operations = append(operations, projection.Operation{Skills: plan.skills, Client: clientID, Enabled: false, Scope: projection.ScopeProject})
+			if proj.SupportsScope(clientID, projection.ScopeGlobal) {
+				operations = append(operations, projection.Operation{Skills: plan.skills, Client: clientID, Enabled: false, Scope: projection.ScopeGlobal})
+			}
 		}
 		if err := proj.Apply(operations); err != nil {
 			return deleteFinishedMsg{plan: plan, err: fmt.Errorf("clear projections before delete: %w", err)}
@@ -537,7 +544,7 @@ func (m *Model) reloadCatalog() error {
 		return err
 	}
 	m.catalog = reloaded
-	m.projection = projection.New(m.project, reloaded)
+	m.projection = projection.NewWithUserHome(m.project, m.userHome, reloaded)
 	if m.mcpCatalog.Path != "" {
 		mcpReloaded, err := mcp.LoadCatalog(m.mcpCatalog.Path)
 		if err != nil {
@@ -626,6 +633,25 @@ func (m *Model) cycleResource(delta int) {
 
 func (m *Model) syncContextKeys() {
 	m.keys.Build.SetEnabled(m.tab == tabSystemPrompts)
+	m.keys.Scope.SetEnabled(m.tab == tabSkills)
+}
+
+func (m *Model) toggleSkillScope() {
+	if m.tab != tabSkills {
+		return
+	}
+	if m.skillScope == projection.ScopeGlobal {
+		m.skillScope = projection.ScopeProject
+	} else {
+		m.skillScope = projection.ScopeGlobal
+	}
+	m.cursor = 0
+	m.offset = 0
+	m.status = m.translator.Text(i18n.ScopeSelected, m.skillScope)
+}
+
+func (m Model) skillState(skill catalog.Skill, client catalog.Client) (projection.State, error) {
+	return m.projection.StateAt(skill, client, m.skillScope)
 }
 
 func (m *Model) moveCursor(delta int) {
@@ -686,7 +712,7 @@ func (m *Model) toggleSkillSelection() {
 		compatible := compatibleSkills(source.Skills, client)
 		staleIncompatibleLink := false
 		for _, skill := range source.Skills {
-			state, err := m.projection.State(skill, client)
+			state, err := m.skillState(skill, client)
 			if err != nil {
 				m.err = err
 				m.status = m.translator.Text(i18n.InspectProjectFailed)
@@ -705,7 +731,7 @@ func (m *Model) toggleSkillSelection() {
 			}
 			skills = compatible
 			for _, skill := range compatible {
-				state, err := m.projection.State(skill, client)
+				state, err := m.skillState(skill, client)
 				if err != nil {
 					m.err = err
 					m.status = m.translator.Text(i18n.InspectProjectFailed)
@@ -722,7 +748,7 @@ func (m *Model) toggleSkillSelection() {
 		}
 	} else {
 		skill := source.Skills[selected.skillIndex]
-		state, err := m.projection.State(skill, client)
+		state, err := m.skillState(skill, client)
 		if err != nil {
 			m.err = err
 			m.status = m.translator.Text(i18n.InspectProjectFailed)
@@ -745,7 +771,7 @@ func (m *Model) toggleSkillSelection() {
 		m.status = m.translator.Text(i18n.ArchiveCannotEnable)
 		return
 	}
-	if err := m.projection.SetEnabled(skills, client, enable); err != nil {
+	if err := m.projection.SetEnabledAt(skills, client, enable, m.skillScope); err != nil {
 		m.err = err
 		m.status = m.translator.Text(i18n.NoChangesApplied)
 		return
@@ -793,7 +819,7 @@ func (m *Model) toggleAllClients() {
 	hasManagedProjection := false
 	for skillIndex, skill := range skills {
 		for _, clientID := range clients {
-			state, err := m.projection.State(skill, clientID)
+			state, err := m.skillState(skill, clientID)
 			if err != nil {
 				m.err = err
 				m.status = m.translator.Text(i18n.InspectProjectFailed)
@@ -841,10 +867,10 @@ func (m *Model) toggleAllClients() {
 			}
 		}
 		if len(toEnable) > 0 {
-			operations = append(operations, projection.Operation{Skills: toEnable, Client: clientID, Enabled: true})
+			operations = append(operations, projection.Operation{Skills: toEnable, Client: clientID, Enabled: true, Scope: m.skillScope})
 		}
 		if len(toDisable) > 0 {
-			operations = append(operations, projection.Operation{Skills: toDisable, Client: clientID, Enabled: false})
+			operations = append(operations, projection.Operation{Skills: toDisable, Client: clientID, Enabled: false, Scope: m.skillScope})
 		}
 	}
 	if err := m.projection.Apply(operations); err != nil {
@@ -1397,14 +1423,14 @@ func (m Model) skillMatchesFilter(skill catalog.Skill) bool {
 		return true
 	}
 	for _, client := range m.catalog.Clients.IDs() {
-		state, err := m.projection.State(skill, client)
+		state, err := m.skillState(skill, client)
 		if err != nil {
 			return m.filter == filterIssues
 		}
-		if m.filter == filterEnabled && state == projection.StateEnabled {
+		if m.filter == filterEnabled && (state == projection.StateEnabled || state == projection.StateGlobal) {
 			return true
 		}
-		if m.filter == filterIssues && (state == projection.StateConflict || state == projection.StateBroken || state == projection.StateIncompatibleEnabled) {
+		if m.filter == filterIssues && (state == projection.StateConflict || state == projection.StateBroken || state == projection.StateIncompatibleEnabled || state == projection.StateDuplicate) {
 			return true
 		}
 	}

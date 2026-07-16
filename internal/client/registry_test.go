@@ -44,6 +44,26 @@ func TestRegistryRejectsProjectEscapingPath(t *testing.T) {
 	if _, err := NewRegistry(map[ID]Definition{"pi": {UserPromptDir: "../shared/prompts"}}); err == nil {
 		t.Fatal("NewRegistry() accepted a prompt path outside the user home")
 	}
+	if _, err := NewRegistry(map[ID]Definition{"pi": {UserSkillsDir: "../shared/skills"}}); err == nil {
+		t.Fatal("NewRegistry() accepted a Skill path outside the user home")
+	}
+}
+
+func TestRegistryExposesBuiltinUserSkillAdapters(t *testing.T) {
+	registry := DefaultRegistry()
+	for id, relative := range map[ID]string{
+		Codex:  filepath.Join(".agents", "skills"),
+		Claude: filepath.Join(".claude", "skills"),
+		Gemini: filepath.Join(".gemini", "skills"),
+	} {
+		got, err := registry.UserSkillsTargetDir("/tmp/home", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join("/tmp/home", relative); got != want {
+			t.Fatalf("%s user Skill dir = %q, want %q", id, got, want)
+		}
+	}
 }
 
 func TestRegistryExposesBuiltinPromptAndMCPAdapters(t *testing.T) {

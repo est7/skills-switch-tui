@@ -35,6 +35,7 @@ const (
 	SearchPlaceholder           Key = "search_placeholder"
 	SourceSkillHeader           Key = "source_skill_header"
 	ResourceHeader              Key = "resource_header"
+	ScopeHeader                 Key = "scope_header"
 	NoSkillsMatch               Key = "no_skills_match"
 	NoResourcesMatch            Key = "no_resources_match"
 	MoreRows                    Key = "more_rows"
@@ -49,10 +50,12 @@ const (
 	HelpUpdate                  Key = "help_update"
 	HelpUpdateAll               Key = "help_update_all"
 	HelpBuild                   Key = "help_build"
+	HelpScope                   Key = "help_scope"
 	HelpLanguage                Key = "help_language"
 	HelpMore                    Key = "help_more"
 	HelpQuit                    Key = "help_quit"
 	TargetSelected              Key = "target_selected"
+	ScopeSelected               Key = "scope_selected"
 	NoMatchingSkills            Key = "no_matching_skills"
 	IncompatibleSkill           Key = "incompatible_skill"
 	UnavailableForClient        Key = "unavailable_for_client"
@@ -274,6 +277,7 @@ var messages = map[Language]map[Key]string{
 		SearchPlaceholder:           "filter sources and skills",
 		SourceSkillHeader:           "NAME / SKILL",
 		ResourceHeader:              "RESOURCE",
+		ScopeHeader:                 "SCOPE",
 		NoSkillsMatch:               "No skills match this view.",
 		NoResourcesMatch:            "No resources match this view.",
 		MoreRows:                    "↓ %d more",
@@ -288,10 +292,12 @@ var messages = map[Language]map[Key]string{
 		HelpUpdate:                  "update",
 		HelpUpdateAll:               "update all",
 		HelpBuild:                   "build prompt",
+		HelpScope:                   "scope",
 		HelpLanguage:                "language",
 		HelpMore:                    "more",
 		HelpQuit:                    "quit",
 		TargetSelected:              "Target: %s",
+		ScopeSelected:               "Skill scope: %s",
 		NoMatchingSkills:            "No matching skills",
 		IncompatibleSkill:           "Incompatible skill",
 		UnavailableForClient:        "%s is unavailable for %s: %s",
@@ -507,6 +513,7 @@ var messages = map[Language]map[Key]string{
 		SearchPlaceholder:           "筛选来源与 Skills",
 		SourceSkillHeader:           "名称 / SKILL",
 		ResourceHeader:              "资源",
+		ScopeHeader:                 "作用域",
 		NoSkillsMatch:               "当前视图没有匹配的 Skills。",
 		NoResourcesMatch:            "当前视图没有匹配的资源。",
 		MoreRows:                    "↓ 还有 %d 项",
@@ -521,10 +528,12 @@ var messages = map[Language]map[Key]string{
 		HelpUpdate:                  "更新",
 		HelpUpdateAll:               "全部更新",
 		HelpBuild:                   "构建提示词",
+		HelpScope:                   "作用域",
 		HelpLanguage:                "语言",
 		HelpMore:                    "更多",
 		HelpQuit:                    "退出",
 		TargetSelected:              "目标：%s",
+		ScopeSelected:               "Skill 作用域：%s",
 		NoMatchingSkills:            "没有匹配的 Skills",
 		IncompatibleSkill:           "Skill 不兼容",
 		UnavailableForClient:        "%s 不适用于 %s：%s",

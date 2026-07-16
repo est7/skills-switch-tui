@@ -44,6 +44,13 @@ type Orphan struct {
 // to clean after an update pass only the sources they just refreshed, which are
 // known to be present.
 func (m Manager) OrphanedProjections(sources []catalog.Source) ([]Orphan, error) {
+	return m.OrphanedProjectionsAt(sources, ScopeProject)
+}
+
+func (m Manager) OrphanedProjectionsAt(sources []catalog.Source, scope Scope) ([]Orphan, error) {
+	if scope == ScopeGlobal && m.userHome == "" {
+		return nil, errors.New("global skill scope requires a user home")
+	}
 	orphans := make([]Orphan, 0)
 	for _, source := range sources {
 		if len(source.Skills) == 0 {
@@ -58,7 +65,13 @@ func (m Manager) OrphanedProjections(sources []catalog.Source) ([]Orphan, error)
 			live[filepath.Clean(skill.Path)] = true
 		}
 		for _, clientID := range m.clients.IDs() {
-			targetDir, err := m.clients.TargetDir(m.projectRoot, clientID)
+			var targetDir string
+			var err error
+			if scope == ScopeGlobal {
+				targetDir, err = m.clients.UserSkillsTargetDir(m.userHome, clientID)
+			} else {
+				targetDir, err = m.clients.TargetDir(m.projectRoot, clientID)
+			}
 			if err != nil {
 				// Client declares no project skills directory; it cannot hold
 				// projections to orphan.

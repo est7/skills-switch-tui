@@ -33,6 +33,7 @@ const (
 type Definition struct {
 	ID                  ID
 	ProjectSkillsDir    string
+	UserSkillsDir       string
 	UserPromptDir       string
 	UserPromptMode      PromptMode
 	UserPromptEntry     string
@@ -52,9 +53,9 @@ type Registry struct {
 var clientIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 
 var builtins = []Definition{
-	{ID: Codex, ProjectSkillsDir: ".agents/skills", UserPromptDir: ".codex", UserPromptMode: PromptConcat, UserPromptEntry: "AGENTS.md", ProjectCommandsDir: ".codex/prompts", ProjectHooksDir: ".codex/hooks", UserAgentsDir: ".codex/agents", ProjectMCPFile: ".codex/config.toml", ProjectMCPFormat: MCPCodexTOML},
-	{ID: Claude, ProjectSkillsDir: ".claude/skills", UserPromptDir: ".claude", UserPromptMode: PromptTree, ProjectCommandsDir: ".claude/commands", ProjectHooksDir: ".claude/hooks", UserAgentsDir: ".claude/agents", UserOutputStylesDir: ".claude/output-styles", ProjectMCPFile: ".mcp.json", ProjectMCPFormat: MCPClaudeJSON},
-	{ID: Gemini, ProjectSkillsDir: ".gemini/skills", UserPromptDir: ".gemini", UserPromptMode: PromptTree, ProjectCommandsDir: ".gemini/commands", ProjectHooksDir: ".gemini/hooks", UserAgentsDir: ".gemini/agents", ProjectMCPFile: ".gemini/settings.json", ProjectMCPFormat: MCPGeminiJSON},
+	{ID: Codex, ProjectSkillsDir: ".agents/skills", UserSkillsDir: ".agents/skills", UserPromptDir: ".codex", UserPromptMode: PromptConcat, UserPromptEntry: "AGENTS.md", ProjectCommandsDir: ".codex/prompts", ProjectHooksDir: ".codex/hooks", UserAgentsDir: ".codex/agents", ProjectMCPFile: ".codex/config.toml", ProjectMCPFormat: MCPCodexTOML},
+	{ID: Claude, ProjectSkillsDir: ".claude/skills", UserSkillsDir: ".claude/skills", UserPromptDir: ".claude", UserPromptMode: PromptTree, ProjectCommandsDir: ".claude/commands", ProjectHooksDir: ".claude/hooks", UserAgentsDir: ".claude/agents", UserOutputStylesDir: ".claude/output-styles", ProjectMCPFile: ".mcp.json", ProjectMCPFormat: MCPClaudeJSON},
+	{ID: Gemini, ProjectSkillsDir: ".gemini/skills", UserSkillsDir: ".gemini/skills", UserPromptDir: ".gemini", UserPromptMode: PromptTree, ProjectCommandsDir: ".gemini/commands", ProjectHooksDir: ".gemini/hooks", UserAgentsDir: ".gemini/agents", ProjectMCPFile: ".gemini/settings.json", ProjectMCPFormat: MCPGeminiJSON},
 }
 
 func NewRegistry(configured map[ID]Definition) (Registry, error) {
@@ -104,6 +105,9 @@ func mergeDefinition(base, override Definition) Definition {
 	base.ID = override.ID
 	if override.ProjectSkillsDir != "" {
 		base.ProjectSkillsDir = override.ProjectSkillsDir
+	}
+	if override.UserSkillsDir != "" {
+		base.UserSkillsDir = override.UserSkillsDir
 	}
 	if override.UserPromptDir != "" {
 		base.UserPromptDir = override.UserPromptDir
@@ -184,6 +188,17 @@ func (r Registry) TargetDir(projectRoot string, id ID) (string, error) {
 		return "", fmt.Errorf("client %s does not support skills", id)
 	}
 	return filepath.Join(projectRoot, filepath.FromSlash(definition.ProjectSkillsDir)), nil
+}
+
+func (r Registry) UserSkillsTargetDir(userHome string, id ID) (string, error) {
+	definition, ok := r.byID[id]
+	if !ok {
+		return "", fmt.Errorf("unknown client %q", id)
+	}
+	if definition.UserSkillsDir == "" {
+		return "", fmt.Errorf("client %s does not support global skills", id)
+	}
+	return filepath.Join(userHome, filepath.FromSlash(definition.UserSkillsDir)), nil
 }
 
 func (r Registry) UserPromptTargetDir(userHome string, id ID) (string, error) {
@@ -270,6 +285,9 @@ func validateDefinition(definition Definition) error {
 	if err := validateRelativePath(definition.ProjectSkillsDir, false); err != nil {
 		return fmt.Errorf("client %s projectSkillsDir must stay inside the project: %q", definition.ID, definition.ProjectSkillsDir)
 	}
+	if err := validateRelativePath(definition.UserSkillsDir, false); err != nil {
+		return fmt.Errorf("client %s userSkillsDir must stay inside the user home: %q", definition.ID, definition.UserSkillsDir)
+	}
 	if err := validateRelativePath(definition.UserPromptDir, false); err != nil {
 		return fmt.Errorf("client %s userPromptDir must stay inside the user home: %q", definition.ID, definition.UserPromptDir)
 	}
@@ -307,7 +325,7 @@ func validateDefinition(definition Definition) error {
 	if err := validateRelativePath(definition.UserOutputStylesDir, false); err != nil {
 		return fmt.Errorf("client %s userOutputStylesDir must stay inside the user home: %q", definition.ID, definition.UserOutputStylesDir)
 	}
-	if definition.ProjectSkillsDir == "" && definition.UserPromptDir == "" && definition.ProjectCommandsDir == "" && definition.ProjectHooksDir == "" && definition.UserAgentsDir == "" && definition.UserOutputStylesDir == "" && definition.ProjectMCPFile == "" {
+	if definition.ProjectSkillsDir == "" && definition.UserSkillsDir == "" && definition.UserPromptDir == "" && definition.ProjectCommandsDir == "" && definition.ProjectHooksDir == "" && definition.UserAgentsDir == "" && definition.UserOutputStylesDir == "" && definition.ProjectMCPFile == "" {
 		return fmt.Errorf("client %s must declare at least one resource adapter", definition.ID)
 	}
 	if definition.ProjectMCPFile != "" {

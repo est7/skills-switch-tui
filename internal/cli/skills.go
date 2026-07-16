@@ -42,16 +42,21 @@ type pruneOutput struct {
 func newSkillPruneCommand(options *rootOptions) *cobra.Command {
 	var assumeYes bool
 	var outputJSON bool
+	var rawScope string
 	command := &cobra.Command{
 		Use:   "prune",
 		Short: "Remove project projections whose skill left its source",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
+			scope, scopeErr := parseSkillScope(rawScope)
+			if scopeErr != nil {
+				return scopeErr
+			}
 			runtime, err := loadRuntime(options)
 			if err != nil {
 				return err
 			}
-			orphans, err := runtime.projection.OrphanedProjections(activeSources(runtime.catalog))
+			orphans, err := runtime.projection.OrphanedProjectionsAt(activeSources(runtime.catalog), scope)
 			if err != nil {
 				return err
 			}
@@ -88,6 +93,7 @@ func newSkillPruneCommand(options *rootOptions) *cobra.Command {
 	}
 	command.Flags().BoolVar(&assumeYes, "yes", false, "remove the orphaned projections (default: list only)")
 	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
+	command.Flags().StringVar(&rawScope, "scope", string(projection.ScopeProject), "projection scope: project or global")
 	return command
 }
 
@@ -181,9 +187,12 @@ func newSkillDeleteCommand(options *rootOptions) *cobra.Command {
 					return err
 				}
 			}
-			operations := make([]projection.Operation, 0, len(targetClients))
+			operations := make([]projection.Operation, 0, len(targetClients)*2)
 			for _, clientID := range targetClients {
-				operations = append(operations, projection.Operation{Skills: plan.skills, Client: clientID, Enabled: false})
+				operations = append(operations, projection.Operation{Skills: plan.skills, Client: clientID, Enabled: false, Scope: projection.ScopeProject})
+				if runtime.projection.SupportsScope(clientID, projection.ScopeGlobal) {
+					operations = append(operations, projection.Operation{Skills: plan.skills, Client: clientID, Enabled: false, Scope: projection.ScopeGlobal})
+				}
 			}
 			if err := runtime.projection.Apply(operations); err != nil {
 				return err

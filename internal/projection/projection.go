@@ -13,12 +13,17 @@ import (
 
 type Manager struct {
 	projectRoot     string
+	userHome        string
 	clients         client.Registry
 	providersByPath map[string]catalog.Skill
 	beforeApply     func(change)
 }
 
 func New(projectRoot string, loaded catalog.Catalog) Manager {
+	return NewWithUserHome(projectRoot, "", loaded)
+}
+
+func NewWithUserHome(projectRoot, userHome string, loaded catalog.Catalog) Manager {
 	providersByPath := make(map[string]catalog.Skill)
 	for _, source := range loaded.Sources {
 		if source.IsArchived() {
@@ -30,12 +35,20 @@ func New(projectRoot string, loaded catalog.Catalog) Manager {
 	}
 	return Manager{
 		projectRoot:     projectRoot,
+		userHome:        userHome,
 		clients:         loaded.Clients,
 		providersByPath: providersByPath,
 	}
 }
 
 type State string
+
+type Scope string
+
+const (
+	ScopeProject Scope = "project"
+	ScopeGlobal  Scope = "global"
+)
 
 const (
 	StateDisabled            State = "disabled"
@@ -44,11 +57,42 @@ const (
 	StateIncompatibleEnabled State = "incompatible_enabled"
 	StateConflict            State = "conflict"
 	StateBroken              State = "broken"
+	StateGlobal              State = "global"
+	StateDuplicate           State = "duplicate"
 )
 
 func (m Manager) State(skill catalog.Skill, client catalog.Client) (State, error) {
+	return m.StateAt(skill, client, ScopeProject)
+}
+
+func (m Manager) StateAt(skill catalog.Skill, client catalog.Client, scope Scope) (State, error) {
+	definition, _ := m.clients.Definition(client)
+	if scope == ScopeProject && m.userHome != "" && definition.UserSkillsDir != "" {
+		globalPath, err := m.TargetPathAt(skill, client, ScopeGlobal)
+		if err != nil {
+			return "", err
+		}
+		if _, err := os.Lstat(globalPath); err == nil {
+			projectPath, pathErr := m.TargetPathAt(skill, client, ScopeProject)
+			if pathErr != nil {
+				return "", pathErr
+			}
+			if _, projectErr := os.Lstat(projectPath); projectErr == nil {
+				return StateDuplicate, nil
+			} else if !errors.Is(projectErr, os.ErrNotExist) {
+				return "", fmt.Errorf("inspect project projection %s: %w", projectPath, projectErr)
+			}
+			return StateGlobal, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("inspect global projection %s: %w", globalPath, err)
+		}
+	}
+	return m.directState(skill, client, scope)
+}
+
+func (m Manager) directState(skill catalog.Skill, client catalog.Client, scope Scope) (State, error) {
 	supported := skill.Supports(client)
-	linkPath, err := m.TargetPath(skill, client)
+	linkPath, err := m.TargetPathAt(skill, client, scope)
 	if err != nil {
 		return "", err
 	}
@@ -91,7 +135,20 @@ func (m Manager) State(skill catalog.Skill, client catalog.Client) (State, error
 }
 
 func (m Manager) TargetPath(skill catalog.Skill, client catalog.Client) (string, error) {
-	targetDir, err := m.clients.TargetDir(m.projectRoot, client)
+	return m.TargetPathAt(skill, client, ScopeProject)
+}
+
+func (m Manager) TargetPathAt(skill catalog.Skill, client catalog.Client, scope Scope) (string, error) {
+	var targetDir string
+	var err error
+	if scope == ScopeGlobal {
+		if m.userHome == "" {
+			return "", errors.New("global skill scope requires a user home")
+		}
+		targetDir, err = m.clients.UserSkillsTargetDir(m.userHome, client)
+	} else {
+		targetDir, err = m.clients.TargetDir(m.projectRoot, client)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -134,19 +191,72 @@ type Operation struct {
 	Skills  []catalog.Skill
 	Client  catalog.Client
 	Enabled bool
+	Scope   Scope
 }
 
 func (m Manager) SetEnabled(skills []catalog.Skill, client catalog.Client, enabled bool) error {
-	return m.Apply([]Operation{{Skills: skills, Client: client, Enabled: enabled}})
+	return m.SetEnabledAt(skills, client, enabled, ScopeProject)
+}
+
+func (m Manager) SetEnabledAt(skills []catalog.Skill, client catalog.Client, enabled bool, scope Scope) error {
+	return m.Apply([]Operation{{Skills: skills, Client: client, Enabled: enabled, Scope: scope}})
+}
+
+func (m Manager) SupportsScope(clientID catalog.Client, scope Scope) bool {
+	definition, ok := m.clients.Definition(clientID)
+	if !ok {
+		return false
+	}
+	if scope == ScopeGlobal {
+		return m.userHome != "" && definition.UserSkillsDir != ""
+	}
+	return definition.ProjectSkillsDir != ""
 }
 
 func (m Manager) Apply(operations []Operation) error {
 	changes := make([]change, 0)
 	conflicts := make([]Conflict, 0)
 	for _, operation := range operations {
-		targetDir, err := m.clients.TargetDir(m.projectRoot, operation.Client)
+		scope := operation.Scope
+		if scope == "" {
+			scope = ScopeProject
+		}
+		var targetDir string
+		var err error
+		if scope == ScopeGlobal {
+			if m.userHome == "" {
+				return errors.New("global skill scope requires a user home")
+			}
+			targetDir, err = m.clients.UserSkillsTargetDir(m.userHome, operation.Client)
+		} else {
+			targetDir, err = m.clients.TargetDir(m.projectRoot, operation.Client)
+		}
 		if err != nil {
 			return err
+		}
+		definition, _ := m.clients.Definition(operation.Client)
+		if scope == ScopeProject && operation.Enabled && m.userHome != "" && definition.UserSkillsDir != "" {
+			globalDir, globalErr := m.clients.UserSkillsTargetDir(m.userHome, operation.Client)
+			if globalErr != nil {
+				return globalErr
+			}
+			for _, skill := range operation.Skills {
+				path := filepath.Join(globalDir, skill.Name)
+				if _, globalErr := os.Lstat(path); globalErr == nil {
+					conflicts = append(conflicts, Conflict{Path: path, Reason: "skill is globally configured; disable global scope first"})
+				} else if !errors.Is(globalErr, os.ErrNotExist) {
+					conflicts = append(conflicts, Conflict{Path: path, Reason: globalErr.Error()})
+				}
+			}
+		}
+		if scope == ScopeGlobal && operation.Enabled {
+			projectDir, projectErr := m.clients.TargetDir(m.projectRoot, operation.Client)
+			if projectErr != nil {
+				return projectErr
+			}
+			retirements, retirementConflicts := m.planRetireProject(operation.Skills, projectDir)
+			changes = append(changes, retirements...)
+			conflicts = append(conflicts, retirementConflicts...)
 		}
 		planned, operationConflicts := m.plan(operation.Skills, operation.Client, targetDir, operation.Enabled)
 		changes = append(changes, planned...)
@@ -361,6 +471,42 @@ func (m Manager) plan(skills []catalog.Skill, client catalog.Client, targetDir s
 		}
 	}
 
+	return changes, conflicts
+}
+
+func (m Manager) planRetireProject(skills []catalog.Skill, targetDir string) ([]change, []Conflict) {
+	changes := make([]change, 0, len(skills))
+	conflicts := make([]Conflict, 0)
+	for _, skill := range skills {
+		path := filepath.Join(targetDir, skill.Name)
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			conflicts = append(conflicts, Conflict{Path: path, Reason: err.Error()})
+			continue
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			conflicts = append(conflicts, Conflict{Path: path, Reason: "project skill blocks global promotion and is not a managed symlink"})
+			continue
+		}
+		original, err := os.Readlink(path)
+		if err != nil {
+			conflicts = append(conflicts, Conflict{Path: path, Reason: "read project symlink: " + err.Error()})
+			continue
+		}
+		resolved := original
+		if !filepath.IsAbs(resolved) {
+			resolved = filepath.Join(filepath.Dir(path), resolved)
+		}
+		provider, managed := m.providersByPath[filepath.Clean(resolved)]
+		if !managed || provider.Name != skill.Name {
+			conflicts = append(conflicts, Conflict{Path: path, Reason: "project skill blocks global promotion and is not catalog-managed"})
+			continue
+		}
+		changes = append(changes, change{action: removeLink, path: path, target: resolved, originalTarget: original})
+	}
 	return changes, conflicts
 }
 

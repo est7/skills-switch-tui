@@ -47,6 +47,55 @@ func TestSourceRowToggleEnablesEveryCompatibleSkill(t *testing.T) {
 	}
 }
 
+func TestSkillScopeKeyPromotesToGlobalAndLocksProjectToggle(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	userHome := t.TempDir()
+	skillPath := filepath.Join(sourcesRoot, "local", "shared", "core")
+	writeSkill(t, skillPath, "core")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := projection.NewWithUserHome(projectRoot, userHome, loaded)
+	model := NewModel(loaded, projectRoot, manager, nil, i18n.New(i18n.English), Resources{UserHome: userHome})
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 's', Text: "s"})
+	model = updated.(Model)
+	if model.skillScope != projection.ScopeGlobal || !model.keys.Scope.Enabled() {
+		t.Fatalf("scope key did not select global scope: %q", model.skillScope)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("global toggle: %v", model.err)
+	}
+	globalLink := filepath.Join(userHome, ".agents", "skills", "core")
+	if target, err := os.Readlink(globalLink); err != nil || filepath.Clean(target) != filepath.Clean(skillPath) {
+		t.Fatalf("global link = %q, %v", target, err)
+	}
+
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 's', Text: "s"})
+	model = updated.(Model)
+	if model.skillScope != projection.ScopeProject {
+		t.Fatalf("scope key did not return to project scope: %q", model.skillScope)
+	}
+	if cell, _ := model.stateCell(loaded.Sources[0].Skills[0], catalog.ClientCodex); cell != "G" {
+		t.Fatalf("project cell = %q, want global lock marker", cell)
+	}
+	if cell, _ := model.cell(row{kind: sourceRow, sourceIndex: 0}, catalog.ClientCodex); cell != "G 1/1" {
+		t.Fatalf("project source cell = %q, want global summary marker", cell)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	model = updated.(Model)
+	if model.err == nil || !strings.Contains(model.err.Error(), "globally configured") {
+		t.Fatalf("project toggle was not locked: %v", model.err)
+	}
+	if _, err := os.Lstat(filepath.Join(projectRoot, ".agents", "skills", "core")); !os.IsNotExist(err) {
+		t.Fatalf("locked project toggle created a link: %v", err)
+	}
+}
+
 func TestSkillToggleAllClientsEnablesAndDisablesEveryCompatibleProjection(t *testing.T) {
 	sourcesRoot := t.TempDir()
 	projectRoot := t.TempDir()

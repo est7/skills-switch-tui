@@ -124,6 +124,7 @@ func NewRootCommand(version string) *cobra.Command {
 func newListCommand(options *rootOptions) *cobra.Command {
 	var outputJSON bool
 	var includeArchive bool
+	var rawScope string
 	command := &cobra.Command{
 		Use:   "list",
 		Short: "List catalog skills and their current project state",
@@ -133,7 +134,11 @@ func newListCommand(options *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result, err := buildListOutput(runtime, includeArchive)
+			scope, err := parseSkillScope(rawScope)
+			if err != nil {
+				return err
+			}
+			result, err := buildListOutput(runtime, includeArchive, scope)
 			if err != nil {
 				return err
 			}
@@ -160,6 +165,7 @@ func newListCommand(options *rootOptions) *cobra.Command {
 	}
 	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
 	command.Flags().BoolVar(&includeArchive, "archive", false, "include archived sources")
+	command.Flags().StringVar(&rawScope, "scope", string(projection.ScopeProject), "projection scope: project or global")
 	return command
 }
 
@@ -172,11 +178,16 @@ func newEnableCommand(options *rootOptions, enabled bool) *cobra.Command {
 	}
 	var clients []string
 	var sourceID string
+	var rawScope string
 	command := &cobra.Command{
 		Use:   verb + " [skill-id]",
 		Short: short,
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			scope, scopeErr := parseSkillScope(rawScope)
+			if scopeErr != nil {
+				return scopeErr
+			}
 			if (len(args) == 0) == (sourceID == "") {
 				translator, translatorErr := i18n.FromEnvironment(options.language)
 				if translatorErr != nil {
@@ -205,7 +216,7 @@ func newEnableCommand(options *rootOptions, enabled bool) *cobra.Command {
 						return errors.New(runtime.translator.Text(i18n.SourceNoCompatibleSkills, sourceID, client))
 					}
 				}
-				operations = append(operations, projection.Operation{Skills: clientSkills, Client: client, Enabled: enabled})
+				operations = append(operations, projection.Operation{Skills: clientSkills, Client: client, Enabled: enabled, Scope: scope})
 			}
 			if err := runtime.projection.Apply(operations); err != nil {
 				return err
@@ -224,7 +235,16 @@ func newEnableCommand(options *rootOptions, enabled bool) *cobra.Command {
 	}
 	command.Flags().StringSliceVar(&clients, "client", nil, "registered target client (repeatable)")
 	command.Flags().StringVar(&sourceID, "source", "", "operate on every compatible skill in a source")
+	command.Flags().StringVar(&rawScope, "scope", string(projection.ScopeProject), "projection scope: project or global")
 	return command
+}
+
+func parseSkillScope(raw string) (projection.Scope, error) {
+	scope := projection.Scope(strings.TrimSpace(raw))
+	if scope != projection.ScopeProject && scope != projection.ScopeGlobal {
+		return "", fmt.Errorf("unknown skill scope %q: expected project or global", raw)
+	}
+	return scope, nil
 }
 
 func newVersionCommand(version string) *cobra.Command {
@@ -240,6 +260,7 @@ func newVersionCommand(version string) *cobra.Command {
 
 type listOutput struct {
 	Project string      `json:"project"`
+	Scope   string      `json:"scope"`
 	Skills  []skillView `json:"skills"`
 }
 
@@ -251,8 +272,8 @@ type skillView struct {
 	Clients     map[string]string `json:"clients"`
 }
 
-func buildListOutput(runtime runtime, includeArchive bool) (listOutput, error) {
-	result := listOutput{Project: runtime.projectRoot}
+func buildListOutput(runtime runtime, includeArchive bool, scope projection.Scope) (listOutput, error) {
+	result := listOutput{Project: runtime.projectRoot, Scope: string(scope)}
 	for _, source := range runtime.catalog.Sources {
 		if source.IsArchived() && !includeArchive {
 			continue
@@ -266,7 +287,7 @@ func buildListOutput(runtime runtime, includeArchive bool) (listOutput, error) {
 				Clients:     make(map[string]string, len(runtime.catalog.Clients.IDs())),
 			}
 			for _, client := range runtime.catalog.Clients.IDs() {
-				state, err := runtime.projection.State(skill, client)
+				state, err := runtime.projection.StateAt(skill, client, scope)
 				if err != nil {
 					return listOutput{}, err
 				}
@@ -333,7 +354,7 @@ func loadRuntime(options *rootOptions) (runtime, error) {
 		catalog:        base.catalog,
 		projectRoot:    projectRoot,
 		userHome:       userHome,
-		projection:     projection.New(projectRoot, base.catalog),
+		projection:     projection.NewWithUserHome(projectRoot, userHome, base.catalog),
 		translator:     base.translator,
 		resources:      base.resources,
 		manager:        base.manager,
@@ -476,17 +497,16 @@ func activeSources(loaded catalog.Catalog) []catalog.Source {
 	return sources
 }
 
-// autoPruneAfterUpdate removes projections in the current project whose skill
+// autoPruneAfterUpdate removes project and user-global projections whose skill
 // disappeared from one of the just-updated sources. It reloads the catalog so
 // detection sees the post-update skill set, scopes cleanup to the sources that
 // actually changed, and only ever removes managed symlinks that lost their
 // provider (see projection.OrphanedProjections for the empty-source guard).
 //
-// It is a best-effort side effect of `source update`: when the command is not
-// run inside a project, or the project root cannot be resolved, it cleans
-// nothing and returns no error, because updating a source mutates the resource
-// catalog, not any particular consuming project. Cleanup failures are returned
-// as a non-fatal warning so the update itself still reports success.
+// It is a best-effort side effect of `source update`: user-global cleanup does
+// not require a Git project, while project cleanup applies only when a project
+// root can be resolved. Cleanup failures are returned as a non-fatal warning so
+// the update itself still reports success.
 func autoPruneAfterUpdate(options *rootOptions, results []source.UpdateResult) ([]projection.Orphan, error) {
 	changed := make(map[string]bool)
 	for _, result := range results {
@@ -505,10 +525,7 @@ func autoPruneAfterUpdate(options *rootOptions, results []source.UpdateResult) (
 		}
 		start = cwd
 	}
-	projectRoot, err := project.FindRoot(start)
-	if err != nil {
-		return nil, nil
-	}
+	projectRoot, _ := project.FindRoot(start)
 	base, err := loadCatalogRuntime(options)
 	if err != nil {
 		return nil, fmt.Errorf("reload catalog for cleanup: %w", err)
@@ -519,11 +536,24 @@ func autoPruneAfterUpdate(options *rootOptions, results []source.UpdateResult) (
 			scoped = append(scoped, candidate)
 		}
 	}
-	manager := projection.New(projectRoot, base.catalog)
-	orphans, err := manager.OrphanedProjections(scoped)
+	userHome, err := resolveUserHome()
 	if err != nil {
 		return nil, err
 	}
+	manager := projection.NewWithUserHome(projectRoot, userHome, base.catalog)
+	orphans := make([]projection.Orphan, 0)
+	if projectRoot != "" {
+		projectOrphans, projectErr := manager.OrphanedProjectionsAt(scoped, projection.ScopeProject)
+		if projectErr != nil {
+			return nil, projectErr
+		}
+		orphans = append(orphans, projectOrphans...)
+	}
+	globalOrphans, globalErr := manager.OrphanedProjectionsAt(scoped, projection.ScopeGlobal)
+	if globalErr != nil {
+		return nil, globalErr
+	}
+	orphans = append(orphans, globalOrphans...)
 	return manager.PruneOrphans(orphans)
 }
 
