@@ -15,10 +15,16 @@ type registryFile struct {
 }
 
 type registryClientFile struct {
-	ProjectSkillsDir string    `yaml:"projectSkillsDir,omitempty"`
-	UserPromptDir    string    `yaml:"userPromptDir,omitempty"`
-	ProjectMCPFile   string    `yaml:"projectMCPFile,omitempty"`
-	ProjectMCPFormat MCPFormat `yaml:"projectMCPFormat,omitempty"`
+	ProjectSkillsDir    string     `yaml:"projectSkillsDir,omitempty"`
+	UserPromptDir       string     `yaml:"userPromptDir,omitempty"`
+	UserPromptMode      PromptMode `yaml:"userPromptMode,omitempty"`
+	UserPromptEntry     string     `yaml:"userPromptEntry,omitempty"`
+	UserCommandsDir     string     `yaml:"userCommandsDir,omitempty"`
+	UserHooksDir        string     `yaml:"userHooksDir,omitempty"`
+	UserAgentsDir       string     `yaml:"userAgentsDir,omitempty"`
+	UserOutputStylesDir string     `yaml:"userOutputStylesDir,omitempty"`
+	ProjectMCPFile      string     `yaml:"projectMCPFile,omitempty"`
+	ProjectMCPFormat    MCPFormat  `yaml:"projectMCPFormat,omitempty"`
 }
 
 func LoadRegistry(path string) (Registry, error) {
@@ -51,10 +57,16 @@ func LoadRegistry(path string) (Registry, error) {
 	configured := make(map[ID]Definition, len(config.Clients))
 	for id, entry := range config.Clients {
 		configured[id] = Definition{
-			ProjectSkillsDir: entry.ProjectSkillsDir,
-			UserPromptDir:    entry.UserPromptDir,
-			ProjectMCPFile:   entry.ProjectMCPFile,
-			ProjectMCPFormat: entry.ProjectMCPFormat,
+			ProjectSkillsDir:    entry.ProjectSkillsDir,
+			UserPromptDir:       entry.UserPromptDir,
+			UserPromptMode:      entry.UserPromptMode,
+			UserPromptEntry:     entry.UserPromptEntry,
+			UserCommandsDir:     entry.UserCommandsDir,
+			UserHooksDir:        entry.UserHooksDir,
+			UserAgentsDir:       entry.UserAgentsDir,
+			UserOutputStylesDir: entry.UserOutputStylesDir,
+			ProjectMCPFile:      entry.ProjectMCPFile,
+			ProjectMCPFormat:    entry.ProjectMCPFormat,
 		}
 	}
 	registry, err := NewRegistry(configured)

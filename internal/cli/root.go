@@ -19,6 +19,7 @@ import (
 	"github.com/est7/skills-switch-tui/internal/resource"
 	"github.com/est7/skills-switch-tui/internal/source"
 	"github.com/est7/skills-switch-tui/internal/systemprompt"
+	"github.com/est7/skills-switch-tui/internal/userresource"
 	"github.com/spf13/cobra"
 )
 
@@ -29,23 +30,38 @@ type rootOptions struct {
 }
 
 type runtime struct {
-	catalog     catalog.Catalog
-	projectRoot string
-	userHome    string
-	projection  projection.Manager
-	translator  i18n.Translator
-	resources   resource.Layout
-	manager     source.Manager
-	mcpCatalog  mcp.Catalog
-	mcpManager  mcp.Manager
-	prompts     systemprompt.Catalog
-	promptMgr   systemprompt.Manager
+	catalog        catalog.Catalog
+	projectRoot    string
+	userHome       string
+	projection     projection.Manager
+	translator     i18n.Translator
+	resources      resource.Layout
+	manager        source.Manager
+	mcpCatalog     mcp.Catalog
+	mcpManager     mcp.Manager
+	prompts        systemprompt.Catalog
+	promptMgr      systemprompt.Manager
+	commands       userresource.Catalog
+	commandMgr     userresource.Manager
+	hooks          userresource.Catalog
+	hookMgr        userresource.Manager
+	agents         userresource.Catalog
+	agentMgr       userresource.Manager
+	outputStyles   userresource.Catalog
+	outputStyleMgr userresource.Manager
 }
 
 type promptRuntime struct {
 	translator i18n.Translator
 	prompts    systemprompt.Catalog
 	promptMgr  systemprompt.Manager
+}
+
+type userResourceRuntime struct {
+	catalog    catalog.Catalog
+	translator i18n.Translator
+	resources  userresource.Catalog
+	manager    userresource.Manager
 }
 
 type catalogRuntime struct {
@@ -81,6 +97,10 @@ func NewRootCommand(version string) *cobra.Command {
 	command.AddCommand(newSourceCommand(options))
 	command.AddCommand(newMCPCommand(options))
 	command.AddCommand(newPromptCommand(options))
+	command.AddCommand(newUserResourceCommand(options, userresource.KindCommand))
+	command.AddCommand(newUserResourceCommand(options, userresource.KindHook))
+	command.AddCommand(newUserResourceCommand(options, userresource.KindAgent))
+	command.AddCommand(newUserResourceCommand(options, userresource.KindOutputStyle))
 	command.AddCommand(newDoctorCommand(options))
 	command.AddCommand(newTUICommand(options))
 	command.AddCommand(newVersionCommand(version))
@@ -293,18 +313,71 @@ func loadRuntime(options *rootOptions) (runtime, error) {
 	if err != nil {
 		return runtime{}, err
 	}
+	commands, err := userresource.Discover(base.resources.CommandsRoot(), userresource.KindCommand, base.catalog.Clients)
+	if err != nil {
+		return runtime{}, err
+	}
+	hooks, err := userresource.Discover(base.resources.HooksRoot(), userresource.KindHook, base.catalog.Clients)
+	if err != nil {
+		return runtime{}, err
+	}
+	agents, err := userresource.Discover(base.resources.AgentsRoot(), userresource.KindAgent, base.catalog.Clients)
+	if err != nil {
+		return runtime{}, err
+	}
+	outputStyles, err := userresource.Discover(base.resources.OutputStylesRoot(), userresource.KindOutputStyle, base.catalog.Clients)
+	if err != nil {
+		return runtime{}, err
+	}
 	return runtime{
-		catalog:     base.catalog,
-		projectRoot: projectRoot,
-		userHome:    userHome,
-		projection:  projection.New(projectRoot, base.catalog),
-		translator:  base.translator,
-		resources:   base.resources,
-		manager:     base.manager,
-		mcpCatalog:  mcpCatalog,
-		mcpManager:  mcp.NewManager(projectRoot, mcpCatalog, base.catalog.Clients),
-		prompts:     prompts,
-		promptMgr:   systemprompt.NewManager(userHome, base.catalog.Clients),
+		catalog:        base.catalog,
+		projectRoot:    projectRoot,
+		userHome:       userHome,
+		projection:     projection.New(projectRoot, base.catalog),
+		translator:     base.translator,
+		resources:      base.resources,
+		manager:        base.manager,
+		mcpCatalog:     mcpCatalog,
+		mcpManager:     mcp.NewManager(projectRoot, mcpCatalog, base.catalog.Clients),
+		prompts:        prompts,
+		promptMgr:      systemprompt.NewManager(userHome, base.catalog.Clients),
+		commands:       commands,
+		commandMgr:     userresource.NewManager(userHome, base.catalog.Clients),
+		hooks:          hooks,
+		hookMgr:        userresource.NewManager(userHome, base.catalog.Clients),
+		agents:         agents,
+		agentMgr:       userresource.NewManager(userHome, base.catalog.Clients),
+		outputStyles:   outputStyles,
+		outputStyleMgr: userresource.NewManager(userHome, base.catalog.Clients),
+	}, nil
+}
+
+func loadUserResourceRuntime(options *rootOptions, kind userresource.Kind) (userResourceRuntime, error) {
+	base, err := loadCatalogRuntime(options)
+	if err != nil {
+		return userResourceRuntime{}, err
+	}
+	userHome, err := resolveUserHome()
+	if err != nil {
+		return userResourceRuntime{}, err
+	}
+	root := base.resources.CommandsRoot()
+	if kind == userresource.KindHook {
+		root = base.resources.HooksRoot()
+	} else if kind == userresource.KindAgent {
+		root = base.resources.AgentsRoot()
+	} else if kind == userresource.KindOutputStyle {
+		root = base.resources.OutputStylesRoot()
+	}
+	resources, err := userresource.Discover(root, kind, base.catalog.Clients)
+	if err != nil {
+		return userResourceRuntime{}, err
+	}
+	return userResourceRuntime{
+		catalog:    base.catalog,
+		translator: base.translator,
+		resources:  resources,
+		manager:    userresource.NewManager(userHome, base.catalog.Clients),
 	}, nil
 }
 
@@ -521,6 +594,18 @@ func localizeCommandTree(root *cobra.Command, translator i18n.Translator) {
 		case "prompt":
 			command.Short = translator.Text(i18n.PromptCommandShort)
 			localizeResourceCommands(command, translator)
+		case "commands":
+			command.Short = translator.Text(i18n.CommandsCommandShort)
+			localizeResourceCommands(command, translator)
+		case "hooks":
+			command.Short = translator.Text(i18n.HooksCommandShort)
+			localizeResourceCommands(command, translator)
+		case "agents":
+			command.Short = translator.Text(i18n.AgentsCommandShort)
+			localizeResourceCommands(command, translator)
+		case "output-styles":
+			command.Short = translator.Text(i18n.OutputStylesCommandShort)
+			localizeResourceCommands(command, translator)
 		case "help":
 			command.Short = translator.Text(i18n.HelpCommandShort)
 		}
@@ -581,6 +666,14 @@ func localizeResourceCommands(command *cobra.Command, translator i18n.Translator
 			child.Short = translator.Text(i18n.PromptEnableShort)
 		case "prompt/disable":
 			child.Short = translator.Text(i18n.PromptDisableShort)
+		case "prompt/build":
+			child.Short = translator.Text(i18n.PromptBuildShort)
+		case "commands/list", "hooks/list":
+			child.Short = translator.Text(i18n.UserResourceListShort)
+		case "commands/enable", "hooks/enable":
+			child.Short = translator.Text(i18n.UserResourceEnableShort)
+		case "commands/disable", "hooks/disable":
+			child.Short = translator.Text(i18n.UserResourceDisableShort)
 		}
 		localizeOutputFlags(child, translator)
 		if flag := child.Flags().Lookup("client"); flag != nil {

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/est7/skills-switch-tui/internal/systemprompt"
 )
 
 func TestDefaultResourcesRootUsesResourceFirstHierarchy(t *testing.T) {
@@ -93,6 +95,185 @@ func TestPromptCommandsUseUserGlobalRecursiveClientGroupWithoutGitProject(t *tes
 	for _, relative := range []string{"CLAUDE.md", filepath.Join("rules", "core.md")} {
 		if _, err := os.Readlink(filepath.Join(userHome, ".claude", relative)); err != nil {
 			t.Fatalf("prompt file %s was not projected: %v", relative, err)
+		}
+	}
+}
+
+func TestPromptBuildCompilesCodexSourcesAndReportsStaleState(t *testing.T) {
+	resourceRoot := t.TempDir()
+	userHome := t.TempDir()
+	projectRoot := t.TempDir()
+	t.Setenv("HOME", userHome)
+	for _, directory := range []string{
+		filepath.Join(resourceRoot, "skills", "local", "shared"),
+		filepath.Join(projectRoot, ".git"),
+	} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := filepath.Join(resourceRoot, "system-prompts", "codex-prompt", "AGENTS.md")
+	rule := filepath.Join(resourceRoot, "system-prompts", "codex-prompt", "rules", "10-core.md")
+	for path, contents := range map[string]string{base: "# Base\n", rule: "## Core\n"} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	output, err := execute(t, "--resources", resourceRoot, "prompt", "build", "codex-prompt", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var built systemprompt.BuildResult
+	if err := json.Unmarshal(output, &built); err != nil {
+		t.Fatal(err)
+	}
+	if !built.Changed || built.Bytes == 0 || !strings.HasSuffix(built.Path, filepath.Join("codex-prompt", "AGENTS.md")) {
+		t.Fatalf("unexpected build output: %#v", built)
+	}
+	if _, err := os.Lstat(filepath.Join(userHome, ".codex", "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("build unexpectedly enabled the prompt: %v", err)
+	}
+	if _, err := execute(t, "--resources", resourceRoot, "prompt", "enable", "codex-prompt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rule, []byte("## Core changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := execute(t, "--resources", resourceRoot, "prompt", "list", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(listed, []byte(`"state": "stale"`)) || !bytes.Contains(listed, []byte(`"mode": "concat"`)) {
+		t.Fatalf("prompt list did not expose concat stale state:\n%s", listed)
+	}
+	diagnosis, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "doctor", "--json")
+	if err == nil || !bytes.Contains(diagnosis, []byte(`"state": "stale"`)) {
+		t.Fatalf("doctor did not report stale prompt as an issue: %v\n%s", err, diagnosis)
+	}
+	if _, err := execute(t, "--resources", resourceRoot, "prompt", "build", "codex-prompt"); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = execute(t, "--resources", resourceRoot, "prompt", "list", "--json")
+	if err != nil || !bytes.Contains(listed, []byte(`"state": "enabled"`)) {
+		t.Fatalf("prompt rebuild did not repair state: %v\n%s", err, listed)
+	}
+}
+
+func TestCommandAndHookCommandsUseScopedUserGlobalProjections(t *testing.T) {
+	resourceRoot := t.TempDir()
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	if err := os.MkdirAll(filepath.Join(resourceRoot, "skills", "local", "shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commandSource := filepath.Join(resourceRoot, "commands", "shared", "remember.md")
+	hookSource := filepath.Join(resourceRoot, "hooks", "claude-only", "audit.sh")
+	for _, path := range []string{commandSource, hookSource} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("test\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := execute(t, "--resources", resourceRoot, "commands", "enable", "shared/remember.md", "--client", "claude", "--client", "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execute(t, "--resources", resourceRoot, "hooks", "enable", "claude-only/audit.sh", "--client", "claude"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		filepath.Join(userHome, ".claude", "commands", "remember.md"),
+		filepath.Join(userHome, ".codex", "prompts", "remember.md"),
+		filepath.Join(userHome, ".claude", "hooks", "audit.sh"),
+	} {
+		if _, err := os.Readlink(path); err != nil {
+			t.Fatalf("missing user resource projection %s: %v", path, err)
+		}
+	}
+	if _, err := execute(t, "--resources", resourceRoot, "hooks", "enable", "claude-only/audit.sh", "--client", "gemini"); err == nil {
+		t.Fatal("client-only hook was enabled for an incompatible client")
+	}
+}
+
+func TestAgentAndOutputStyleCommandsUseUserGlobalAdapters(t *testing.T) {
+	resourceRoot := t.TempDir()
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	if err := os.MkdirAll(filepath.Join(resourceRoot, "skills", "local", "shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, contents := range map[string]string{
+		filepath.Join(resourceRoot, "agents", "claude-only", "reviewer.md"):      "reviewer\n",
+		filepath.Join(resourceRoot, "agents", "codex-only", "reviewer.toml"):     "name = \"reviewer\"\n",
+		filepath.Join(resourceRoot, "output-styles", "claude-only", "mentor.md"): "mentor\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commands := [][]string{
+		{"agents", "enable", "claude-only/reviewer.md", "--client", "claude"},
+		{"agents", "enable", "codex-only/reviewer.toml", "--client", "codex"},
+		{"output-styles", "enable", "claude-only/mentor.md", "--client", "claude"},
+	}
+	for _, arguments := range commands {
+		if _, err := execute(t, append([]string{"--resources", resourceRoot}, arguments...)...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(userHome, ".claude", "agents", "reviewer.md"),
+		filepath.Join(userHome, ".codex", "agents", "reviewer.toml"),
+		filepath.Join(userHome, ".claude", "output-styles", "mentor.md"),
+	} {
+		if _, err := os.Readlink(path); err != nil {
+			t.Fatalf("missing user-global projection %s: %v", path, err)
+		}
+	}
+	if _, err := execute(t, "--resources", resourceRoot, "output-styles", "enable", "claude-only/mentor.md", "--client", "codex"); err == nil {
+		t.Fatal("Claude-only output style was enabled for Codex")
+	}
+}
+
+func TestDoctorReportsUserGlobalCommandConflict(t *testing.T) {
+	resourceRoot := t.TempDir()
+	userHome := t.TempDir()
+	projectRoot := t.TempDir()
+	t.Setenv("HOME", userHome)
+	for _, directory := range []string{
+		filepath.Join(resourceRoot, "skills", "local", "shared"),
+		filepath.Join(resourceRoot, "commands", "shared"),
+		filepath.Join(projectRoot, ".git"),
+		filepath.Join(userHome, ".claude", "commands"),
+	} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(resourceRoot, "commands", "shared", "remember.md"), []byte("catalog\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	conflict := filepath.Join(userHome, ".claude", "commands", "remember.md")
+	if err := os.WriteFile(conflict, []byte("user owned\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "doctor", "--json")
+	if err == nil {
+		t.Fatal("doctor accepted an unmanaged command conflict")
+	}
+	for _, fragment := range []string{`"kind": "command"`, `"resource": "shared/remember.md"`, `"client": "claude"`, `"state": "conflict"`} {
+		if !bytes.Contains(output, []byte(fragment)) {
+			t.Fatalf("doctor output does not contain %s:\n%s", fragment, output)
 		}
 	}
 }
@@ -220,7 +401,7 @@ func TestChineseLanguageLocalizesHelpAndHumanListHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(help, []byte("管理项目资源和用户级系统提示词")) {
+	if !bytes.Contains(help, []byte("管理项目资源和用户级 Agent 文件")) {
 		t.Fatalf("Chinese help was not localized:\n%s", help)
 	}
 

@@ -1,6 +1,6 @@
 # skills-switch
 
-`skills-switch` manages project-local Agent Skills and MCP servers plus user-global system prompts from a central resource catalog. Skills are projected into the current project, MCP servers are surgically merged into each client's project configuration, and system prompts are projected into each client's user-level directory. There is no per-project manifest to drift away from the real client files.
+`skills-switch` manages project-local Agent Skills and MCP servers plus user-global commands, hooks, and system prompts from a central resource catalog. Skills are projected into the current project, MCP servers are surgically merged into each client's project configuration, and user-global files are projected into each client's registered directory. There is no per-project manifest to drift away from the real client files.
 
 The TUI is built with Bubble Tea v2, Bubbles v2, and Lip Gloss v2. Human-facing CLI and TUI text supports English and Simplified Chinese.
 
@@ -28,6 +28,14 @@ The default resource root is `~/.agents/resources`:
     ├── registry.yaml            # client adapters; built-ins work without this file
     ├── mcp/
     │   └── mcp.json             # client-neutral MCP definitions
+    ├── commands/
+    │   ├── shared/              # available to every command-capable client
+    │   └── codex-only/          # available only to Codex
+    ├── hooks/
+    │   ├── shared/              # available to every hook-capable client
+    │   └── claude-only/         # available only to Claude
+    ├── agents/                  # user-global model-specific agent definitions
+    ├── output-styles/           # user-global Claude output styles
     └── system-prompts/
         ├── claude-prompt/
         │   ├── CLAUDE.md
@@ -48,11 +56,11 @@ Inside `resources/skills`, the physical layout remains a strict `kind / client-s
 
 The built-in client registry owns both project-local and user-global client adapters:
 
-| Client | Project Skills | Project MCP | User-global system prompts |
-| --- | --- | --- | --- |
-| `codex` | `.agents/skills` | `.codex/config.toml` | `~/.codex/` |
-| `claude` | `.claude/skills` | `.mcp.json` | `~/.claude/` |
-| `gemini` | `.gemini/skills` | `.gemini/settings.json` | `~/.gemini/` |
+| Client | Project Skills | Project MCP | User commands/hooks | User agents | User output styles | User system prompts |
+| --- | --- | --- | --- | --- | --- | --- |
+| `codex` | `.agents/skills` | `.codex/config.toml` | `.codex/prompts`, `.codex/hooks` | `.codex/agents` | — | `.codex/` |
+| `claude` | `.claude/skills` | `.mcp.json` | `.claude/commands`, `.claude/hooks` | `.claude/agents` | `.claude/output-styles` | `.claude/` |
+| `gemini` | `.gemini/skills` | `.gemini/settings.json` | `.gemini/commands`, `.gemini/hooks` | `.gemini/agents` | — | `.gemini/` |
 
 Clients are data, not a closed enum. Built-ins live in the binary; `resources/registry.yaml` can override them or add another client without changing Go code:
 
@@ -63,7 +71,13 @@ clients:
   pi:
     projectSkillsDir: .pi/skills
     userPromptDir: .pi
+    userPromptMode: tree
+    userCommandsDir: .pi/commands
+    userHooksDir: .pi/hooks
+    userAgentsDir: .pi/agents
 ```
+
+`userPromptMode` is either `tree` (project every Markdown source at its relative path) or `concat` (compile all Markdown sources into `userPromptEntry`). A concat adapter must declare its entry file, for example `userPromptMode: concat` plus `userPromptEntry: AGENTS.md`.
 
 Skill discovery policy remains separate in `resources/skills/catalog.yaml`:
 
@@ -102,7 +116,7 @@ go build -o dist/skills-switch ./cmd/skills-switch
 
 ## Usage
 
-Every mutating capability is a first-class CLI subcommand grouped under its resource noun — `skills`, `mcp`, `source`, `prompt` — alongside the top-level `init`, `status`, `doctor`, `tui`, and `version`. Any command accepts `--json` for scripting and `--lang en|zh` for language; project commands act on the nearest Git root or an explicit `--project`. The TUI never does anything the CLI cannot: humans can use either surface, while agents and scripts drive the CLI.
+Every mutating capability is a first-class CLI subcommand grouped under its resource noun — `skills`, `mcp`, `source`, `commands`, `hooks`, `prompt` — alongside the top-level `init`, `status`, `doctor`, `tui`, and `version`. List commands accept `--json` for scripting, and every command accepts `--lang en|zh`; project commands act on the nearest Git root or an explicit `--project`. User-global command, hook, and prompt commands do not require a Git project. The TUI exposes the same mutation surfaces.
 
 A complete end-to-end flow, from an empty machine to enabled resources:
 
@@ -126,7 +140,9 @@ skills-switch skills enable <skill-id> --client claude --client codex
 skills-switch mcp import '{"mcpServers":{"context7":{"command":"npx","args":["-y","ctx7"]}}}'
 skills-switch mcp enable context7 --client claude
 
-# 6. project a user-global system prompt (not project-local)
+# 6. project user-global files (not project-local)
+skills-switch commands enable shared/remember.md --client claude --client codex
+skills-switch hooks enable claude-only/audit.sh --client claude
 skills-switch prompt enable claude-prompt
 
 # 7. verify the project, or drive the same operations interactively
@@ -234,13 +250,13 @@ skills-switch source update vendor-shared/worktrunk
 skills-switch source remove vendor-shared/worktrunk
 ```
 
-Launching the TUI never updates submodules automatically. Press `u` for the selected vendor source, `U` for every vendor source, or use `source update` without a source ID. After an update, the catalog is rediscovered from the new upstream snapshot; added and removed Skills immediately change each source's enabled/total counts. `source remove` refuses dirty submodules and updates the gitlink, `.gitmodules`, and catalog policy as one managed operation.
+Launching the TUI never updates submodules automatically. Press `u` for the selected vendor source, `U` for every vendor source, or use `source update` without a source ID. Vendor submodules are read-only mirrors: a real update first runs `git reset --hard HEAD` in each selected source, discarding tracked local edits before remote inspection. `--dry-run` remains non-mutating. Batch updates isolate failures per source, so a reset or Git failure in one repository does not block independent repositories. Each reported error includes the source id, repository path, failed operation, and underlying Git detail. After an update, the catalog is rediscovered from the new upstream snapshot; added and removed Skills immediately change each source's enabled/total counts. `source remove` still refuses dirty submodules and updates the gitlink, `.gitmodules`, and catalog policy as one managed operation.
 
 When an update drops a Skill the current project had enabled, its projection is left pointing at a target that no longer exists. `source update` reconciles this automatically: after a successful update it removes such dangling managed links in the current project, scoped to the sources that changed, and reports them (its `--json` output is an object `{updates, pruned}`). Cleanup is best-effort — it never fails the update, and does nothing when the command is not run inside a project. A Skill that is merely no longer discovered but still present on disk is never removed. Run `skills prune` at any time to review these orphaned projections (`--yes` removes them), and `doctor` now reports them as unhealthy.
 
 ## Operations
 
-Run the TUI anywhere inside a Git worktree. The nearest Git root receives Skills and MCP changes; the System Prompts tab always manages the current user's client directories:
+Run the TUI anywhere inside a Git worktree. The nearest Git root receives Skills and MCP changes; Commands, Hooks, Agents, Output Styles, and System Prompts always manage the current user's client directories:
 
 ```sh
 skills-switch
@@ -260,7 +276,16 @@ skills-switch mcp list
 skills-switch mcp enable context7 --client claude --client codex --client gemini
 skills-switch mcp disable context7 --client claude --client codex --client gemini
 skills-switch mcp import '{"mcpServers":{"context7":{"command":"npx","args":["-y","ctx7"]}}}'
+skills-switch commands list
+skills-switch commands enable shared/remember.md --client claude --client codex
+skills-switch commands disable shared/remember.md --client claude --client codex
+skills-switch hooks list
+skills-switch hooks enable claude-only/audit.sh --client claude
+skills-switch hooks disable claude-only/audit.sh --client claude
+skills-switch agents enable codex-only/reviewer.toml --client codex
+skills-switch output-styles enable claude-only/tech-mentor.md --client claude
 skills-switch prompt list
+skills-switch prompt build codex-prompt
 skills-switch prompt enable claude-prompt
 skills-switch prompt disable claude-prompt
 skills-switch doctor
@@ -272,7 +297,9 @@ Skills from different active sources may intentionally share a name. They are al
 
 MCP ownership is entry-level. Enabling adds only the selected server; disabling removes it only when the live definition is semantically identical to the catalog definition. Unknown servers, sibling settings, JSONC comments, TOML comments, ordering, and config-file symlinks are preserved. A same-name different definition is an unmanaged conflict and is never overwritten.
 
-Each `<client>-prompt` directory is one atomic user-global group. Markdown files are recursively projected at the same relative path below that client's user prompt root. Existing unmanaged files may coexist at other paths; an unmanaged target at any selected path rejects the whole group without partial links. The non-interactive `prompt` commands do not require a Git project.
+Commands and hooks use the same scoped catalog convention: `shared/<path>` supports every client with a registered target directory, while `<client>-only/<path>` supports only that client. Files are recursively projected at the same relative path. Multi-client changes preflight the whole selected set and roll back on apply failure; an unmanaged file or foreign symlink is a conflict and is never overwritten.
+
+Each `<client>-prompt` directory is one atomic user-global group with its own model-specific source files. Do not share or symlink rules between model directories. A `tree` adapter, such as Claude, projects every Markdown file at its relative path. A `concat` adapter, such as Codex, builds the root entry followed by the remaining Markdown files in lexical path order into `~/.agents/generated/system-prompts/<group>/<entry>` and projects only that generated entry. Generated files carry source markers and must not be edited. `prompt build <group>` refreshes a concat output without changing enablement; `prompt enable` builds before linking. Editing a concat source makes an enabled group `stale` until rebuilt; `doctor` reports that state as an issue. Prompt commands do not require a Git project.
 
 Archived sources are hidden by default and reference-only:
 
@@ -285,11 +312,12 @@ skills-switch source list --archive
 
 | Key | Action |
 | --- | --- |
-| `Tab` / `Shift+Tab` | Switch Skills, MCP, and System Prompts |
+| `Tab` / `Shift+Tab` | Switch Skills, MCP, Commands, Hooks, Agents, Output Styles, and System Prompts |
 | `↑` / `↓`, `j` / `k` | Navigate resource rows |
 | `←` / `→`, `h` / `l` | Select a client column |
 | `Space` | Toggle the selected resource or Skill source group for the selected client |
-| `a` | Toggle the selected Skill, source, or MCP server for every compatible client atomically |
+| `a` | Toggle the selected Skill, source, MCP server, command, or hook for every compatible client atomically |
+| `b` | Build the selected concat system prompt (System Prompts tab only) |
 | `n` | New: on Skills, a menu to add a remote repo source or scaffold a local Skill; on MCP, paste a JSON server definition |
 | `d` | Delete the selected source, local Skill/group, or MCP server (two-step confirmation) |
 | `Enter` | Expand or collapse a Skill source |

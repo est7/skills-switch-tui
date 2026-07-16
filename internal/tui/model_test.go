@@ -19,6 +19,7 @@ import (
 	"github.com/est7/skills-switch-tui/internal/projection"
 	"github.com/est7/skills-switch-tui/internal/source"
 	"github.com/est7/skills-switch-tui/internal/systemprompt"
+	"github.com/est7/skills-switch-tui/internal/userresource"
 )
 
 func TestSourceRowToggleEnablesEveryCompatibleSkill(t *testing.T) {
@@ -213,7 +214,7 @@ func TestUpdateAllRefreshesEveryVendorSource(t *testing.T) {
 	}
 	git := &tuiSourceGit{responses: make(map[string]string)}
 	for _, candidate := range loaded.Sources {
-		git.responses[candidate.Path+"|status --porcelain"] = ""
+		git.responses[candidate.Path+"|reset --hard HEAD"] = "HEAD is now at aaaaaaaa current\n"
 		git.responses[candidate.Path+"|rev-parse HEAD"] = "aaaaaaaa\n"
 		git.responses[candidate.Path+"|ls-remote origin refs/heads/main"] = "aaaaaaaa\trefs/heads/main\n"
 	}
@@ -231,9 +232,52 @@ func TestUpdateAllRefreshesEveryVendorSource(t *testing.T) {
 		t.Fatalf("update all vendors: %v", model.err)
 	}
 	for _, candidate := range loaded.Sources {
-		if !git.called(candidate.Path + "|status --porcelain") {
-			t.Errorf("update all did not inspect %s", candidate.ID)
+		if !git.called(candidate.Path + "|reset --hard HEAD") {
+			t.Errorf("update all did not hard-reset %s", candidate.ID)
 		}
+	}
+}
+
+func TestUpdateAllContinuesCleanSourcesAndReportsResetFailure(t *testing.T) {
+	repositoryRoot := t.TempDir()
+	sourcesRoot := filepath.Join(repositoryRoot, "resources", "skills")
+	projectRoot := t.TempDir()
+	for _, name := range []string{"broken", "clean"} {
+		writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", name, "skills", name), name)
+	}
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := loaded.Sources[0]
+	clean := loaded.Sources[1]
+	git := &tuiSourceGit{responses: map[string]string{
+		clean.Path + "|reset --hard HEAD":                "HEAD is now at aaaaaaaa current\n",
+		clean.Path + "|rev-parse HEAD":                   "aaaaaaaa\n",
+		clean.Path + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
+		repositoryRoot + "|submodule update --init --remote -- resources/skills/vendor/shared/clean": "",
+	}}
+	updater := source.Manager{RepositoryRoot: repositoryRoot, SkillsRoot: sourcesRoot, Git: git}
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), &updater, i18n.New(i18n.English))
+
+	updated, command := model.Update(tea.KeyPressMsg{Code: 'U', Text: "U"})
+	model = updated.(Model)
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+
+	if model.err == nil {
+		t.Fatal("update all did not report the reset failure")
+	}
+	for _, fragment := range []string{broken.ID, broken.Path, "reset read-only checkout"} {
+		if !strings.Contains(model.err.Error(), fragment) {
+			t.Fatalf("update error %q does not contain %q", model.err, fragment)
+		}
+	}
+	if !strings.Contains(model.status, "Updated 1 source(s)") {
+		t.Fatalf("partial update status = %q", model.status)
+	}
+	if !git.called(repositoryRoot + "|submodule update --init --remote -- resources/skills/vendor/shared/clean") {
+		t.Fatalf("clean source was not updated; calls = %v", git.calls)
 	}
 }
 
@@ -389,7 +433,7 @@ func TestViewUsesSharedChineseTranslations(t *testing.T) {
 
 	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.Chinese))
 	view := model.View().Content
-	for _, fragment := range []string{"项目资源 · 用户级系统提示词", "名称 / SKILL", "就绪"} {
+	for _, fragment := range []string{"项目资源 · 用户级 Agent 文件", "名称 / SKILL", "就绪"} {
 		if !strings.Contains(view, fragment) {
 			t.Fatalf("Chinese view does not contain %q:\n%s", fragment, view)
 		}
@@ -524,7 +568,7 @@ func TestSourceToggleCleansProjectionThatBecameIncompatible(t *testing.T) {
 	assertNotExist(t, link)
 }
 
-func TestResourceTabsToggleMCPAndSystemPrompts(t *testing.T) {
+func TestResourceTabsToggleMCPCommandsHooksAndSystemPrompts(t *testing.T) {
 	sourcesRoot := t.TempDir()
 	projectRoot := t.TempDir()
 	userHome := t.TempDir()
@@ -548,12 +592,36 @@ func TestResourceTabsToggleMCPAndSystemPrompts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	commandRoot := t.TempDir()
+	commandPath := filepath.Join(commandRoot, "shared", "remember.md")
+	hookRoot := t.TempDir()
+	hookPath := filepath.Join(hookRoot, "claude-only", "audit.sh")
+	for _, path := range []string{commandPath, hookPath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("test\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commands, err := userresource.Discover(commandRoot, userresource.KindCommand, loaded.Clients)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks, err := userresource.Discover(hookRoot, userresource.KindHook, loaded.Clients)
+	if err != nil {
+		t.Fatal(err)
+	}
 	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English), Resources{
-		MCPCatalog:    mcpCatalog,
-		MCPManager:    mcp.NewManager(projectRoot, mcpCatalog, loaded.Clients),
-		Prompts:       prompts,
-		PromptManager: systemprompt.NewManager(userHome, loaded.Clients),
-		UserHome:      userHome,
+		MCPCatalog:     mcpCatalog,
+		MCPManager:     mcp.NewManager(projectRoot, mcpCatalog, loaded.Clients),
+		Prompts:        prompts,
+		PromptManager:  systemprompt.NewManager(userHome, loaded.Clients),
+		Commands:       commands,
+		CommandManager: userresource.NewManager(userHome, loaded.Clients),
+		Hooks:          hooks,
+		HookManager:    userresource.NewManager(userHome, loaded.Clients),
+		UserHome:       userHome,
 	})
 
 	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyTab})
@@ -572,11 +640,43 @@ func TestResourceTabsToggleMCPAndSystemPrompts(t *testing.T) {
 
 	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	model = updated.(Model)
-	if view := model.View().Content; !strings.Contains(view, "USER") || strings.Contains(view, "PROJECT  ") {
-		t.Fatalf("System Prompts tab did not render the user-global scope:\n%s", view)
+	if !strings.Contains(model.View().Content, "shared/remember.md") {
+		t.Fatalf("Commands tab did not render command:\n%s", model.View().Content)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatal(model.err)
+	}
+	if _, err := os.Readlink(filepath.Join(userHome, ".codex", "prompts", "remember.md")); err != nil {
+		t.Fatalf("Commands tab did not project command: %v", err)
+	}
+
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	model = updated.(Model)
+	if !strings.Contains(model.View().Content, "claude-only/audit.sh") {
+		t.Fatalf("Hooks tab did not render hook:\n%s", model.View().Content)
 	}
 	updated, _ = model.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
 	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatal(model.err)
+	}
+	if _, err := os.Readlink(filepath.Join(userHome, ".claude", "hooks", "audit.sh")); err != nil {
+		t.Fatalf("Hooks tab did not project hook: %v", err)
+	}
+
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	model = updated.(Model)
+	if view := model.View().Content; !strings.Contains(view, "USER") || strings.Contains(view, "PROJECT  ") {
+		t.Fatalf("System Prompts tab did not render the user-global scope:\n%s", view)
+	}
 	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	model = updated.(Model)
 	if model.err != nil {
@@ -586,10 +686,85 @@ func TestResourceTabsToggleMCPAndSystemPrompts(t *testing.T) {
 		t.Fatalf("System Prompts tab did not project CLAUDE.md: %v", err)
 	}
 	view := model.View().Content
-	for _, label := range []string{"Skills", "MCP", "System Prompts"} {
+	for _, label := range []string{"Skills", "MCP", "Commands", "Hooks", "Agents", "Output Styles", "System Prompts"} {
 		if !strings.Contains(view, label) {
 			t.Fatalf("tab bar is missing %q:\n%s", label, view)
 		}
+	}
+}
+
+func TestPromptTabBuildKeyBuildsCodexPromptWithoutEnablingIt(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	userHome := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	promptRoot := t.TempDir()
+	base := filepath.Join(promptRoot, "codex-prompt", "AGENTS.md")
+	rule := filepath.Join(promptRoot, "codex-prompt", "rules", "10-core.md")
+	for path, contents := range map[string]string{base: "# Base\n", rule: "## Core\n"} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prompts, err := systemprompt.Discover(promptRoot, loaded.Clients)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := systemprompt.NewManager(userHome, loaded.Clients)
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English), Resources{
+		Prompts: prompts, PromptManager: manager, UserHome: userHome,
+	})
+	model.tab = tabSystemPrompts
+	model.syncContextKeys()
+	if !model.keys.Build.Enabled() {
+		t.Fatal("prompt tab build key is disabled")
+	}
+	if help := model.keys.Build.Help(); help.Key != "b" || help.Desc != "build prompt" {
+		t.Fatalf("unexpected prompt build help: %+v", help)
+	}
+
+	updated, command := model.Update(tea.KeyPressMsg{Code: 'b', Text: "b"})
+	model = updated.(Model)
+	if command == nil || !model.updating {
+		t.Fatal("prompt build key did not start a build")
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if model.err != nil || model.updating {
+		t.Fatalf("prompt build failed: %v", model.err)
+	}
+	group, _ := prompts.Group("codex-prompt")
+	if _, err := os.Stat(manager.GeneratedPath(group)); err != nil {
+		t.Fatalf("prompt build did not create output: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(userHome, ".codex", "AGENTS.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("build key unexpectedly enabled the prompt: %v", err)
+	}
+
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatal(model.err)
+	}
+	if err := os.WriteFile(rule, []byte("## Core changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := manager.State(group); err != nil || state != systemprompt.StateStale {
+		t.Fatalf("prompt state after edit = %q, %v", state, err)
+	}
+	updated, command = model.Update(tea.KeyPressMsg{Code: 'b', Text: "b"})
+	model = updated.(Model)
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if state, err := manager.State(group); err != nil || state != systemprompt.StateEnabled {
+		t.Fatalf("prompt state after b rebuild = %q, %v", state, err)
 	}
 }
 

@@ -100,6 +100,10 @@ func initializeResourceFiles(layout resource.Layout) error {
 		filepath.Join(layout.SkillsRoot(), "vendor", "shared"),
 		filepath.Dir(layout.MCPCatalogFile()),
 		layout.SystemPromptsRoot(),
+		filepath.Join(layout.CommandsRoot(), "shared"),
+		filepath.Join(layout.HooksRoot(), "shared"),
+		filepath.Join(layout.AgentsRoot(), "shared"),
+		filepath.Join(layout.OutputStylesRoot(), "claude-only"),
 	}
 	for _, directory := range directories {
 		if err := os.MkdirAll(directory, 0o755); err != nil {

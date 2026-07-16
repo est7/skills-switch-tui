@@ -16,6 +16,7 @@ type keyMap struct {
 	Filter    key.Binding
 	Update    key.Binding
 	UpdateAll key.Binding
+	Build     key.Binding
 	Delete    key.Binding
 	Add       key.Binding
 	Language  key.Binding
@@ -24,7 +25,7 @@ type keyMap struct {
 }
 
 func defaultKeyMap(translator i18n.Translator) keyMap {
-	return keyMap{
+	keys := keyMap{
 		Navigate:  key.NewBinding(key.WithKeys("up", "down", "j", "k"), key.WithHelp("↑/↓", translator.Text(i18n.HelpNavigate))),
 		Resource:  key.NewBinding(key.WithKeys("tab", "shift+tab"), key.WithHelp("tab", translator.Text(i18n.HelpResource))),
 		Client:    key.NewBinding(key.WithKeys("left", "right", "h", "l"), key.WithHelp("←/→", translator.Text(i18n.HelpClient))),
@@ -35,22 +36,25 @@ func defaultKeyMap(translator i18n.Translator) keyMap {
 		Filter:    key.NewBinding(key.WithKeys("f"), key.WithHelp("f", translator.Text(i18n.HelpFilter))),
 		Update:    key.NewBinding(key.WithKeys("u"), key.WithHelp("u", translator.Text(i18n.HelpUpdate))),
 		UpdateAll: key.NewBinding(key.WithKeys("U"), key.WithHelp("U", translator.Text(i18n.HelpUpdateAll))),
+		Build:     key.NewBinding(key.WithKeys("b"), key.WithHelp("b", translator.Text(i18n.HelpBuild))),
 		Delete:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", translator.Text(i18n.HelpDelete))),
 		Add:       key.NewBinding(key.WithKeys("n"), key.WithHelp("n", translator.Text(i18n.HelpAdd))),
 		Language:  key.NewBinding(key.WithKeys("L"), key.WithHelp("L", translator.Text(i18n.HelpLanguage))),
 		Help:      key.NewBinding(key.WithKeys("?"), key.WithHelp("?", translator.Text(i18n.HelpMore))),
 		Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", translator.Text(i18n.HelpQuit))),
 	}
+	keys.Build.SetEnabled(false)
+	return keys
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Toggle, k.ToggleAll, k.Navigate, k.Client, k.Resource, k.Search, k.Help, k.Quit}
+	return []key.Binding{k.Toggle, k.ToggleAll, k.Build, k.Navigate, k.Client, k.Resource, k.Search, k.Help, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Navigate, k.Resource, k.Client, k.Toggle, k.ToggleAll, k.Expand},
-		{k.Search, k.Filter, k.Update, k.UpdateAll, k.Delete, k.Add, k.Language},
+		{k.Search, k.Filter, k.Update, k.UpdateAll, k.Build, k.Delete, k.Add, k.Language},
 		{k.Help, k.Quit},
 	}
 }

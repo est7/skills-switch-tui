@@ -61,11 +61,47 @@ func TestRegistryExposesBuiltinPromptAndMCPAdapters(t *testing.T) {
 			t.Fatalf("%s prompt dir = %q, want %q", id, promptDir, want)
 		}
 	}
+	mode, entry, err := registry.UserPromptAdapter(Codex)
+	if err != nil || mode != PromptConcat || entry != "AGENTS.md" {
+		t.Fatalf("Codex prompt adapter = %q %q, %v", mode, entry, err)
+	}
+	mode, entry, err = registry.UserPromptAdapter(Claude)
+	if err != nil || mode != PromptTree || entry != "" {
+		t.Fatalf("Claude prompt adapter = %q %q, %v", mode, entry, err)
+	}
 	mcpFile, format, err := registry.MCPProjectFile("/tmp/project", Codex)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := filepath.Join("/tmp/project", ".codex", "config.toml"); mcpFile != want || format != MCPCodexTOML {
 		t.Fatalf("Codex MCP adapter = %q %q, want %q %q", mcpFile, format, want, MCPCodexTOML)
+	}
+}
+
+func TestRegistryValidatesConcatPromptAdapter(t *testing.T) {
+	if _, err := NewRegistry(map[ID]Definition{"pi": {UserPromptDir: ".pi", UserPromptMode: PromptConcat}}); err == nil {
+		t.Fatal("concat prompt adapter without an entry was accepted")
+	}
+	registry, err := NewRegistry(map[ID]Definition{"pi": {
+		UserPromptDir: ".pi", UserPromptMode: PromptConcat, UserPromptEntry: "AGENTS.md",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode, entry, err := registry.UserPromptAdapter("pi")
+	if err != nil || mode != PromptConcat || entry != "AGENTS.md" {
+		t.Fatalf("Pi prompt adapter = %q %q, %v", mode, entry, err)
+	}
+}
+
+func TestRegistryExposesBuiltinCommandAndHookAdapters(t *testing.T) {
+	registry := DefaultRegistry()
+	commandDir, err := registry.UserCommandsTargetDir("/tmp/home", Gemini)
+	if err != nil || commandDir != filepath.Join("/tmp/home", ".gemini", "commands") {
+		t.Fatalf("UserCommandsTargetDir() = %q, %v", commandDir, err)
+	}
+	hookDir, err := registry.UserHooksTargetDir("/tmp/home", Codex)
+	if err != nil || hookDir != filepath.Join("/tmp/home", ".codex", "hooks") {
+		t.Fatalf("UserHooksTargetDir() = %q, %v", hookDir, err)
 	}
 }

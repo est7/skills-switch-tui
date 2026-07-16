@@ -20,6 +20,10 @@ const (
 	ProductSubtitle             Key = "product_subtitle"
 	TabSkills                   Key = "tab_skills"
 	TabMCP                      Key = "tab_mcp"
+	TabCommands                 Key = "tab_commands"
+	TabHooks                    Key = "tab_hooks"
+	TabAgents                   Key = "tab_agents"
+	TabOutputStyles             Key = "tab_output_styles"
 	TabSystemPrompts            Key = "tab_system_prompts"
 	ProjectLabel                Key = "project_label"
 	UserLabel                   Key = "user_label"
@@ -44,6 +48,7 @@ const (
 	HelpFilter                  Key = "help_filter"
 	HelpUpdate                  Key = "help_update"
 	HelpUpdateAll               Key = "help_update_all"
+	HelpBuild                   Key = "help_build"
 	HelpLanguage                Key = "help_language"
 	HelpMore                    Key = "help_more"
 	HelpQuit                    Key = "help_quit"
@@ -77,6 +82,7 @@ const (
 	UpdatingSource              Key = "updating_source"
 	UpdatingAllSources          Key = "updating_all_sources"
 	UpdateFailed                Key = "update_failed"
+	UpdatePartial               Key = "update_partial"
 	UpdateReloadFailed          Key = "update_reload_failed"
 	UpdatedSources              Key = "updated_sources"
 	NoSelection                 Key = "no_selection"
@@ -127,6 +133,18 @@ const (
 	PromptListShort             Key = "prompt_list_short"
 	PromptEnableShort           Key = "prompt_enable_short"
 	PromptDisableShort          Key = "prompt_disable_short"
+	PromptBuildShort            Key = "prompt_build_short"
+	BuiltPrompt                 Key = "built_prompt"
+	BuildingPrompt              Key = "building_prompt"
+	PromptBuildFailed           Key = "prompt_build_failed"
+	PromptBuildUnavailable      Key = "prompt_build_unavailable"
+	CommandsCommandShort        Key = "commands_command_short"
+	HooksCommandShort           Key = "hooks_command_short"
+	AgentsCommandShort          Key = "agents_command_short"
+	OutputStylesCommandShort    Key = "output_styles_command_short"
+	UserResourceListShort       Key = "user_resource_list_short"
+	UserResourceEnableShort     Key = "user_resource_enable_short"
+	UserResourceDisableShort    Key = "user_resource_disable_short"
 	PromptHeader                Key = "prompt_header"
 	FilesHeader                 Key = "files_header"
 	PromptFileSummary           Key = "prompt_file_summary"
@@ -238,9 +256,13 @@ type Translator struct {
 var messages = map[Language]map[Key]string{
 	English: {
 		Ready:                       "Ready",
-		ProductSubtitle:             "project resources · user-global prompts",
+		ProductSubtitle:             "project resources · user-global files",
 		TabSkills:                   "Skills",
 		TabMCP:                      "MCP",
+		TabCommands:                 "Commands",
+		TabHooks:                    "Hooks",
+		TabAgents:                   "Agents",
+		TabOutputStyles:             "Output Styles",
 		TabSystemPrompts:            "System Prompts",
 		ProjectLabel:                "project",
 		UserLabel:                   "user",
@@ -265,6 +287,7 @@ var messages = map[Language]map[Key]string{
 		HelpFilter:                  "filter",
 		HelpUpdate:                  "update",
 		HelpUpdateAll:               "update all",
+		HelpBuild:                   "build prompt",
 		HelpLanguage:                "language",
 		HelpMore:                    "more",
 		HelpQuit:                    "quit",
@@ -298,6 +321,7 @@ var messages = map[Language]map[Key]string{
 		UpdatingSource:              "Updating %s…",
 		UpdatingAllSources:          "Updating all %d vendor sources…",
 		UpdateFailed:                "Update failed",
+		UpdatePartial:               "Updated %d source(s); some sources failed",
 		UpdateReloadFailed:          "Updated sources, but catalog reload failed",
 		UpdatedSources:              "Updated %d source(s); %d changed",
 		NoSelection:                 "No selection",
@@ -308,7 +332,7 @@ var messages = map[Language]map[Key]string{
 		TargetsLabel:                "targets  %s",
 		ArchivedLabel:               "archived",
 		MetadataIssueLabel:          "metadata issue",
-		RootShort:                   "Manage project resources and user-global system prompts",
+		RootShort:                   "Manage project resources and user-global agent files",
 		ResourcesFlag:               "agent resources root (default ~/.agents/resources)",
 		ProjectFlag:                 "project directory (default current directory)",
 		LanguageFlag:                "interface language: auto, en, or zh",
@@ -348,11 +372,23 @@ var messages = map[Language]map[Key]string{
 		PromptListShort:             "List system prompt groups and user-global state",
 		PromptEnableShort:           "Enable a system prompt group for its user-global client",
 		PromptDisableShort:          "Disable a system prompt group for its user-global client",
+		PromptBuildShort:            "Build a generated system prompt from its source files",
+		BuiltPrompt:                 "Built %s at %s (%d bytes, changed: %t)",
+		BuildingPrompt:              "Building %s…",
+		PromptBuildFailed:           "Prompt build failed",
+		PromptBuildUnavailable:      "%s uses tree projection and does not need a build",
+		CommandsCommandShort:        "Manage user-global command files",
+		HooksCommandShort:           "Manage user-global hook files",
+		AgentsCommandShort:          "Manage user-global agent files",
+		OutputStylesCommandShort:    "Manage user-global output style files",
+		UserResourceListShort:       "List user-global resources and client state",
+		UserResourceEnableShort:     "Enable a user-global resource for selected clients",
+		UserResourceDisableShort:    "Disable a user-global resource for selected clients",
 		PromptHeader:                "PROMPT",
 		FilesHeader:                 "FILES",
 		PromptFileSummary:           "%d Markdown file(s) · %s",
 		UpdateShort:                 "Update vendor sources from their tracked branches",
-		DoctorShort:                 "Check project resources and user-global system prompts",
+		DoctorShort:                 "Check project resources and user-global agent files",
 		IncludeArchiveFlag:          "include archived sources",
 		NameFlag:                    "source name",
 		BranchFlag:                  "tracked branch",
@@ -453,9 +489,13 @@ var messages = map[Language]map[Key]string{
 	},
 	Chinese: {
 		Ready:                       "就绪",
-		ProductSubtitle:             "项目资源 · 用户级系统提示词",
+		ProductSubtitle:             "项目资源 · 用户级 Agent 文件",
 		TabSkills:                   "Skills",
 		TabMCP:                      "MCP",
+		TabCommands:                 "命令",
+		TabHooks:                    "Hooks",
+		TabAgents:                   "Agents",
+		TabOutputStyles:             "输出样式",
 		TabSystemPrompts:            "系统提示词",
 		ProjectLabel:                "项目",
 		UserLabel:                   "用户",
@@ -480,6 +520,7 @@ var messages = map[Language]map[Key]string{
 		HelpFilter:                  "筛选",
 		HelpUpdate:                  "更新",
 		HelpUpdateAll:               "全部更新",
+		HelpBuild:                   "构建提示词",
 		HelpLanguage:                "语言",
 		HelpMore:                    "更多",
 		HelpQuit:                    "退出",
@@ -513,6 +554,7 @@ var messages = map[Language]map[Key]string{
 		UpdatingSource:              "正在更新 %s…",
 		UpdatingAllSources:          "正在更新全部 %d 个 vendor 来源…",
 		UpdateFailed:                "更新失败",
+		UpdatePartial:               "已更新 %d 个来源；部分来源失败",
 		UpdateReloadFailed:          "来源已更新，但重新加载目录失败",
 		UpdatedSources:              "已更新 %d 个来源；%d 个发生变化",
 		NoSelection:                 "未选择",
@@ -523,7 +565,7 @@ var messages = map[Language]map[Key]string{
 		TargetsLabel:                "适用客户端  %s",
 		ArchivedLabel:               "已归档",
 		MetadataIssueLabel:          "元数据问题",
-		RootShort:                   "管理项目资源和用户级系统提示词",
+		RootShort:                   "管理项目资源和用户级 Agent 文件",
 		ResourcesFlag:               "Agent 资源根目录（默认 ~/.agents/resources）",
 		ProjectFlag:                 "项目目录（默认当前目录）",
 		LanguageFlag:                "界面语言：auto、en 或 zh",
@@ -563,11 +605,23 @@ var messages = map[Language]map[Key]string{
 		PromptListShort:             "列出系统提示词组及用户级状态",
 		PromptEnableShort:           "为对应用户级客户端启用系统提示词组",
 		PromptDisableShort:          "为对应用户级客户端停用系统提示词组",
+		PromptBuildShort:            "从源文件构建生成式系统提示词",
+		BuiltPrompt:                 "已构建 %[1]s：%[2]s（%[3]d bytes，发生变化：%[4]t）",
+		BuildingPrompt:              "正在构建 %s…",
+		PromptBuildFailed:           "提示词构建失败",
+		PromptBuildUnavailable:      "%s 使用 tree 投影，不需要构建",
+		CommandsCommandShort:        "管理用户级命令文件",
+		HooksCommandShort:           "管理用户级 Hook 文件",
+		AgentsCommandShort:          "管理用户级 Agent 文件",
+		OutputStylesCommandShort:    "管理用户级输出样式文件",
+		UserResourceListShort:       "列出用户级资源及客户端状态",
+		UserResourceEnableShort:     "为选定客户端启用用户级资源",
+		UserResourceDisableShort:    "为选定客户端停用用户级资源",
 		PromptHeader:                "提示词",
 		FilesHeader:                 "文件",
 		PromptFileSummary:           "%d 个 Markdown 文件 · %s",
 		UpdateShort:                 "从跟踪分支更新 vendor 来源",
-		DoctorShort:                 "检查项目资源和用户级系统提示词",
+		DoctorShort:                 "检查项目资源和用户级 Agent 文件",
 		IncludeArchiveFlag:          "包含归档来源",
 		NameFlag:                    "来源名称",
 		BranchFlag:                  "跟踪分支",

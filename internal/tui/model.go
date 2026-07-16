@@ -11,11 +11,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 	huh "charm.land/huh/v2"
 	"github.com/est7/skills-switch-tui/internal/catalog"
+	"github.com/est7/skills-switch-tui/internal/client"
 	"github.com/est7/skills-switch-tui/internal/i18n"
 	"github.com/est7/skills-switch-tui/internal/mcp"
 	"github.com/est7/skills-switch-tui/internal/projection"
 	"github.com/est7/skills-switch-tui/internal/source"
 	"github.com/est7/skills-switch-tui/internal/systemprompt"
+	"github.com/est7/skills-switch-tui/internal/userresource"
 )
 
 type resourceTab int
@@ -23,6 +25,10 @@ type resourceTab int
 const (
 	tabSkills resourceTab = iota
 	tabMCP
+	tabCommands
+	tabHooks
+	tabAgents
+	tabOutputStyles
 	tabSystemPrompts
 )
 
@@ -68,6 +74,11 @@ type updateFinishedMsg struct {
 	err     error
 }
 
+type promptBuildFinishedMsg struct {
+	result systemprompt.BuildResult
+	err    error
+}
+
 type deletionKind int
 
 const (
@@ -96,47 +107,63 @@ type deleteFinishedMsg struct {
 }
 
 type Model struct {
-	catalog       catalog.Catalog
-	project       string
-	userHome      string
-	projection    projection.Manager
-	mcpCatalog    mcp.Catalog
-	mcpManager    mcp.Manager
-	prompts       systemprompt.Catalog
-	promptMgr     systemprompt.Manager
-	updater       *source.Manager
-	tab           resourceTab
-	clientIndex   int
-	cursor        int
-	offset        int
-	width         int
-	height        int
-	expanded      map[string]bool
-	filter        filterMode
-	searching     bool
-	search        textinput.Model
-	help          help.Model
-	keys          keyMap
-	showHelp      bool
-	updating      bool
-	deleting      bool
-	pendingDelete *deletionPlan
-	active        *activeForm
-	isDark        bool
-	styles        styles
-	translator    i18n.Translator
-	status        string
-	err           error
-	context       context.Context
-	cancel        context.CancelFunc
+	catalog        catalog.Catalog
+	project        string
+	userHome       string
+	projection     projection.Manager
+	mcpCatalog     mcp.Catalog
+	mcpManager     mcp.Manager
+	prompts        systemprompt.Catalog
+	promptMgr      systemprompt.Manager
+	commands       userresource.Catalog
+	commandMgr     userresource.Manager
+	hooks          userresource.Catalog
+	hookMgr        userresource.Manager
+	agents         userresource.Catalog
+	agentMgr       userresource.Manager
+	outputStyles   userresource.Catalog
+	outputStyleMgr userresource.Manager
+	updater        *source.Manager
+	tab            resourceTab
+	clientIndex    int
+	cursor         int
+	offset         int
+	width          int
+	height         int
+	expanded       map[string]bool
+	filter         filterMode
+	searching      bool
+	search         textinput.Model
+	help           help.Model
+	keys           keyMap
+	showHelp       bool
+	updating       bool
+	deleting       bool
+	pendingDelete  *deletionPlan
+	active         *activeForm
+	isDark         bool
+	styles         styles
+	translator     i18n.Translator
+	status         string
+	err            error
+	context        context.Context
+	cancel         context.CancelFunc
 }
 
 type Resources struct {
-	MCPCatalog    mcp.Catalog
-	MCPManager    mcp.Manager
-	Prompts       systemprompt.Catalog
-	PromptManager systemprompt.Manager
-	UserHome      string
+	MCPCatalog         mcp.Catalog
+	MCPManager         mcp.Manager
+	Prompts            systemprompt.Catalog
+	PromptManager      systemprompt.Manager
+	Commands           userresource.Catalog
+	CommandManager     userresource.Manager
+	Hooks              userresource.Catalog
+	HookManager        userresource.Manager
+	Agents             userresource.Catalog
+	AgentManager       userresource.Manager
+	OutputStyles       userresource.Catalog
+	OutputStyleManager userresource.Manager
+	UserHome           string
 }
 
 func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Manager, updater *source.Manager, translator i18n.Translator, resources ...Resources) Model {
@@ -176,8 +203,17 @@ func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Man
 		model.mcpManager = resources[0].MCPManager
 		model.prompts = resources[0].Prompts
 		model.promptMgr = resources[0].PromptManager
+		model.commands = resources[0].Commands
+		model.commandMgr = resources[0].CommandManager
+		model.hooks = resources[0].Hooks
+		model.hookMgr = resources[0].HookManager
+		model.agents = resources[0].Agents
+		model.agentMgr = resources[0].AgentManager
+		model.outputStyles = resources[0].OutputStyles
+		model.outputStyleMgr = resources[0].OutputStyleManager
 		model.userHome = resources[0].UserHome
 	}
+	model.syncContextKeys()
 	return model
 }
 
@@ -224,6 +260,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.err = errors.Join(m.err, fmt.Errorf("reload catalog after failed update: %w", reloadErr))
 			}
 			m.status = m.translator.Text(i18n.UpdateFailed)
+			if len(message.results) > 0 {
+				m.status = m.translator.Text(i18n.UpdatePartial, len(message.results))
+			}
 			return m, nil
 		}
 		if reloadErr != nil {
@@ -239,6 +278,16 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = nil
 		m.status = m.translator.Text(i18n.UpdatedSources, len(message.results), changed)
+		return m, nil
+	case promptBuildFinishedMsg:
+		m.updating = false
+		if message.err != nil {
+			m.err = message.err
+			m.status = m.translator.Text(i18n.PromptBuildFailed)
+			return m, nil
+		}
+		m.err = nil
+		m.status = m.translator.Text(i18n.BuiltPrompt, message.result.GroupID, message.result.Path, message.result.Bytes, message.result.Changed)
 		return m, nil
 	case deleteFinishedMsg:
 		m.deleting = false
@@ -341,6 +390,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m.startUpdate(false)
 	case "U":
 		return m.startUpdate(true)
+	case "b":
+		return m.startPromptBuild()
 	case "d":
 		m.requestDelete()
 	case "n":
@@ -520,6 +571,7 @@ func (m *Model) toggleLanguage() {
 	}
 	m.translator = i18n.New(language)
 	m.keys = defaultKeyMap(m.translator)
+	m.syncContextKeys()
 	m.search.Placeholder = m.translator.Text(i18n.SearchPlaceholder)
 	m.status = m.translator.Text(i18n.Ready)
 	m.err = nil
@@ -569,6 +621,11 @@ func (m *Model) cycleResource(delta int) {
 	m.cursor = 0
 	m.offset = 0
 	m.status = m.translator.Text(i18n.Ready)
+	m.syncContextKeys()
+}
+
+func (m *Model) syncContextKeys() {
+	m.keys.Build.SetEnabled(m.tab == tabSystemPrompts)
 }
 
 func (m *Model) moveCursor(delta int) {
@@ -604,6 +661,9 @@ func (m *Model) toggleSelection() {
 	switch m.tab {
 	case tabMCP:
 		m.toggleMCPSelection()
+		return
+	case tabCommands, tabHooks, tabAgents, tabOutputStyles:
+		m.toggleUserResourceSelection()
 		return
 	case tabSystemPrompts:
 		m.togglePromptSelection()
@@ -702,6 +762,9 @@ func (m *Model) toggleAllClients() {
 	switch m.tab {
 	case tabMCP:
 		m.toggleAllClientsMCP()
+		return
+	case tabCommands, tabHooks, tabAgents, tabOutputStyles:
+		m.toggleAllClientsUserResource()
 		return
 	case tabSystemPrompts:
 		m.status = m.translator.Text(i18n.AllClientsNotForPrompts)
@@ -903,6 +966,95 @@ func (m *Model) toggleAllClientsMCP() {
 	m.status = m.translator.Text(key, name, compatibleCount)
 }
 
+func (m *Model) toggleUserResourceSelection() {
+	resources := m.userResources()
+	if len(resources) == 0 || m.cursor >= len(resources) {
+		m.status = m.translator.Text(i18n.NoSelection)
+		return
+	}
+	resource := resources[m.cursor]
+	manager := m.userResourceManager()
+	clientID := m.currentClient()
+	state, err := manager.State(resource, clientID)
+	if err != nil {
+		m.err = err
+		m.status = m.translator.Text(i18n.InspectProjectFailed)
+		return
+	}
+	if state == userresource.StateIncompatible {
+		m.err = errors.New(m.translator.Text(i18n.ResourceIncompatible, resource.ID, clientID))
+		m.status = m.translator.Text(i18n.NoChangesApplied)
+		return
+	}
+	enable := state != userresource.StateEnabled
+	if err := manager.Apply([]userresource.Operation{{Resource: resource, Client: clientID, Enabled: enable}}); err != nil {
+		m.err = err
+		m.status = m.translator.Text(i18n.NoChangesApplied)
+		return
+	}
+	m.err = nil
+	key := i18n.DisabledResource
+	if enable {
+		key = i18n.EnabledResource
+	}
+	m.status = m.translator.Text(key, resource.ID, clientID)
+}
+
+func (m *Model) toggleAllClientsUserResource() {
+	resources := m.userResources()
+	if len(resources) == 0 || m.cursor >= len(resources) {
+		m.status = m.translator.Text(i18n.NoSelection)
+		return
+	}
+	resource := resources[m.cursor]
+	manager := m.userResourceManager()
+	clients := m.catalog.Clients.IDs()
+	states := make(map[catalog.Client]userresource.State, len(clients))
+	compatibleCount := 0
+	enable := false
+	for _, clientID := range clients {
+		state, err := manager.State(resource, clientID)
+		if err != nil {
+			m.err = err
+			m.status = m.translator.Text(i18n.InspectProjectFailed)
+			return
+		}
+		states[clientID] = state
+		if state == userresource.StateIncompatible {
+			continue
+		}
+		compatibleCount++
+		if state != userresource.StateEnabled {
+			enable = true
+		}
+	}
+	if compatibleCount == 0 {
+		m.status = m.translator.Text(i18n.NoCompatibleClients, resource.ID)
+		return
+	}
+	operations := make([]userresource.Operation, 0, compatibleCount)
+	for _, clientID := range clients {
+		state := states[clientID]
+		if state == userresource.StateIncompatible {
+			continue
+		}
+		if (enable && state != userresource.StateEnabled) || (!enable && state == userresource.StateEnabled) {
+			operations = append(operations, userresource.Operation{Resource: resource, Client: clientID, Enabled: enable})
+		}
+	}
+	if err := manager.Apply(operations); err != nil {
+		m.err = err
+		m.status = m.translator.Text(i18n.NoChangesApplied)
+		return
+	}
+	m.err = nil
+	key := i18n.DisabledMCPAllClients
+	if enable {
+		key = i18n.EnabledMCPAllClients
+	}
+	m.status = m.translator.Text(key, resource.ID, compatibleCount)
+}
+
 func (m *Model) togglePromptSelection() {
 	groups := m.promptGroups()
 	if len(groups) == 0 || m.cursor >= len(groups) {
@@ -986,6 +1138,30 @@ func (m Model) startUpdate(all bool) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m Model) startPromptBuild() (tea.Model, tea.Cmd) {
+	if m.tab != tabSystemPrompts || m.updating {
+		return m, nil
+	}
+	groups := m.promptGroups()
+	if len(groups) == 0 || m.cursor >= len(groups) {
+		m.status = m.translator.Text(i18n.NoSelection)
+		return m, nil
+	}
+	group := groups[m.cursor]
+	if group.Mode != client.PromptConcat {
+		m.status = m.translator.Text(i18n.PromptBuildUnavailable, group.ID)
+		return m, nil
+	}
+	m.updating = true
+	m.err = nil
+	m.status = m.translator.Text(i18n.BuildingPrompt, group.ID)
+	manager := m.promptMgr
+	return m, func() tea.Msg {
+		result, err := manager.Build(group)
+		return promptBuildFinishedMsg{result: result, err: err}
+	}
+}
+
 func (m Model) currentClient() catalog.Client {
 	return m.catalog.Clients.IDs()[m.clientIndex]
 }
@@ -1015,11 +1191,71 @@ func (m Model) activeRowCount() int {
 	switch m.tab {
 	case tabMCP:
 		return len(m.mcpNames())
+	case tabCommands, tabHooks, tabAgents, tabOutputStyles:
+		return len(m.userResources())
 	case tabSystemPrompts:
 		return len(m.promptGroups())
 	default:
 		return len(m.rows())
 	}
+}
+
+func (m Model) userResources() []userresource.Resource {
+	catalog := m.commands
+	manager := m.commandMgr
+	if m.tab == tabHooks {
+		catalog = m.hooks
+		manager = m.hookMgr
+	} else if m.tab == tabAgents {
+		catalog = m.agents
+		manager = m.agentMgr
+	} else if m.tab == tabOutputStyles {
+		catalog = m.outputStyles
+		manager = m.outputStyleMgr
+	}
+	query := strings.ToLower(strings.TrimSpace(m.search.Value()))
+	result := make([]userresource.Resource, 0, len(catalog.Resources))
+	for _, resource := range catalog.Resources {
+		if query != "" && !containsFold(resource.ID, query) {
+			continue
+		}
+		if m.filter != filterAll {
+			matches := false
+			for _, clientID := range m.catalog.Clients.IDs() {
+				state, err := manager.State(resource, clientID)
+				if err != nil {
+					matches = m.filter == filterIssues
+					break
+				}
+				if m.filter == filterEnabled && state == userresource.StateEnabled {
+					matches = true
+					break
+				}
+				if m.filter == filterIssues && (state == userresource.StateConflict || state == userresource.StateBroken) {
+					matches = true
+					break
+				}
+			}
+			if !matches {
+				continue
+			}
+		}
+		result = append(result, resource)
+	}
+	return result
+}
+
+func (m Model) userResourceManager() userresource.Manager {
+	if m.tab == tabHooks {
+		return m.hookMgr
+	}
+	if m.tab == tabAgents {
+		return m.agentMgr
+	}
+	if m.tab == tabOutputStyles {
+		return m.outputStyleMgr
+	}
+	return m.commandMgr
 }
 
 func (m Model) mcpNames() []string {
@@ -1067,7 +1303,7 @@ func (m Model) promptGroups() []systemprompt.Group {
 		if m.filter == filterEnabled && (err != nil || state != systemprompt.StateEnabled) {
 			continue
 		}
-		if m.filter == filterIssues && err == nil && state != systemprompt.StateConflict && state != systemprompt.StateBroken && state != systemprompt.StatePartial {
+		if m.filter == filterIssues && err == nil && state != systemprompt.StateConflict && state != systemprompt.StateBroken && state != systemprompt.StatePartial && state != systemprompt.StateStale {
 			continue
 		}
 		result = append(result, group)

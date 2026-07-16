@@ -1,6 +1,6 @@
 ---
 name: skills-switch
-description: Manage Agent Skill source repositories, project-level Skill projections, project-level MCP servers, and user-global system prompts through the skills-switch CLI. Use when the user asks to add, register, update, query, or remove a GitHub or GitLab Skill repository; enable or disable a Skill or source for one or all registered clients in the current project; scaffold a new local Skill; add (including from a pasted JSON block), import, remove, enable, or disable a project MCP server; delete a local Skill or group from the resource catalog; or manage a client system prompt. Trigger on requests such as "add this GitHub skill for all clients", "delete this skill repo", "disable this skill in this project", "create a local skill", "delete this local skill", "add this MCP server", "import this MCP json", "remove this MCP server", "turn off this MCP here", "更新 skills", or equivalent Chinese requests.
+description: Manage Agent Skill source repositories, project-level Skill projections, project-level MCP servers, and user-global commands, hooks, and system prompts through the skills-switch CLI. Use when the user asks to add, register, update, query, or remove a GitHub or GitLab Skill repository; enable or disable a Skill or source for one or all registered clients in the current project; scaffold a new local Skill; add, import, remove, enable, or disable a project MCP server; delete a local Skill or group; or manage a client command, hook, or system prompt. Trigger on requests such as "add this GitHub skill for all clients", "delete this skill repo", "disable this skill in this project", "create a local skill", "add this MCP server", "enable this shared command", "turn off this hook", "更新 skills", or equivalent Chinese requests.
 ---
 
 # Skills Switch
@@ -33,12 +33,15 @@ Use `skills-switch` as the only mutation boundary. Let it preserve unmanaged pro
 
 3. Use the default `~/.agents/resources` catalog unless the user explicitly supplies another resource root.
 4. Read registered client IDs from `status --json` under `clients[].client`. Never hardcode the current built-in client set; adapters are extensible.
-5. Resolve exact source, Skill, and MCP identifiers before mutation:
+5. Resolve exact source, Skill, MCP, command, hook, and prompt identifiers before mutation:
 
    ```bash
    skills-switch source list --json
    skills-switch --project "$PROJECT" skills list --json
    skills-switch --project "$PROJECT" mcp list --json
+   skills-switch commands list --json
+   skills-switch hooks list --json
+   skills-switch prompt list --json
    ```
 
 ## Keep Multi-client Changes Atomic
@@ -208,7 +211,7 @@ skills-switch source update <source-id> --dry-run
 skills-switch source update <source-id>
 ```
 
-Update every clean vendor source by omitting the source ID. The CLI follows each submodule's tracked branch and stops before mutation when a selected source is dirty.
+Update every vendor source by omitting the source ID. Each checkout is a read-only mirror: a real update first hard-resets tracked local edits, then follows the configured branch. Failures are isolated and identify the source, path, operation, and underlying Git error.
 
 Remove a vendor repository only when the user explicitly asks to delete the repository source, not merely disable a project Skill:
 
@@ -257,11 +260,31 @@ System prompt operations are user-global, unlike Skills and MCP servers:
 
 ```bash
 skills-switch prompt list --json
+skills-switch prompt build <concat-group>
 skills-switch prompt enable <group>
 skills-switch prompt disable <group>
 ```
 
-State that scope explicitly before mutation when the request could be mistaken for project-local behavior.
+Prompt groups are model-owned source trees. Never copy or symlink rules between different model groups. Read `mode` from `prompt list --json`: `tree` projects every Markdown file at its relative path, while `concat` compiles the entry file and remaining Markdown files in lexical path order into the managed generated directory, then projects only that generated entry. Use `prompt build` to refresh a concat output without changing enablement. `prompt enable` builds first. Treat `stale` as an issue requiring a rebuild; never edit a generated prompt directly. State the user-global scope explicitly before mutation when the request could be mistaken for project-local behavior.
+
+## Manage User-global Commands and Hooks
+
+Commands and hooks are catalog files under `shared/<path>` or `<client>-only/<path>`. Resolve their logical IDs first, then mutate every requested compatible client in one command:
+
+```bash
+skills-switch commands list --json
+skills-switch commands enable shared/<path> --client <client-1> --client <client-2>
+skills-switch commands disable shared/<path> --client <client-1> --client <client-2>
+
+skills-switch hooks list --json
+skills-switch hooks enable <client>-only/<path> --client <client>
+skills-switch hooks disable <client>-only/<path> --client <client>
+
+skills-switch agents enable <client>-only/<path> --client <client>
+skills-switch output-styles enable claude-only/<path> --client claude
+```
+
+These operations are user-global and preserve unmanaged files. Agents are model-specific; output styles currently have only a Claude adapter. Do not create or remove target symlinks manually.
 
 ## Verify Every Mutation
 
@@ -270,8 +293,12 @@ Run the nearest read command after each change:
 - Skill or source projection: `skills-switch --project "$PROJECT" skills list --json`
 - Local Skill scaffold or deletion: `skills-switch skills list --json` (the id appears or is gone)
 - MCP server projection or definition: `skills-switch --project "$PROJECT" mcp list --json`
+- User-global command: `skills-switch commands list --json`
+- User-global hook: `skills-switch hooks list --json`
+- User-global agent: `skills-switch agents list --json`
+- User-global output style: `skills-switch output-styles list --json`
 - Source repository: `skills-switch source list --json`
-- System prompt: `skills-switch prompt list --json`
+- System prompt: `skills-switch prompt list --json` (enabled concat prompts must not be `stale`)
 
 Finish project mutations with:
 
@@ -279,4 +306,4 @@ Finish project mutations with:
 skills-switch --project "$PROJECT" doctor --json
 ```
 
-Treat a conflict, broken link, incompatible projection, dirty vendor, malformed manifest, or unknown identifier as a hard stop. Report the exact CLI error and preserve the existing state.
+Treat vendor sources as read-only mirrors. A real source update discards tracked local edits with `git reset --hard HEAD` before remote inspection; `--dry-run` never mutates them. In a batch update, isolate reset or Git failures to the affected source, allow independent sources to finish, and report each exact CLI error. Treat conflicts, broken links, incompatible projections, malformed manifests, and unknown identifiers as hard stops for the affected resource.

@@ -11,6 +11,7 @@ import (
 	"github.com/est7/skills-switch-tui/internal/projection"
 	"github.com/est7/skills-switch-tui/internal/systemprompt"
 	"github.com/est7/skills-switch-tui/internal/tui"
+	"github.com/est7/skills-switch-tui/internal/userresource"
 	"github.com/spf13/cobra"
 )
 
@@ -31,11 +32,19 @@ func runTUI(options *rootOptions) error {
 		return err
 	}
 	model := tui.NewModel(runtime.catalog, runtime.projectRoot, runtime.projection, &runtime.manager, runtime.translator, tui.Resources{
-		MCPCatalog:    runtime.mcpCatalog,
-		MCPManager:    runtime.mcpManager,
-		Prompts:       runtime.prompts,
-		PromptManager: runtime.promptMgr,
-		UserHome:      runtime.userHome,
+		MCPCatalog:         runtime.mcpCatalog,
+		MCPManager:         runtime.mcpManager,
+		Prompts:            runtime.prompts,
+		PromptManager:      runtime.promptMgr,
+		Commands:           runtime.commands,
+		CommandManager:     runtime.commandMgr,
+		Hooks:              runtime.hooks,
+		HookManager:        runtime.hookMgr,
+		Agents:             runtime.agents,
+		AgentManager:       runtime.agentMgr,
+		OutputStyles:       runtime.outputStyles,
+		OutputStyleManager: runtime.outputStyleMgr,
+		UserHome:           runtime.userHome,
 	})
 	return tui.Run(model)
 }
@@ -312,7 +321,7 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 		if err != nil {
 			return doctorOutput{}, err
 		}
-		if state != systemprompt.StatePartial && state != systemprompt.StateConflict && state != systemprompt.StateBroken {
+		if state != systemprompt.StatePartial && state != systemprompt.StateConflict && state != systemprompt.StateBroken && state != systemprompt.StateStale {
 			continue
 		}
 		path, err := runtime.catalog.Clients.UserPromptTargetDir(runtime.userHome, group.Client)
@@ -321,6 +330,34 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 		}
 		result.Healthy = false
 		result.Issues = append(result.Issues, doctorIssue{Kind: "system-prompt", Resource: group.ID, Client: string(group.Client), State: string(state), Path: path})
+	}
+	for _, scoped := range []struct {
+		kind    string
+		catalog userresource.Catalog
+		manager userresource.Manager
+	}{
+		{kind: "command", catalog: runtime.commands, manager: runtime.commandMgr},
+		{kind: "hook", catalog: runtime.hooks, manager: runtime.hookMgr},
+		{kind: "agent", catalog: runtime.agents, manager: runtime.agentMgr},
+		{kind: "output-style", catalog: runtime.outputStyles, manager: runtime.outputStyleMgr},
+	} {
+		for _, resource := range scoped.catalog.Resources {
+			for _, clientID := range runtime.catalog.Clients.IDs() {
+				state, err := scoped.manager.State(resource, clientID)
+				if err != nil {
+					return doctorOutput{}, err
+				}
+				if state != userresource.StateConflict && state != userresource.StateBroken {
+					continue
+				}
+				path, err := scoped.manager.TargetPath(resource, clientID)
+				if err != nil {
+					return doctorOutput{}, err
+				}
+				result.Healthy = false
+				result.Issues = append(result.Issues, doctorIssue{Kind: scoped.kind, Resource: resource.ID, Client: string(clientID), State: string(state), Path: path})
+			}
+		}
 	}
 	return result, nil
 }

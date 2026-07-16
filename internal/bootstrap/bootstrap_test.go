@@ -35,6 +35,8 @@ func TestInitializeCreatesResourceSkeletonAndRegistersBundledSkillIdempotently(t
 		filepath.Join(resourcesRoot, "skills", "vendor", "shared"),
 		filepath.Join(resourcesRoot, "mcp", "mcp.json"),
 		filepath.Join(resourcesRoot, "system-prompts"),
+		filepath.Join(resourcesRoot, "commands", "shared"),
+		filepath.Join(resourcesRoot, "hooks", "shared"),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("bootstrap path %s: %v", path, err)

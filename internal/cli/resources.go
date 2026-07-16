@@ -314,6 +314,7 @@ func newPromptCommand(options *rootOptions) *cobra.Command {
 		Args:    cobra.NoArgs,
 	}
 	command.AddCommand(newPromptListCommand(options))
+	command.AddCommand(newPromptBuildCommand(options))
 	command.AddCommand(newPromptToggleCommand(options, true))
 	command.AddCommand(newPromptToggleCommand(options, false))
 	return command
@@ -322,6 +323,7 @@ func newPromptCommand(options *rootOptions) *cobra.Command {
 type promptView struct {
 	ID     string `json:"id"`
 	Client string `json:"client"`
+	Mode   string `json:"mode"`
 	Files  int    `json:"files"`
 	State  string `json:"state"`
 }
@@ -344,7 +346,7 @@ func newPromptListCommand(options *rootOptions) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				result = append(result, promptView{ID: group.ID, Client: string(group.Client), Files: len(group.Files), State: string(state)})
+				result = append(result, promptView{ID: group.ID, Client: string(group.Client), Mode: string(group.Mode), Files: len(group.Files), State: string(state)})
 			}
 			if outputJSON {
 				return writeJSON(command, result)
@@ -360,6 +362,36 @@ func newPromptListCommand(options *rootOptions) *cobra.Command {
 				fmt.Fprintf(writer, "%s\t%s\t%d\t%s\n", item.ID, item.Client, item.Files, item.State)
 			}
 			return writer.Flush()
+		},
+	}
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
+	return command
+}
+
+func newPromptBuildCommand(options *rootOptions) *cobra.Command {
+	var outputJSON bool
+	command := &cobra.Command{
+		Use:   "build <group>",
+		Short: "Build a generated system prompt from its source files",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			runtime, err := loadPromptRuntime(options)
+			if err != nil {
+				return err
+			}
+			group, ok := runtime.prompts.Group(args[0])
+			if !ok {
+				return errors.New(runtime.translator.Text(i18n.UnknownPromptGroup, args[0]))
+			}
+			result, err := runtime.promptMgr.Build(group)
+			if err != nil {
+				return err
+			}
+			if outputJSON {
+				return writeJSON(command, result)
+			}
+			fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.BuiltPrompt, result.GroupID, result.Path, result.Bytes, result.Changed))
+			return nil
 		},
 	}
 	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")

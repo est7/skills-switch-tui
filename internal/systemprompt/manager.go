@@ -1,13 +1,15 @@
 package systemprompt
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"sort"
 
 	"github.com/est7/skills-switch-tui/internal/client"
+	"github.com/est7/skills-switch-tui/internal/linkprojection"
 )
 
 type State string
@@ -18,65 +20,17 @@ const (
 	StatePartial  State = "partial"
 	StateConflict State = "conflict"
 	StateBroken   State = "broken"
+	StateStale    State = "stale"
 )
 
-type Conflict struct {
-	Path   string
-	Reason string
-}
+type Conflict = linkprojection.Conflict
+type ConflictError = linkprojection.ConflictError
 
-type ConflictError struct {
-	Conflicts []Conflict
-}
-
-func (e *ConflictError) Error() string {
-	parts := make([]string, 0, len(e.Conflicts))
-	for _, conflict := range e.Conflicts {
-		parts = append(parts, conflict.Path+": "+conflict.Reason)
-	}
-	return "system prompt conflicts: " + strings.Join(parts, "; ")
-}
-
-type Manager struct {
-	userHome    string
-	clients     client.Registry
-	beforeApply func(change)
-}
-
-func NewManager(userHome string, clients client.Registry) Manager {
-	return Manager{userHome: userHome, clients: clients}
-}
-
-func (m Manager) State(group Group) (State, error) {
-	targetRoot, err := m.clients.UserPromptTargetDir(m.userHome, group.Client)
-	if err != nil {
-		return "", err
-	}
-	enabled := 0
-	for _, file := range group.Files {
-		if info, err := os.Stat(file.SourcePath); err != nil || !info.Mode().IsRegular() {
-			return StateBroken, nil
-		}
-		target := filepath.Join(targetRoot, file.RelativePath)
-		matches, exists, conflict, err := inspectLink(target, file.SourcePath)
-		if err != nil {
-			return "", err
-		}
-		if conflict {
-			return StateConflict, nil
-		}
-		if exists && matches {
-			enabled++
-		}
-	}
-	switch {
-	case enabled == 0:
-		return StateDisabled, nil
-	case enabled == len(group.Files):
-		return StateEnabled, nil
-	default:
-		return StatePartial, nil
-	}
+type BuildResult struct {
+	GroupID string `json:"prompt"`
+	Path    string `json:"path"`
+	Bytes   int    `json:"bytes"`
+	Changed bool   `json:"changed"`
 }
 
 type changeAction int
@@ -92,108 +46,226 @@ type change struct {
 	target string
 }
 
+type Manager struct {
+	userHome    string
+	clients     client.Registry
+	beforeApply func(change)
+}
+
+func NewManager(userHome string, clients client.Registry) Manager {
+	return Manager{userHome: userHome, clients: clients}
+}
+
+func (m Manager) State(group Group) (State, error) {
+	if group.Mode == client.PromptConcat {
+		return m.concatState(group)
+	}
+	files, err := m.projectionFiles([]Group{group})
+	if err != nil {
+		return "", err
+	}
+	state, err := (linkprojection.Manager{Label: "system prompt"}).State(files)
+	return State(state), err
+}
+
+func (m Manager) Build(group Group) (BuildResult, error) {
+	if group.Mode != client.PromptConcat {
+		return BuildResult{}, fmt.Errorf("system prompt group %s uses %s projection and does not need a build", group.ID, group.Mode)
+	}
+	compiled, err := compile(group)
+	if err != nil {
+		return BuildResult{}, err
+	}
+	path := m.GeneratedPath(group)
+	changed, err := writeAtomicallyIfChanged(path, compiled)
+	if err != nil {
+		return BuildResult{}, fmt.Errorf("build system prompt %s at %s: %w", group.ID, path, err)
+	}
+	return BuildResult{GroupID: group.ID, Path: path, Bytes: len(compiled), Changed: changed}, nil
+}
+
+func (m Manager) GeneratedPath(group Group) string {
+	return filepath.Join(m.userHome, ".agents", "generated", "system-prompts", group.ID, group.EntryFile)
+}
+
 func (m Manager) SetEnabled(groups []Group, enabled bool) error {
-	changes := make([]change, 0)
-	conflicts := make([]Conflict, 0)
-	seenTargets := make(map[string]string)
+	if enabled {
+		for _, group := range groups {
+			if group.Mode == client.PromptConcat {
+				if _, err := m.Build(group); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	files, err := m.projectionFiles(groups)
+	if err != nil {
+		return err
+	}
+	links := linkprojection.Manager{Label: "system prompt"}
+	if m.beforeApply != nil {
+		links.BeforeApply = func(next linkprojection.Change) {
+			action := createLink
+			if next.Action == linkprojection.RemoveLink {
+				action = removeLink
+			}
+			m.beforeApply(change{action: action, path: next.Path, target: next.Target})
+		}
+	}
+	return links.SetEnabled(files, enabled)
+}
+
+func (m Manager) projectionFiles(groups []Group) ([]linkprojection.File, error) {
+	files := make([]linkprojection.File, 0)
 	for _, group := range groups {
 		targetRoot, err := m.clients.UserPromptTargetDir(m.userHome, group.Client)
 		if err != nil {
-			return err
+			return nil, err
+		}
+		if group.Mode == client.PromptConcat {
+			legacySources := make([]string, 0, 1)
+			for _, file := range group.Files {
+				if filepath.Clean(file.RelativePath) == filepath.Clean(group.EntryFile) {
+					legacySources = append(legacySources, file.SourcePath)
+					break
+				}
+			}
+			files = append(files, linkprojection.File{
+				SourcePath:        m.GeneratedPath(group),
+				TargetPath:        filepath.Join(targetRoot, group.EntryFile),
+				LegacySourcePaths: legacySources,
+			})
+			continue
 		}
 		for _, file := range group.Files {
-			info, err := os.Stat(file.SourcePath)
-			if err != nil || !info.Mode().IsRegular() {
-				reason := "source file is unavailable"
-				if err != nil {
-					reason += ": " + err.Error()
-				}
-				conflicts = append(conflicts, Conflict{Path: file.SourcePath, Reason: reason})
-				continue
-			}
-			target := filepath.Join(targetRoot, file.RelativePath)
-			if previous, exists := seenTargets[target]; exists && filepath.Clean(previous) != filepath.Clean(file.SourcePath) {
-				conflicts = append(conflicts, Conflict{Path: target, Reason: "multiple prompt sources map to the same target"})
-				continue
-			}
-			seenTargets[target] = file.SourcePath
-			matches, exists, conflict, err := inspectLink(target, file.SourcePath)
-			if err != nil {
-				conflicts = append(conflicts, Conflict{Path: target, Reason: err.Error()})
-				continue
-			}
-			if conflict {
-				conflicts = append(conflicts, Conflict{Path: target, Reason: "target is not this managed symlink"})
-				continue
-			}
-			if enabled && !exists {
-				changes = append(changes, change{action: createLink, path: target, target: file.SourcePath})
-			}
-			if !enabled && exists && matches {
-				changes = append(changes, change{action: removeLink, path: target, target: file.SourcePath})
-			}
+			files = append(files, linkprojection.File{
+				SourcePath: file.SourcePath,
+				TargetPath: filepath.Join(targetRoot, file.RelativePath),
+			})
 		}
 	}
-	if len(conflicts) > 0 {
-		return &ConflictError{Conflicts: conflicts}
-	}
-
-	createdDirs := make([]string, 0)
-	executed := make([]change, 0, len(changes))
-	for _, next := range changes {
-		if m.beforeApply != nil {
-			m.beforeApply(next)
-		}
-		if err := validateChange(next); err != nil {
-			return failApply(err, executed, createdDirs)
-		}
-		if next.action == createLink {
-			created, err := ensureDirectory(filepath.Dir(next.path))
-			if err != nil {
-				return failApply(fmt.Errorf("create system prompt directory: %w", err), executed, createdDirs)
-			}
-			createdDirs = append(createdDirs, created...)
-			if err := validateChange(next); err != nil {
-				return failApply(err, executed, createdDirs)
-			}
-			if err := os.Symlink(next.target, next.path); err != nil {
-				return failApply(fmt.Errorf("create system prompt link %s: %w", next.path, err), executed, createdDirs)
-			}
-		} else if err := os.Remove(next.path); err != nil {
-			return failApply(fmt.Errorf("remove system prompt link %s: %w", next.path, err), executed, createdDirs)
-		}
-		executed = append(executed, next)
-	}
-	return nil
+	return files, nil
 }
 
-func validateChange(next change) error {
-	info, err := os.Stat(next.target)
-	if err != nil || !info.Mode().IsRegular() {
-		reason := "source file changed after preflight"
-		if err != nil {
-			reason += ": " + err.Error()
-		}
-		return &ConflictError{Conflicts: []Conflict{{Path: next.target, Reason: reason}}}
-	}
-	matches, exists, conflict, err := inspectLink(next.path, next.target)
+func (m Manager) concatState(group Group) (State, error) {
+	targetRoot, err := m.clients.UserPromptTargetDir(m.userHome, group.Client)
 	if err != nil {
-		return &ConflictError{Conflicts: []Conflict{{Path: next.path, Reason: "inspect after preflight: " + err.Error()}}}
+		return "", err
 	}
-	valid := next.action == createLink && !exists && !conflict || next.action == removeLink && exists && matches && !conflict
-	if valid {
-		return nil
+	generated := m.GeneratedPath(group)
+	target := filepath.Join(targetRoot, group.EntryFile)
+	matches, exists, conflict, err := inspectLink(target, generated)
+	if err != nil {
+		return "", err
 	}
-	return &ConflictError{Conflicts: []Conflict{{Path: next.path, Reason: "target changed after preflight"}}}
+	if conflict {
+		for _, file := range group.Files {
+			if filepath.Clean(file.RelativePath) != filepath.Clean(group.EntryFile) {
+				continue
+			}
+			legacyMatches, _, legacyConflict, legacyErr := inspectLink(target, file.SourcePath)
+			if legacyErr != nil {
+				return "", legacyErr
+			}
+			if legacyMatches && !legacyConflict {
+				return StateStale, nil
+			}
+			break
+		}
+		return StateConflict, nil
+	}
+	if !exists {
+		return StateDisabled, nil
+	}
+	if !matches {
+		return StateConflict, nil
+	}
+	compiled, err := compile(group)
+	if err != nil {
+		return StateBroken, nil
+	}
+	actual, err := os.ReadFile(generated)
+	if errors.Is(err, os.ErrNotExist) {
+		return StateBroken, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read generated system prompt %s: %w", generated, err)
+	}
+	if !bytes.Equal(actual, compiled) {
+		return StateStale, nil
+	}
+	return StateEnabled, nil
 }
 
-func failApply(applyErr error, executed []change, createdDirs []string) error {
-	rollbackErr := rollbackChanges(executed)
-	cleanupDirectories(createdDirs)
-	if rollbackErr == nil {
-		return applyErr
+func compile(group Group) ([]byte, error) {
+	if group.Mode != client.PromptConcat {
+		return nil, fmt.Errorf("system prompt group %s is not concat", group.ID)
 	}
-	return errors.Join(applyErr, fmt.Errorf("rollback system prompt changes: %w", rollbackErr))
+	files := append([]File(nil), group.Files...)
+	sort.Slice(files, func(i, j int) bool {
+		iEntry := filepath.Clean(files[i].RelativePath) == filepath.Clean(group.EntryFile)
+		jEntry := filepath.Clean(files[j].RelativePath) == filepath.Clean(group.EntryFile)
+		if iEntry != jEntry {
+			return iEntry
+		}
+		return filepath.ToSlash(files[i].RelativePath) < filepath.ToSlash(files[j].RelativePath)
+	})
+	var output bytes.Buffer
+	fmt.Fprintf(&output, "<!-- GENERATED FILE: edit %s and its rules/ directory -->\n", group.ID)
+	fmt.Fprintf(&output, "<!-- Run: skills-switch prompt build %s -->\n\n", group.ID)
+	for _, file := range files {
+		contents, err := os.ReadFile(file.SourcePath)
+		if err != nil {
+			return nil, fmt.Errorf("read system prompt source %s: %w", file.SourcePath, err)
+		}
+		relative := filepath.ToSlash(file.RelativePath)
+		fmt.Fprintf(&output, "<!-- BEGIN: %s -->\n", relative)
+		output.Write(contents)
+		if len(contents) == 0 || contents[len(contents)-1] != '\n' {
+			output.WriteByte('\n')
+		}
+		fmt.Fprintf(&output, "<!-- END: %s -->\n\n", relative)
+	}
+	return output.Bytes(), nil
+}
+
+func writeAtomicallyIfChanged(path string, contents []byte) (bool, error) {
+	existing, err := os.ReadFile(path)
+	if err == nil && bytes.Equal(existing, contents) {
+		return false, nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return false, err
+	}
+	temporary, err := os.CreateTemp(directory, ".prompt-build-*")
+	if err != nil {
+		return false, err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o644); err != nil {
+		temporary.Close()
+		return false, err
+	}
+	if _, err := temporary.Write(contents); err != nil {
+		temporary.Close()
+		return false, err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return false, err
+	}
+	if err := temporary.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func inspectLink(path, source string) (matches, exists, conflict bool, err error) {
@@ -218,70 +290,4 @@ func inspectLink(path, source string) (matches, exists, conflict bool, err error
 		return false, true, true, nil
 	}
 	return true, true, false, nil
-}
-
-func ensureDirectory(path string) ([]string, error) {
-	missing := make([]string, 0)
-	for current := path; ; current = filepath.Dir(current) {
-		info, err := os.Stat(current)
-		if err == nil {
-			if !info.IsDir() {
-				return nil, fmt.Errorf("%s exists and is not a directory", current)
-			}
-			break
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		missing = append(missing, current)
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
-		}
-	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		return nil, err
-	}
-	return missing, nil
-}
-
-func rollbackChanges(changes []change) error {
-	var rollbackErrors []error
-	for index := len(changes) - 1; index >= 0; index-- {
-		next := changes[index]
-		matches, exists, conflict, err := inspectLink(next.path, next.target)
-		if err != nil {
-			rollbackErrors = append(rollbackErrors, fmt.Errorf("inspect %s: %w", next.path, err))
-			continue
-		}
-		if next.action == createLink {
-			if !exists {
-				continue
-			}
-			if conflict || !matches {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("preserve concurrently changed target %s", next.path))
-				continue
-			}
-			if err := os.Remove(next.path); err != nil {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("remove %s: %w", next.path, err))
-			}
-			continue
-		}
-		if exists {
-			if conflict || !matches {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("preserve concurrently changed target %s", next.path))
-			}
-			continue
-		}
-		if err := os.Symlink(next.target, next.path); err != nil {
-			rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", next.path, err))
-		}
-	}
-	return errors.Join(rollbackErrors...)
-}
-
-func cleanupDirectories(paths []string) {
-	for _, path := range paths {
-		_ = os.Remove(path)
-	}
 }

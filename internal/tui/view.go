@@ -10,9 +10,11 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/est7/skills-switch-tui/internal/catalog"
+	"github.com/est7/skills-switch-tui/internal/client"
 	"github.com/est7/skills-switch-tui/internal/i18n"
 	"github.com/est7/skills-switch-tui/internal/projection"
 	"github.com/est7/skills-switch-tui/internal/systemprompt"
+	"github.com/est7/skills-switch-tui/internal/userresource"
 )
 
 const (
@@ -49,7 +51,7 @@ func (m Model) View() tea.View {
 func (m Model) renderHeader() string {
 	scopeLabel := i18n.ProjectLabel
 	scopePath := m.project
-	if m.tab == tabSystemPrompts {
+	if m.tab == tabCommands || m.tab == tabHooks || m.tab == tabAgents || m.tab == tabOutputStyles || m.tab == tabSystemPrompts {
 		scopeLabel = i18n.UserLabel
 		scopePath = m.userHome
 	}
@@ -93,12 +95,43 @@ func (m Model) renderTable() string {
 	switch m.tab {
 	case tabMCP:
 		content = m.renderMCPTable()
+	case tabCommands, tabHooks, tabAgents, tabOutputStyles:
+		content = m.renderUserResourceTable()
 	case tabSystemPrompts:
 		content = m.renderPromptTable()
 	default:
 		content = m.renderSkillsTable()
 	}
 	return m.styles.panel.Width(m.contentWidth()).Render(content)
+}
+
+func (m Model) renderUserResourceTable() string {
+	resources := m.userResources()
+	byID := make(map[string]userresource.Resource, len(resources))
+	labels := make([]string, len(resources))
+	for index, resource := range resources {
+		labels[index] = resource.ID
+		byID[resource.ID] = resource
+	}
+	manager := m.userResourceManager()
+	return m.renderResourceTable(labels, func(name string, clientID catalog.Client) (string, lipgloss.Style) {
+		state, err := manager.State(byID[name], clientID)
+		if err != nil {
+			return "!", m.styles.issue
+		}
+		switch state {
+		case userresource.StateEnabled:
+			return "●", m.styles.enabled
+		case userresource.StateDisabled:
+			return "○", m.styles.disabled
+		case userresource.StateIncompatible:
+			return "·", m.styles.incompatible
+		case userresource.StateBroken:
+			return "×", m.styles.issue
+		default:
+			return "!", m.styles.issue
+		}
+	})
 }
 
 func (m Model) renderSkillsTable() string {
@@ -165,6 +198,8 @@ func (m Model) renderPromptTable() string {
 			return "○", m.styles.disabled
 		case "partial":
 			return "~", m.styles.issue
+		case "stale":
+			return "↻", m.styles.issue
 		default:
 			return "!", m.styles.issue
 		}
@@ -410,6 +445,8 @@ func (m Model) renderDetail() string {
 	switch m.tab {
 	case tabMCP:
 		return m.renderMCPDetail()
+	case tabCommands, tabHooks, tabAgents, tabOutputStyles:
+		return m.renderUserResourceDetail()
 	case tabSystemPrompts:
 		return m.renderPromptDetail()
 	}
@@ -450,6 +487,19 @@ func (m Model) renderDetail() string {
 			compatibility += " · " + m.translator.Text(i18n.MetadataIssueLabel) + ": " + skill.MetadataIssue
 		}
 		lines = append(lines, m.styles.subtle.Render(compatibility))
+	}
+	return m.styles.detail.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) renderUserResourceDetail() string {
+	resources := m.userResources()
+	if len(resources) == 0 || m.cursor >= len(resources) {
+		return m.styles.detail.Width(m.contentWidth()).Render(m.translator.Text(i18n.NoSelection))
+	}
+	resource := resources[m.cursor]
+	lines := []string{
+		m.styles.accent.Render(resource.ID) + "  " + m.styles.subtle.Render(resource.Scope),
+		m.styles.subtle.Render(truncate(resource.SourcePath, m.detailTextWidth())),
 	}
 	return m.styles.detail.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
 }
@@ -542,8 +592,11 @@ func (m Model) renderPromptDetail() string {
 	}
 	group := groups[m.cursor]
 	lines := []string{
-		m.styles.accent.Render(group.ID) + "  " + m.styles.subtle.Render(string(group.Client)),
+		m.styles.accent.Render(group.ID) + "  " + m.styles.subtle.Render(string(group.Client)+" · "+string(group.Mode)),
 		m.styles.subtle.Render(truncate(m.translator.Text(i18n.PromptFileSummary, len(group.Files), group.Path), m.detailTextWidth())),
+	}
+	if group.Mode == client.PromptConcat {
+		lines = append(lines, m.styles.subtle.Render(truncate(m.promptMgr.GeneratedPath(group), m.detailTextWidth())))
 	}
 	return m.styles.detail.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
 }
@@ -552,6 +605,14 @@ func (m Model) tabLabel(tab resourceTab) string {
 	switch tab {
 	case tabMCP:
 		return m.translator.Text(i18n.TabMCP)
+	case tabCommands:
+		return m.translator.Text(i18n.TabCommands)
+	case tabHooks:
+		return m.translator.Text(i18n.TabHooks)
+	case tabAgents:
+		return m.translator.Text(i18n.TabAgents)
+	case tabOutputStyles:
+		return m.translator.Text(i18n.TabOutputStyles)
 	case tabSystemPrompts:
 		return m.translator.Text(i18n.TabSystemPrompts)
 	default:
@@ -582,7 +643,7 @@ func (m Model) renderFooter() string {
 	gap := lipgloss.NewStyle().Background(barBackground).Render("  ")
 	if m.err != nil {
 		statusStyle = m.styles.error.Background(barBackground)
-		status += ": " + m.err.Error()
+		status += ": " + strings.ReplaceAll(m.err.Error(), "\n", "; ")
 		icon = m.styles.error.Background(barBackground).Render("!")
 	}
 	if m.updating || m.deleting {
@@ -607,6 +668,14 @@ func (m Model) tabCount(tab resourceTab) int {
 	switch tab {
 	case tabMCP:
 		return len(m.mcpCatalog.Servers)
+	case tabCommands:
+		return len(m.commands.Resources)
+	case tabHooks:
+		return len(m.hooks.Resources)
+	case tabAgents:
+		return len(m.agents.Resources)
+	case tabOutputStyles:
+		return len(m.outputStyles.Resources)
 	case tabSystemPrompts:
 		return len(m.prompts.Groups)
 	default:

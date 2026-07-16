@@ -18,10 +18,12 @@ type File struct {
 }
 
 type Group struct {
-	ID     string
-	Client client.ID
-	Path   string
-	Files  []File
+	ID        string
+	Client    client.ID
+	Path      string
+	Mode      client.PromptMode
+	EntryFile string
+	Files     []File
 }
 
 type Catalog struct {
@@ -60,7 +62,11 @@ func Discover(root string, clients client.Registry) (Catalog, error) {
 		if _, err := clients.UserPromptTargetDir(".", clientID); err != nil {
 			return Catalog{}, fmt.Errorf("system prompt directory %q: %w", entry.Name(), err)
 		}
-		group, err := discoverGroup(filepath.Join(absRoot, entry.Name()), entry.Name(), clientID)
+		mode, entryFile, err := clients.UserPromptAdapter(clientID)
+		if err != nil {
+			return Catalog{}, fmt.Errorf("system prompt directory %q: %w", entry.Name(), err)
+		}
+		group, err := discoverGroup(filepath.Join(absRoot, entry.Name()), entry.Name(), clientID, mode, entryFile)
 		if err != nil {
 			return Catalog{}, err
 		}
@@ -71,8 +77,8 @@ func Discover(root string, clients client.Registry) (Catalog, error) {
 	return loaded, nil
 }
 
-func discoverGroup(path, id string, clientID client.ID) (Group, error) {
-	group := Group{ID: id, Client: clientID, Path: path}
+func discoverGroup(path, id string, clientID client.ID, mode client.PromptMode, entryFile string) (Group, error) {
+	group := Group{ID: id, Client: clientID, Path: path, Mode: mode, EntryFile: filepath.FromSlash(entryFile)}
 	err := filepath.WalkDir(path, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -107,5 +113,17 @@ func discoverGroup(path, id string, clientID client.ID) (Group, error) {
 		return Group{}, fmt.Errorf("system prompt group %s has no Markdown files", id)
 	}
 	sort.Slice(group.Files, func(i, j int) bool { return group.Files[i].RelativePath < group.Files[j].RelativePath })
+	if group.Mode == client.PromptConcat {
+		foundEntry := false
+		for _, file := range group.Files {
+			if filepath.Clean(file.RelativePath) == filepath.Clean(group.EntryFile) {
+				foundEntry = true
+				break
+			}
+		}
+		if !foundEntry {
+			return Group{}, fmt.Errorf("system prompt group %s is missing concat entry source %s", id, entryFile)
+		}
+	}
 	return group, nil
 }

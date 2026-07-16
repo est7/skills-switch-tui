@@ -32,3 +32,19 @@ func (l Layout) MCPCatalogFile() string {
 func (l Layout) SystemPromptsRoot() string {
 	return filepath.Join(l.Root, "system-prompts")
 }
+
+func (l Layout) CommandsRoot() string {
+	return filepath.Join(l.Root, "commands")
+}
+
+func (l Layout) HooksRoot() string {
+	return filepath.Join(l.Root, "hooks")
+}
+
+func (l Layout) AgentsRoot() string {
+	return filepath.Join(l.Root, "agents")
+}
+
+func (l Layout) OutputStylesRoot() string {
+	return filepath.Join(l.Root, "output-styles")
+}
