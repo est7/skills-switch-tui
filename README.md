@@ -1,6 +1,6 @@
 # skills-switch
 
-`skills-switch` manages project-local Skills, MCP servers, commands, and hooks plus user-global agents, output styles, and system prompts from a central resource catalog. There is no per-project manifest to drift away from the real client files.
+`skills-switch` manages mutually exclusive project or user-global Skills, project-local MCP servers, commands, and hooks, plus user-global agents, output styles, and system prompts from a central resource catalog. There is no per-project manifest to drift away from the real client files.
 
 The TUI is built with Bubble Tea v2, Bubbles v2, and Lip Gloss v2. Human-facing CLI and TUI text supports English and Simplified Chinese.
 
@@ -144,7 +144,7 @@ skills-switch skills enable <skill-id> --client claude --client codex --scope gl
 skills-switch mcp import '{"mcpServers":{"context7":{"command":"npx","args":["-y","ctx7"]}}}'
 skills-switch mcp enable context7 --client claude
 
-# 6. project user-global files (not project-local)
+# 6. project commands/hooks and a user-global system prompt
 skills-switch commands enable shared/remember.md --client claude --client codex
 skills-switch hooks enable claude-only/audit.sh --client claude
 skills-switch prompt enable claude-prompt
@@ -254,9 +254,13 @@ skills-switch source update vendor-shared/worktrunk
 skills-switch source remove vendor-shared/worktrunk
 ```
 
-Launching the TUI never updates submodules automatically. Press `u` for the selected vendor source, `U` for every vendor source, or use `source update` without a source ID. Vendor submodules are read-only mirrors: a real update first runs `git reset --hard HEAD` in each selected source, discarding tracked local edits before remote inspection. `--dry-run` remains non-mutating. Batch updates isolate failures per source, so a reset or Git failure in one repository does not block independent repositories. Each reported error includes the source id, repository path, failed operation, and underlying Git detail. After an update, the catalog is rediscovered from the new upstream snapshot; added and removed Skills immediately change each source's enabled/total counts. `source remove` still refuses dirty submodules and updates the gitlink, `.gitmodules`, and catalog policy as one managed operation.
+Launching the TUI never updates submodules automatically. Press `u` for the selected vendor source, `U` for every vendor source, or use `source update` without a source ID. Vendor submodules are read-only mirrors: before remote inspection, a real update runs `git reset --hard HEAD` and `git clean -ffdx` in each selected checkout, discarding tracked, untracked, and ignored local changes. It then reads the exact configured branch tip, fetches that ref, resets to the advertised SHA, and verifies the resulting `HEAD`. A missing registered checkout is initialized by a real update. `--dry-run` remains non-mutating.
 
-When an update drops a Skill the current project had enabled, its projection is left pointing at a target that no longer exists. `source update` reconciles this automatically: after a successful update it removes such dangling managed links in the current project, scoped to the sources that changed, and reports them (its `--json` output is an object `{updates, pruned}`). Cleanup is best-effort — it never fails the update, and does nothing when the command is not run inside a project. A Skill that is merely no longer discovered but still present on disk is never removed. Run `skills prune` at any time to review these orphaned projections (`--yes` removes them), and `doctor` now reports them as unhealthy.
+Batch updates isolate failures per source, so a reset, clean, or Git failure in one repository does not block independent repositories. Source Git failures include the source id, repository path, failed operation, and underlying Git detail. After an update, the catalog is rediscovered from the new upstream snapshot; added and removed Skills immediately change each source's enabled/total counts.
+
+When an update removes a Skill that was enabled, `source update` reconciles the changed source automatically: it removes dangling catalog-managed links from both the current project scope (when available) and user-global scope. A Skill that is merely no longer discovered but still exists on disk is never removed. Reconciliation failures remain observable and make the command fail instead of silently leaving state inconsistent. JSON output is an object `{updates, pruned, failures}`; every pruned link includes its scope, source-attributed failures include source/path/operation fields, and every failure includes its error. Run `skills prune` at any time to review other orphaned projections (`--yes` removes them), and `doctor` reports them as unhealthy.
+
+`source remove` first retires the source's catalog-managed projections in the current project and user-global scopes, then removes the clean vendor submodule, gitlink, `.gitmodules` entry, and catalog policy. If source removal fails, the retired projections are restored. The command still refuses a dirty vendor checkout; other projects may retain links to the removed source and must be handled in their own scope.
 
 ## Operations
 
@@ -301,7 +305,7 @@ Skills from different active sources may intentionally share a name. They are al
 
 Skill scope is selected with `--scope project|global` and defaults to `project`. The two scopes are mutually exclusive by final Skill name and client target: a global projection locks the matching project projection, so project enablement is rejected instead of creating a redundant shadow link. Promoting a catalog-managed project Skill to global atomically removes its project link and creates the user-global link. Disabling the global projection unlocks project scope. `doctor` reports historical global/project duplicates with both the scope and exact path. Because Codex's native `~/.agents/skills` target sits beside the default `~/.agents/resources` catalog, `init` keeps the derived `skills/` directory out of the catalog repository through `.gitignore`.
 
-MCP ownership is entry-level. Enabling adds only the selected server; disabling removes it only when the live definition is semantically identical to the catalog definition. Unknown servers, sibling settings, JSONC comments, TOML comments, ordering, and config-file symlinks are preserved. A same-name different definition is an unmanaged conflict and is never overwritten.
+MCP ownership is entry-level. Enabling adds only the selected server; disabling removes it only when the live definition is semantically identical to the catalog definition. Unknown servers, sibling settings, JSONC comments, TOML comments, ordering, and config-file symlinks are preserved. A same-name different definition is an unmanaged conflict and is never overwritten. New or imported definitions reject plaintext secret-like environment variables or headers; store values as `${ENV_VAR}` references instead. Multi-server imports validate and commit as one catalog transaction.
 
 Commands and hooks use the same scoped catalog convention: `shared/<path>` supports every client with a registered target directory, while `<client>-only/<path>` supports only that client. Files are recursively projected at the same relative path. Multi-client changes preflight the whole selected set and roll back on apply failure; an unmanaged file or foreign symlink is a conflict and is never overwritten.
 

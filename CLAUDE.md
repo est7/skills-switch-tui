@@ -4,9 +4,9 @@
 
 `skills-switch` is a Go CLI and Bubble Tea TUI for managing:
 
-- project-local Agent Skill projections;
-- project-local MCP server entries;
-- user-global system prompt projections;
+- mutually exclusive project or user-global Agent Skill projections;
+- project-local MCP server entries, commands, and hooks;
+- user-global agents, output styles, and system prompt projections;
 - Git-submodule-backed Skill source repositories.
 
 Repository path: `/Users/est9/EstProjects/skills-switch-tui`
@@ -23,19 +23,21 @@ Related paths:
 
 CLI subcommands are the first-class interface. Every mutating capability lands in this order:
 
-1. Core package operation (`internal/catalog`, `internal/mcp`, `internal/projection`, `internal/source`) — the single source of truth for the mutation and its invariants.
-2. A first-class CLI subcommand exposing it (human + `--json`), grouped under its resource noun (`skills`, `mcp`, `source`, `prompt`).
+1. Core package operation (`internal/catalog`, `internal/mcp`, `internal/projection`, `internal/source`, `internal/userresource`, `internal/systemprompt`) — the single source of truth for the mutation and its invariants.
+2. A first-class CLI subcommand exposing it (human + `--json`), grouped under its resource noun (`skills`, `mcp`, `source`, `commands`, `hooks`, `agents`, `output-styles`, `prompt`).
 3. Any UI (the TUI) drives the same core operation — it never reimplements mutation logic.
 
 Build the CLI path first, then wrap it in UI. A capability that exists only in the TUI is incomplete: agents drive this tool through the CLI and cannot use interactive keys.
 
 ## Product Invariants
 
-- Skills and MCP servers are project-local. System prompts are user-global.
+- Skills support mutually exclusive project and user-global scopes. MCP servers, commands, and hooks are project-local; agents, output styles, and system prompts are user-global.
 - `~/.agents/resources` is the resource SSOT. Do not add a per-project manifest.
-- Project mutations append or remove only managed entries. Preserve unrelated files, symlinks, MCP entries, comments, and ordering.
+- Mutations append or remove only managed entries. Preserve unrelated files, symlinks, MCP entries, comments, and ordering.
 - Apply multi-client changes atomically: preflight every client before changing any client.
+- Treat vendor checkouts as disposable read-only mirrors. A real update resets tracked changes, cleans untracked and ignored files, and checks out the exact configured remote branch SHA before discovery.
 - Treat registered clients as data from `resources/registry.yaml`, not a closed enum.
+- Treat file-resource kind metadata as data from `internal/userresource.Descriptor`, not duplicated CLI/TUI switches.
 - Keep `local`, `archived`, and `vendor` source ownership distinct. Vendor repositories remain Git submodules.
 - Do not copy the bundled `skills-switch` Skill into `local/shared`; `skills-switch init` registers this repository as a vendor source.
 - Keep English and Simplified Chinese CLI/TUI strings in sync.
@@ -48,10 +50,14 @@ Build the CLI path first, then wrap it in UI. A capability that exists only in t
 - `internal/bootstrap`: idempotent `skills-switch init` orchestration.
 - `internal/catalog`: Skill discovery, manifest priority, and catalog policy.
 - `internal/client`: extensible client adapter registry.
-- `internal/projection`: atomic project Skill symlink operations.
+- `internal/projection`: project/global Skill projection policy, mutual exclusion, retirement, and orphan reconciliation.
+- `internal/linktransaction`: common validated, reversible symlink transaction engine.
+- `internal/linkprojection`: file-projection planning adapter over link transactions.
 - `internal/mcp`: MCP catalog and surgical client-config mutations.
-- `internal/systemprompt`: user-global prompt discovery and projection.
-- `internal/source`: vendor submodule add, update, and remove operations.
+- `internal/userresource`: descriptor-driven command, hook, agent, and output-style discovery and projection.
+- `internal/systemprompt`: user-global prompt discovery, concat builds, and projection.
+- `internal/source`: vendor Git mechanics plus cross-catalog project/global projection lifecycle.
+- `internal/filelock`: inter-process locks for persistent catalog and configuration mutations.
 - `internal/tui`: Bubble Tea model, keyboard behavior, Lip Gloss themes, and rendering.
 - `internal/i18n`: shared English and Chinese messages.
 
@@ -75,7 +81,7 @@ Run against the real catalog without mutating it:
   tui
 ```
 
-The TUI uses `Space` for the selected client, `a` for every compatible client (Skills, sources, and MCP servers), `n` for the context-appropriate "new" dialog (add repo / create local Skill / paste MCP JSON, built on `charm.land/huh/v2`), `d` to delete with confirmation, and `L` to switch between English and Chinese.
+The TUI uses `Space` for the selected client; `a` for every compatible client; `s` for project/global Skill scope; `u`/`U` to update one/all vendor sources; `b` to build the selected concat prompt; `n` for the context-appropriate "new" dialog (add repo / create local Skill / paste MCP JSON, built on `charm.land/huh/v2`); `d` to delete with confirmation; and `L` to switch between English and Chinese.
 
 Validate the bundled Skill and marketplace after changing either:
 

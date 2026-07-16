@@ -41,6 +41,8 @@ Use `skills-switch` as the only mutation boundary. Let it preserve unmanaged pro
    skills-switch --project "$PROJECT" mcp list --json
    skills-switch commands list --json
    skills-switch hooks list --json
+   skills-switch agents list --json
+   skills-switch output-styles list --json
    skills-switch prompt list --json
    ```
 
@@ -192,13 +194,13 @@ Register a new server definition in the catalog SSOT. Transport is inferred from
 ```bash
 # stdio server
 skills-switch mcp add <server> \
-  --command <exe> --arg <a1> --arg <a2> --env KEY=VALUE --cwd <dir>
+  --command <exe> --arg <a1> --arg <a2> --env API_TOKEN='${API_TOKEN}' --cwd <dir>
 
 # http server
-skills-switch mcp add <server> --url https://<host>/mcp --header KEY=VALUE
+skills-switch mcp add <server> --url https://<host>/mcp --header 'Authorization=${MCP_AUTHORIZATION}'
 ```
 
-When the user pastes a client-style JSON block, register it with `mcp import` instead of translating it into flags. It accepts either a full `{"mcpServers": {...}}` wrapper (names come from the keys; several servers may be added at once) or a single bare object such as `{"command": "npx", ...}` / `{"url": "..."}` (supply the name with `--name`). Read the JSON from an argument, `--file`, or standard input:
+When the user pastes a client-style JSON block, register it with `mcp import` instead of translating it into flags. It accepts either a full `{"mcpServers": {...}}` wrapper (names come from the keys; several servers are validated and added in one catalog transaction) or a single bare object such as `{"command": "npx", ...}` / `{"url": "..."}` (supply the name with `--name`). Read the JSON from an argument, `--file`, or standard input. Never store plaintext credentials in secret-like environment or header fields; new definitions must use `${ENV_VAR}` references.
 
 ```bash
 # full wrapper (names from keys)
@@ -229,7 +231,9 @@ skills-switch source update <source-id> --dry-run
 skills-switch source update <source-id>
 ```
 
-Update every vendor source by omitting the source ID. Each checkout is a read-only mirror: a real update first hard-resets tracked local edits, then follows the configured branch. Failures are isolated and identify the source, path, operation, and underlying Git error.
+Update every vendor source by omitting the source ID. Each checkout is a read-only mirror: before remote inspection, a real update runs `git reset --hard HEAD` and `git clean -ffdx`, discarding tracked, untracked, and ignored local changes. It initializes a missing registered checkout, reads the exact configured branch tip, fetches that ref, resets to the advertised SHA, and verifies `HEAD`. `--dry-run` is non-mutating. Failures are isolated per source and identify the source, path, operation, and underlying Git error.
+
+After changed sources are rediscovered, the command removes dangling catalog-managed Skill links from the current project scope (when available) and user-global scope. Reconciliation failures are command failures, not warnings. JSON output contains `updates`, scope-bearing `pruned` links, and structured `failures`.
 
 Remove a vendor repository only when the user explicitly asks to delete the repository source, not merely disable a project Skill:
 
@@ -237,7 +241,7 @@ Remove a vendor repository only when the user explicitly asks to delete the repo
 skills-switch source remove <source-id>
 ```
 
-This removes the clean vendor submodule and its catalog policy. Before removal, report that projects outside the current one may still reference the source; disable known projections first when the user includes them in scope. Never force-remove a dirty source.
+This first retires catalog-managed projections in the current project and user-global scopes, then removes the clean vendor submodule and its catalog policy. If Git or catalog removal fails, the retired projections are restored. Report that projects outside the current one may still reference the source and must be handled in their own scope. Never force-remove a dirty source.
 
 ## Delete Local Skills or Groups
 
@@ -274,7 +278,7 @@ It refuses to overwrite an existing Skill and rejects invalid names. After scaff
 
 ## Manage User-global System Prompts
 
-System prompt operations are user-global, unlike Skills and MCP servers:
+System prompt operations are user-global. Skills have an explicit project/global scope; MCP servers, commands, and hooks are project-scoped:
 
 ```bash
 skills-switch prompt list --json
@@ -285,7 +289,7 @@ skills-switch prompt disable <group>
 
 Prompt groups are model-owned source trees. Never copy or symlink rules between different model groups. Read `mode` from `prompt list --json`: `tree` projects every Markdown file at its relative path, while `concat` compiles the entry file and remaining Markdown files in lexical path order into the managed generated directory, then projects only that generated entry. Use `prompt build` to refresh a concat output without changing enablement. `prompt enable` builds first. Treat `stale` as an issue requiring a rebuild; never edit a generated prompt directly. State the user-global scope explicitly before mutation when the request could be mistaken for project-local behavior.
 
-## Manage User-global Commands and Hooks
+## Manage Commands, Hooks, Agents, and Output Styles
 
 Commands and hooks are catalog files under `shared/<path>` or `<client>-only/<path>`. Resolve their logical IDs first, then mutate every requested compatible client in one command:
 
@@ -324,4 +328,4 @@ Finish project mutations with:
 skills-switch --project "$PROJECT" doctor --json
 ```
 
-Treat vendor sources as read-only mirrors. A real source update discards tracked local edits with `git reset --hard HEAD` before remote inspection; `--dry-run` never mutates them. In a batch update, isolate reset or Git failures to the affected source, allow independent sources to finish, and report each exact CLI error. Treat conflicts, broken links, incompatible projections, malformed manifests, and unknown identifiers as hard stops for the affected resource.
+Treat vendor sources as read-only mirrors. Before remote inspection, a real source update discards tracked, untracked, and ignored local changes with `git reset --hard HEAD` plus `git clean -ffdx`; `--dry-run` never mutates them. In a batch update, isolate reset, clean, and other Git failures to the affected source, allow independent sources to finish, and report every Git or reconciliation error exactly. Treat conflicts, broken links, incompatible projections, malformed manifests, and unknown identifiers as hard stops for the affected resource.
