@@ -43,19 +43,8 @@ func (e *ConflictError) Error() string {
 	return e.Label + " conflicts: " + strings.Join(parts, "; ")
 }
 
-type Action = linktransaction.Action
-
-const (
-	CreateLink  = linktransaction.Create
-	RemoveLink  = linktransaction.Remove
-	ReplaceLink = linktransaction.Replace
-)
-
-type Change = linktransaction.Change
-
 type Manager struct {
-	Label       string
-	BeforeApply func(Change)
+	Label string
 }
 
 func (m Manager) State(files []File) (State, error) {
@@ -86,7 +75,7 @@ func (m Manager) State(files []File) (State, error) {
 }
 
 func (m Manager) SetEnabled(files []File, enabled bool) error {
-	changes := make([]Change, 0)
+	changes := make([]linktransaction.Change, 0)
 	conflicts := make([]Conflict, 0)
 	seenTargets := make(map[string]string)
 	for _, file := range files {
@@ -111,7 +100,7 @@ func (m Manager) SetEnabled(files []File, enabled bool) error {
 			conflicts = append(conflicts, Conflict{Path: file.TargetPath, Reason: err.Error()})
 			continue
 		}
-		legacySource, legacyManaged, legacyErr := matchingLegacySource(file.TargetPath, file.LegacySourcePaths)
+		_, legacyManaged, legacyErr := matchingLegacySource(file.TargetPath, file.LegacySourcePaths)
 		if legacyErr != nil {
 			conflicts = append(conflicts, Conflict{Path: file.TargetPath, Reason: legacyErr.Error()})
 			continue
@@ -127,14 +116,14 @@ func (m Manager) SetEnabled(files []File, enabled bool) error {
 				continue
 			}
 			if enabled {
-				changes = append(changes, Change{Action: ReplaceLink, Path: file.TargetPath, Target: file.SourcePath, OriginalTarget: originalTarget})
+				changes = append(changes, linktransaction.Replace(file.TargetPath, originalTarget, file.SourcePath))
 			} else {
-				changes = append(changes, Change{Action: RemoveLink, Path: file.TargetPath, Target: legacySource, OriginalTarget: originalTarget})
+				changes = append(changes, linktransaction.Remove(file.TargetPath, originalTarget))
 			}
 			continue
 		}
 		if enabled && !exists {
-			changes = append(changes, Change{Action: CreateLink, Path: file.TargetPath, Target: file.SourcePath})
+			changes = append(changes, linktransaction.Create(file.TargetPath, file.SourcePath))
 		}
 		if !enabled && exists && matches {
 			originalTarget, readErr := os.Readlink(file.TargetPath)
@@ -142,7 +131,7 @@ func (m Manager) SetEnabled(files []File, enabled bool) error {
 				conflicts = append(conflicts, Conflict{Path: file.TargetPath, Reason: "read managed link: " + readErr.Error()})
 				continue
 			}
-			changes = append(changes, Change{Action: RemoveLink, Path: file.TargetPath, Target: file.SourcePath, OriginalTarget: originalTarget})
+			changes = append(changes, linktransaction.Remove(file.TargetPath, originalTarget))
 		}
 	}
 	if len(conflicts) > 0 {
@@ -151,13 +140,12 @@ func (m Manager) SetEnabled(files []File, enabled bool) error {
 
 	engine := linktransaction.Engine{
 		Label:       m.label(),
-		BeforeApply: m.BeforeApply,
 		MatchTarget: linktransaction.EquivalentTarget,
 		Conflict: func(path, reason string) error {
 			return m.conflictError([]Conflict{{Path: path, Reason: reason}})
 		},
-		ValidateSource: func(next Change) error {
-			info, err := os.Stat(next.Target)
+		ValidateTarget: func(target string) error {
+			info, err := os.Stat(target)
 			if err == nil && info.Mode().IsRegular() {
 				return nil
 			}
@@ -165,7 +153,7 @@ func (m Manager) SetEnabled(files []File, enabled bool) error {
 			if err != nil {
 				reason += ": " + err.Error()
 			}
-			return m.conflictError([]Conflict{{Path: next.Target, Reason: reason}})
+			return m.conflictError([]Conflict{{Path: target, Reason: reason}})
 		},
 	}
 	_, err := engine.Execute(changes)

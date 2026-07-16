@@ -17,7 +17,6 @@ type Manager struct {
 	userHome        string
 	clients         client.Registry
 	providersByPath map[string]catalog.Skill
-	beforeApply     func(change)
 }
 
 func New(projectRoot string, loaded catalog.Catalog) Manager {
@@ -362,26 +361,24 @@ func (m Manager) Apply(operations []Operation) error {
 func (m Manager) executeChanges(changes []change) (linktransaction.Applied, error) {
 	transactionChanges := make([]linktransaction.Change, 0, len(changes))
 	for _, next := range changes {
-		action := linktransaction.Create
-		if next.action == removeLink {
-			action = linktransaction.Remove
-		} else if next.action == replaceLink {
-			action = linktransaction.Replace
+		var transactionChange linktransaction.Change
+		switch next.action {
+		case createLink:
+			transactionChange = linktransaction.Create(next.path, next.target)
+		case removeLink:
+			transactionChange = linktransaction.Remove(next.path, next.originalTarget)
+		case replaceLink:
+			transactionChange = linktransaction.Replace(next.path, next.originalTarget, next.target)
 		}
-		transactionChanges = append(transactionChanges, linktransaction.Change{
-			Action:         action,
-			Path:           next.path,
-			Target:         next.target,
-			OriginalTarget: next.originalTarget,
-		})
+		transactionChanges = append(transactionChanges, transactionChange)
 	}
 	engine := linktransaction.Engine{
 		Label: "skill projection",
 		Conflict: func(path, reason string) error {
 			return &ConflictError{Conflicts: []Conflict{{Path: path, Reason: reason}}}
 		},
-		ValidateSource: func(next linktransaction.Change) error {
-			info, err := os.Stat(filepath.Join(next.Target, "SKILL.md"))
+		ValidateTarget: func(target string) error {
+			info, err := os.Stat(filepath.Join(target, "SKILL.md"))
 			if err == nil && info.Mode().IsRegular() {
 				return nil
 			}
@@ -389,19 +386,8 @@ func (m Manager) executeChanges(changes []change) (linktransaction.Applied, erro
 			if err != nil {
 				reason += ": " + err.Error()
 			}
-			return &ConflictError{Conflicts: []Conflict{{Path: next.Target, Reason: reason}}}
+			return &ConflictError{Conflicts: []Conflict{{Path: target, Reason: reason}}}
 		},
-	}
-	if m.beforeApply != nil {
-		engine.BeforeApply = func(next linktransaction.Change) {
-			action := createLink
-			if next.Action == linktransaction.Remove {
-				action = removeLink
-			} else if next.Action == linktransaction.Replace {
-				action = replaceLink
-			}
-			m.beforeApply(change{action: action, path: next.Path, target: next.Target, originalTarget: next.OriginalTarget})
-		}
 	}
 	return engine.Execute(transactionChanges)
 }

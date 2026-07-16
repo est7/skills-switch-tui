@@ -25,9 +25,9 @@ func TestExecuteAndRestoreAllActions(t *testing.T) {
 	}
 
 	applied, err := (Engine{Label: "test"}).Execute([]Change{
-		{Action: Create, Path: createPath, Target: newCreate},
-		{Action: Remove, Path: removePath, Target: oldRemove, OriginalTarget: oldRemove},
-		{Action: Replace, Path: replacePath, Target: newReplace, OriginalTarget: oldReplace},
+		Create(createPath, newCreate),
+		Remove(removePath, oldRemove),
+		Replace(replacePath, oldReplace, newReplace),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -51,8 +51,8 @@ func TestRollbackPreservesConcurrentlyChangedTarget(t *testing.T) {
 	second := filepath.Join(root, "second")
 	engine := Engine{
 		Label: "test",
-		BeforeApply: func(next Change) {
-			if next.Path != second {
+		beforeApply: func(next Change) {
+			if next.path != second {
 				return
 			}
 			if err := os.Remove(first); err != nil {
@@ -67,8 +67,8 @@ func TestRollbackPreservesConcurrentlyChangedTarget(t *testing.T) {
 		},
 	}
 	_, err := engine.Execute([]Change{
-		{Action: Create, Path: first, Target: filepath.Join(root, "source-one")},
-		{Action: Create, Path: second, Target: filepath.Join(root, "source-two")},
+		Create(first, filepath.Join(root, "source-one")),
+		Create(second, filepath.Join(root, "source-two")),
 	})
 	if err == nil || !strings.Contains(err.Error(), "preserve concurrently changed target") {
 		t.Fatalf("Execute error = %v, want concurrent-change rollback error", err)
@@ -79,6 +79,40 @@ func TestRollbackPreservesConcurrentlyChangedTarget(t *testing.T) {
 	}
 	if string(contents) != "user-owned\n" {
 		t.Fatalf("first contents = %q", contents)
+	}
+}
+
+func TestRemovePreservesTargetChangedBeforeApply(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "managed")
+	expected := filepath.Join(root, "source")
+	if err := os.Symlink(expected, path); err != nil {
+		t.Fatal(err)
+	}
+	engine := Engine{
+		Label: "test",
+		beforeApply: func(next Change) {
+			if next.path != path {
+				return
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("user-owned\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+
+	if _, err := engine.Execute([]Change{Remove(path, expected)}); err == nil {
+		t.Fatal("Remove succeeded after target changed")
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "user-owned\n" {
+		t.Fatalf("replacement contents = %q", contents)
 	}
 }
 
@@ -96,16 +130,38 @@ func TestEquivalentTargetMatchesRelativeLink(t *testing.T) {
 	if err := os.Symlink(relative, path); err != nil {
 		t.Fatal(err)
 	}
-	_, err = (Engine{MatchTarget: EquivalentTarget}).Execute([]Change{{
-		Action:         Remove,
-		Path:           path,
-		Target:         target,
-		OriginalTarget: relative,
-	}})
+	_, err = (Engine{MatchTarget: EquivalentTarget}).Execute([]Change{Remove(path, relative)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertMissing(t, path)
+}
+
+func TestExecuteRejectsChangeNotBuiltByConstructor(t *testing.T) {
+	_, err := (Engine{Label: "test"}).Execute([]Change{{}})
+	if err == nil || !strings.Contains(err.Error(), "must be created with Create, Remove, or Replace") {
+		t.Fatalf("Execute error = %v, want invalid Change error", err)
+	}
+}
+
+func TestExecuteRejectsIncompleteConstructedChanges(t *testing.T) {
+	tests := []struct {
+		name   string
+		change Change
+	}{
+		{name: "create path", change: Create("", "/source")},
+		{name: "create target", change: Create("/link", "")},
+		{name: "remove expected target", change: Remove("/link", "")},
+		{name: "replace expected target", change: Replace("/link", "", "/new")},
+		{name: "replace new target", change: Replace("/link", "/old", "")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := (Engine{Label: "test"}).Execute([]Change{test.change}); err == nil {
+				t.Fatalf("Execute(%s) succeeded", test.name)
+			}
+		})
+	}
 }
 
 func assertTarget(t *testing.T, path, want string) {

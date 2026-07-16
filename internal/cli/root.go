@@ -496,22 +496,6 @@ func activeSources(loaded catalog.Catalog) []catalog.Source {
 	return sources
 }
 
-// autoPruneAfterUpdate is retained as a narrow test adapter. Production CLI and
-// TUI update paths call Lifecycle.Update directly, while this helper exercises
-// the same shared reconciliation contract against an already-updated catalog.
-func autoPruneAfterUpdate(options *rootOptions, results []source.UpdateResult) ([]projection.Orphan, error) {
-	base, err := loadCatalogRuntime(options)
-	if err != nil {
-		return nil, err
-	}
-	lifecycle, err := sourceLifecycle(options, base)
-	if err != nil {
-		return nil, err
-	}
-	outcome, err := lifecycle.ReconcileUpdated(results)
-	return outcome.Pruned, err
-}
-
 func resolveResourcesRoot(configured string) (string, error) {
 	if configured != "" {
 		return filepath.Abs(configured)

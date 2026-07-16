@@ -11,19 +11,32 @@ import (
 	"strings"
 )
 
-type Action int
+type action int
 
 const (
-	Create Action = iota
-	Remove
-	Replace
+	invalidAction action = iota
+	createAction
+	removeAction
+	replaceAction
 )
 
 type Change struct {
-	Action         Action
-	Path           string
-	Target         string
-	OriginalTarget string
+	action         action
+	path           string
+	target         string
+	expectedTarget string
+}
+
+func Create(path, target string) Change {
+	return Change{action: createAction, path: path, target: target}
+}
+
+func Remove(path, expectedTarget string) Change {
+	return Change{action: removeAction, path: path, expectedTarget: expectedTarget}
+}
+
+func Replace(path, expectedTarget, target string) Change {
+	return Change{action: replaceAction, path: path, target: target, expectedTarget: expectedTarget}
 }
 
 // TargetMatcher decides whether an on-disk symlink target is the target a
@@ -32,10 +45,10 @@ type TargetMatcher func(linkPath, actualTarget, expectedTarget string) bool
 
 type Engine struct {
 	Label          string
-	BeforeApply    func(Change)
-	ValidateSource func(Change) error
+	ValidateTarget func(string) error
 	Conflict       func(path, reason string) error
 	MatchTarget    TargetMatcher
+	beforeApply    func(Change)
 }
 
 // Applied is a successfully executed transaction that can later be restored.
@@ -60,14 +73,14 @@ func (e Engine) Execute(changes []Change) (Applied, error) {
 	executed := make([]Change, 0, len(changes))
 	createdDirectories := make([]string, 0)
 	for _, next := range changes {
-		if e.BeforeApply != nil {
-			e.BeforeApply(next)
+		if e.beforeApply != nil {
+			e.beforeApply(next)
 		}
 		if err := e.validate(next); err != nil {
 			return Applied{}, e.fail(err, executed, createdDirectories)
 		}
-		if next.Action == Create {
-			created, err := ensureDirectory(filepath.Dir(next.Path))
+		if next.action == createAction {
+			created, err := ensureDirectory(filepath.Dir(next.path))
 			if err != nil {
 				return Applied{}, e.fail(fmt.Errorf("create %s directory: %w", e.label(), err), executed, createdDirectories)
 			}
@@ -79,7 +92,7 @@ func (e Engine) Execute(changes []Change) (Applied, error) {
 			}
 		}
 		if err := e.apply(next); err != nil {
-			return Applied{}, e.fail(fmt.Errorf("apply %s change %s: %w", e.label(), next.Path, err), executed, createdDirectories)
+			return Applied{}, e.fail(fmt.Errorf("apply %s change %s: %w", e.label(), next.path, err), executed, createdDirectories)
 		}
 		executed = append(executed, next)
 	}
@@ -91,57 +104,57 @@ func (e Engine) Execute(changes []Change) (Applied, error) {
 }
 
 func (e Engine) validate(next Change) error {
-	if next.Action != Create && next.Action != Remove && next.Action != Replace {
-		return fmt.Errorf("unknown %s action %d", e.label(), next.Action)
+	if err := next.validate(); err != nil {
+		return fmt.Errorf("invalid %s change: %w", e.label(), err)
 	}
-	if (next.Action == Create || next.Action == Replace) && e.ValidateSource != nil {
-		if err := e.ValidateSource(next); err != nil {
+	if (next.action == createAction || next.action == replaceAction) && e.ValidateTarget != nil {
+		if err := e.ValidateTarget(next.target); err != nil {
 			return err
 		}
 	}
-	expected := next.Target
-	if next.Action == Remove || next.Action == Replace {
-		expected = originalTarget(next)
+	expected := next.target
+	if next.action == removeAction || next.action == replaceAction {
+		expected = next.expectedTarget
 	}
-	matches, exists, conflict, err := e.inspect(next.Path, expected)
+	matches, exists, conflict, err := e.inspect(next.path, expected)
 	if err != nil {
-		return e.conflict(next.Path, "inspect after preflight: "+err.Error())
+		return e.conflict(next.path, "inspect after preflight: "+err.Error())
 	}
-	if next.Action == Create && !exists && !conflict {
+	if next.action == createAction && !exists && !conflict {
 		return nil
 	}
-	if (next.Action == Remove || next.Action == Replace) && exists && matches && !conflict {
+	if (next.action == removeAction || next.action == replaceAction) && exists && matches && !conflict {
 		return nil
 	}
-	return e.conflict(next.Path, "target changed after preflight")
+	return e.conflict(next.path, "target changed after preflight")
 }
 
 func (e Engine) apply(next Change) error {
-	switch next.Action {
-	case Create:
-		return os.Symlink(next.Target, next.Path)
-	case Remove:
-		return os.Remove(next.Path)
-	case Replace:
-		if err := os.Remove(next.Path); err != nil {
+	switch next.action {
+	case createAction:
+		return os.Symlink(next.target, next.path)
+	case removeAction:
+		return os.Remove(next.path)
+	case replaceAction:
+		if err := os.Remove(next.path); err != nil {
 			return err
 		}
-		if err := os.Symlink(next.Target, next.Path); err != nil {
-			_, exists, _, inspectErr := e.inspect(next.Path, next.Target)
+		if err := os.Symlink(next.target, next.path); err != nil {
+			_, exists, _, inspectErr := e.inspect(next.path, next.target)
 			if inspectErr != nil {
 				return errors.Join(err, fmt.Errorf("inspect failed replacement: %w", inspectErr))
 			}
 			if exists {
-				return errors.Join(err, fmt.Errorf("preserve concurrently changed target %s", next.Path))
+				return errors.Join(err, fmt.Errorf("preserve concurrently changed target %s", next.path))
 			}
-			if restoreErr := os.Symlink(originalTarget(next), next.Path); restoreErr != nil {
+			if restoreErr := os.Symlink(next.expectedTarget, next.path); restoreErr != nil {
 				return errors.Join(err, fmt.Errorf("restore original target: %w", restoreErr))
 			}
 			return err
 		}
 		return nil
 	default:
-		return fmt.Errorf("unknown %s action %d", e.label(), next.Action)
+		return fmt.Errorf("unknown %s action %d", e.label(), next.action)
 	}
 }
 
@@ -158,66 +171,66 @@ func (e Engine) rollback(changes []Change) error {
 	var rollbackErrors []error
 	for index := len(changes) - 1; index >= 0; index-- {
 		next := changes[index]
-		switch next.Action {
-		case Create:
-			matches, exists, conflict, err := e.inspect(next.Path, next.Target)
+		switch next.action {
+		case createAction:
+			matches, exists, conflict, err := e.inspect(next.path, next.target)
 			if err != nil {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("inspect %s: %w", next.Path, err))
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("inspect %s: %w", next.path, err))
 				continue
 			}
 			if !exists {
 				continue
 			}
 			if conflict || !matches {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("preserve concurrently changed target %s", next.Path))
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("preserve concurrently changed target %s", next.path))
 				continue
 			}
-			if err := os.Remove(next.Path); err != nil {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("remove %s: %w", next.Path, err))
+			if err := os.Remove(next.path); err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("remove %s: %w", next.path, err))
 			}
-		case Remove:
-			original := originalTarget(next)
-			matches, exists, conflict, err := e.inspect(next.Path, original)
+		case removeAction:
+			original := next.expectedTarget
+			matches, exists, conflict, err := e.inspect(next.path, original)
 			if err != nil {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("inspect %s: %w", next.Path, err))
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("inspect %s: %w", next.path, err))
 				continue
 			}
 			if exists {
 				if conflict || !matches {
-					rollbackErrors = append(rollbackErrors, fmt.Errorf("preserve concurrently changed target %s", next.Path))
+					rollbackErrors = append(rollbackErrors, fmt.Errorf("preserve concurrently changed target %s", next.path))
 				}
 				continue
 			}
-			if err := os.Symlink(original, next.Path); err != nil {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", next.Path, err))
+			if err := os.Symlink(original, next.path); err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", next.path, err))
 			}
-		case Replace:
-			original := originalTarget(next)
-			originalMatches, exists, originalConflict, err := e.inspect(next.Path, original)
+		case replaceAction:
+			original := next.expectedTarget
+			originalMatches, exists, originalConflict, err := e.inspect(next.path, original)
 			if err != nil {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("inspect %s: %w", next.Path, err))
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("inspect %s: %w", next.path, err))
 				continue
 			}
 			if exists && originalMatches && !originalConflict {
 				continue
 			}
-			newMatches, _, newConflict, err := e.inspect(next.Path, next.Target)
+			newMatches, _, newConflict, err := e.inspect(next.path, next.target)
 			if err != nil {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("inspect %s: %w", next.Path, err))
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("inspect %s: %w", next.path, err))
 				continue
 			}
 			if exists && (newConflict || !newMatches) {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("preserve concurrently changed target %s", next.Path))
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("preserve concurrently changed target %s", next.path))
 				continue
 			}
 			if exists {
-				if err := os.Remove(next.Path); err != nil {
-					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", next.Path, err))
+				if err := os.Remove(next.path); err != nil {
+					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", next.path, err))
 					continue
 				}
 			}
-			if err := os.Symlink(original, next.Path); err != nil {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", next.Path, err))
+			if err := os.Symlink(original, next.path); err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", next.path, err))
 			}
 		}
 	}
@@ -277,11 +290,28 @@ func (e Engine) label() string {
 	return e.Label
 }
 
-func originalTarget(change Change) string {
-	if change.OriginalTarget != "" {
-		return change.OriginalTarget
+func (c Change) validate() error {
+	if c.action != createAction && c.action != removeAction && c.action != replaceAction {
+		return errors.New("change must be created with Create, Remove, or Replace")
 	}
-	return change.Target
+	if c.path == "" {
+		return errors.New("path is required")
+	}
+	switch c.action {
+	case createAction:
+		if c.target == "" {
+			return errors.New("create target is required")
+		}
+	case removeAction:
+		if c.expectedTarget == "" {
+			return errors.New("remove expected target is required")
+		}
+	case replaceAction:
+		if c.expectedTarget == "" || c.target == "" {
+			return errors.New("replace expected and new targets are required")
+		}
+	}
+	return nil
 }
 
 func ensureDirectory(path string) ([]string, error) {

@@ -124,7 +124,7 @@ Submodule gitdir cleanup now validates Git common-dir containment and propagates
 
 Skill and file projection now delegate create/remove/replace execution, concurrent-change checks, rollback, and reversible restore to `internal/linktransaction`; their modules retain only projection-specific planning and source validation. File resource metadata now lives in the `userresource` descriptor registry, and CLI registration/runtime loading/doctor plus TUI capability/catalog/manager routing consume that registry instead of four parallel resource-kind branches.
 
-The ledger has no open findings. `go test ./...` and `go test -race ./...` both passed 229 tests across 17 packages; `go vet ./...` passed. Windows cross-compilation passed for `internal/filelock` and `internal/linktransaction`.
+The ledger has no open findings. `go test ./...` and `go test -race ./...` both passed 232 tests across 17 packages; `go vet ./...` passed. Windows cross-compilation passed for `internal/filelock` and `internal/linktransaction`.
 
 ## Refuted by Verification
 

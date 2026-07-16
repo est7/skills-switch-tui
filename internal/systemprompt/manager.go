@@ -33,24 +33,9 @@ type BuildResult struct {
 	Changed bool   `json:"changed"`
 }
 
-type changeAction int
-
-const (
-	createLink changeAction = iota
-	removeLink
-	replaceLink
-)
-
-type change struct {
-	action changeAction
-	path   string
-	target string
-}
-
 type Manager struct {
-	userHome    string
-	clients     client.Registry
-	beforeApply func(change)
+	userHome string
+	clients  client.Registry
 }
 
 func NewManager(userHome string, clients client.Registry) Manager {
@@ -104,17 +89,6 @@ func (m Manager) SetEnabled(groups []Group, enabled bool) error {
 		return err
 	}
 	links := linkprojection.Manager{Label: "system prompt"}
-	if m.beforeApply != nil {
-		links.BeforeApply = func(next linkprojection.Change) {
-			action := createLink
-			if next.Action == linkprojection.RemoveLink {
-				action = removeLink
-			} else if next.Action == linkprojection.ReplaceLink {
-				action = replaceLink
-			}
-			m.beforeApply(change{action: action, path: next.Path, target: next.Target})
-		}
-	}
 	return links.SetEnabled(files, enabled)
 }
 

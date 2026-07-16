@@ -25,45 +25,6 @@ func linkCodexSkill(t *testing.T, projectRoot, sourcesRoot, name string) {
 	}
 }
 
-func TestAutoPruneAfterUpdateRemovesOrphanedProjections(t *testing.T) {
-	resourceRoot := t.TempDir()
-	projectRoot := t.TempDir()
-	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	sourcesRoot := filepath.Join(resourceRoot, "skills")
-
-	// Post-update state: upstream now ships one and three; two is gone.
-	writeCLISkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "repo", "skills", "one"), "one")
-	writeCLISkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "repo", "skills", "three"), "three")
-
-	// The project enabled one, two and three before the update.
-	linkCodexSkill(t, projectRoot, sourcesRoot, "one")
-	linkCodexSkill(t, projectRoot, sourcesRoot, "two")
-	linkCodexSkill(t, projectRoot, sourcesRoot, "three")
-
-	options := &rootOptions{resourcesRoot: resourceRoot, projectRoot: projectRoot, language: "en"}
-	results := []source.UpdateResult{{SourceID: "vendor-shared/repo", Branch: "main", Changed: true}}
-
-	pruned, err := autoPruneAfterUpdate(options, results)
-	if err != nil {
-		t.Fatalf("autoPruneAfterUpdate: %v", err)
-	}
-	if len(pruned) != 1 || pruned[0].Name != "two" {
-		t.Fatalf("pruned = %#v, want the 'two' link", pruned)
-	}
-
-	skillsDir := filepath.Join(projectRoot, ".agents", "skills")
-	if _, err := os.Lstat(filepath.Join(skillsDir, "two")); !os.IsNotExist(err) {
-		t.Fatalf("orphan link 'two' not removed: %v", err)
-	}
-	for _, name := range []string{"one", "three"} {
-		if _, err := os.Lstat(filepath.Join(skillsDir, name)); err != nil {
-			t.Fatalf("live link %q was removed: %v", name, err)
-		}
-	}
-}
-
 func TestMissingConfiguredSourceRemainsVisibleAndDoctorExplainsIt(t *testing.T) {
 	resourceRoot := t.TempDir()
 	projectRoot := t.TempDir()
@@ -109,28 +70,6 @@ func TestUpdateJSONIncludesStructuredSourceFailures(t *testing.T) {
 	}
 	if failures[1].Source != "vendor-shared/two" || failures[1].Path != "/sources/two" {
 		t.Fatalf("second failure = %#v", failures[1])
-	}
-}
-
-func TestAutoPruneAfterUpdateSkipsWhenNotInProject(t *testing.T) {
-	resourceRoot := t.TempDir()
-	projectRoot := t.TempDir() // no .git: not a project
-	sourcesRoot := filepath.Join(resourceRoot, "skills")
-	writeCLISkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "repo", "skills", "one"), "one")
-	linkCodexSkill(t, projectRoot, sourcesRoot, "two") // would be an orphan if scanned
-
-	options := &rootOptions{resourcesRoot: resourceRoot, projectRoot: projectRoot, language: "en"}
-	results := []source.UpdateResult{{SourceID: "vendor-shared/repo", Branch: "main", Changed: true}}
-
-	pruned, err := autoPruneAfterUpdate(options, results)
-	if err != nil {
-		t.Fatalf("autoPruneAfterUpdate: %v", err)
-	}
-	if len(pruned) != 0 {
-		t.Fatalf("pruned = %#v, want none outside a project", pruned)
-	}
-	if _, err := os.Lstat(filepath.Join(projectRoot, ".agents", "skills", "two")); err != nil {
-		t.Fatalf("link removed outside a project: %v", err)
 	}
 }
 
@@ -188,30 +127,5 @@ func TestDoctorReportsOrphanedProjection(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "orphaned") || !strings.Contains(string(out), "two") {
 		t.Fatalf("doctor did not surface the orphan:\n%s", out)
-	}
-}
-
-func TestAutoPruneAfterUpdateSkipsUnchangedSources(t *testing.T) {
-	resourceRoot := t.TempDir()
-	projectRoot := t.TempDir()
-	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	sourcesRoot := filepath.Join(resourceRoot, "skills")
-	writeCLISkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "repo", "skills", "one"), "one")
-	linkCodexSkill(t, projectRoot, sourcesRoot, "two") // orphan, but its source did not change
-
-	options := &rootOptions{resourcesRoot: resourceRoot, projectRoot: projectRoot, language: "en"}
-	results := []source.UpdateResult{{SourceID: "vendor-shared/repo", Branch: "main", Changed: false}}
-
-	pruned, err := autoPruneAfterUpdate(options, results)
-	if err != nil {
-		t.Fatalf("autoPruneAfterUpdate: %v", err)
-	}
-	if len(pruned) != 0 {
-		t.Fatalf("pruned = %#v, want none when nothing changed", pruned)
-	}
-	if _, err := os.Lstat(filepath.Join(projectRoot, ".agents", "skills", "two")); err != nil {
-		t.Fatalf("link removed for an unchanged source: %v", err)
 	}
 }

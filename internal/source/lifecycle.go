@@ -30,14 +30,11 @@ func (l Lifecycle) Update(ctx context.Context, sources []catalog.Source, dryRun 
 	if dryRun {
 		return UpdateOutcome{Results: results}, updateErr
 	}
-	outcome, reconcileErr := l.ReconcileUpdated(results)
+	outcome, reconcileErr := l.reconcileUpdated(results)
 	return outcome, errors.Join(updateErr, reconcileErr)
 }
 
-// ReconcileUpdated reloads discovery and removes projections invalidated by
-// successful source updates. It is public so non-mutating adapters and tests can
-// exercise the same post-update contract without duplicating it.
-func (l Lifecycle) ReconcileUpdated(results []UpdateResult) (UpdateOutcome, error) {
+func (l Lifecycle) reconcileUpdated(results []UpdateResult) (UpdateOutcome, error) {
 	outcome := UpdateOutcome{Results: results}
 	loaded, reloadErr := catalog.Load(l.Manager.SkillsRoot, l.Manager.Clients)
 	if reloadErr != nil {
