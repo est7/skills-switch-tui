@@ -163,12 +163,15 @@ func TestPromptBuildCompilesCodexSourcesAndReportsStaleState(t *testing.T) {
 	}
 }
 
-func TestCommandAndHookCommandsUseScopedUserGlobalProjections(t *testing.T) {
+func TestCommandAndHookCommandsUseScopedProjectProjections(t *testing.T) {
 	resourceRoot := t.TempDir()
 	userHome := t.TempDir()
+	projectRoot := t.TempDir()
 	t.Setenv("HOME", userHome)
-	if err := os.MkdirAll(filepath.Join(resourceRoot, "skills", "local", "shared"), 0o755); err != nil {
-		t.Fatal(err)
+	for _, directory := range []string{filepath.Join(resourceRoot, "skills", "local", "shared"), filepath.Join(projectRoot, ".git")} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	commandSource := filepath.Join(resourceRoot, "commands", "shared", "remember.md")
 	hookSource := filepath.Join(resourceRoot, "hooks", "claude-only", "audit.sh")
@@ -181,22 +184,22 @@ func TestCommandAndHookCommandsUseScopedUserGlobalProjections(t *testing.T) {
 		}
 	}
 
-	if _, err := execute(t, "--resources", resourceRoot, "commands", "enable", "shared/remember.md", "--client", "claude", "--client", "codex"); err != nil {
+	if _, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "commands", "enable", "shared/remember.md", "--client", "claude", "--client", "codex"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := execute(t, "--resources", resourceRoot, "hooks", "enable", "claude-only/audit.sh", "--client", "claude"); err != nil {
+	if _, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "hooks", "enable", "claude-only/audit.sh", "--client", "claude"); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{
-		filepath.Join(userHome, ".claude", "commands", "remember.md"),
-		filepath.Join(userHome, ".codex", "prompts", "remember.md"),
-		filepath.Join(userHome, ".claude", "hooks", "audit.sh"),
+		filepath.Join(projectRoot, ".claude", "commands", "remember.md"),
+		filepath.Join(projectRoot, ".codex", "prompts", "remember.md"),
+		filepath.Join(projectRoot, ".claude", "hooks", "audit.sh"),
 	} {
 		if _, err := os.Readlink(path); err != nil {
 			t.Fatalf("missing user resource projection %s: %v", path, err)
 		}
 	}
-	if _, err := execute(t, "--resources", resourceRoot, "hooks", "enable", "claude-only/audit.sh", "--client", "gemini"); err == nil {
+	if _, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "hooks", "enable", "claude-only/audit.sh", "--client", "gemini"); err == nil {
 		t.Fatal("client-only hook was enabled for an incompatible client")
 	}
 }
@@ -244,7 +247,7 @@ func TestAgentAndOutputStyleCommandsUseUserGlobalAdapters(t *testing.T) {
 	}
 }
 
-func TestDoctorReportsUserGlobalCommandConflict(t *testing.T) {
+func TestDoctorReportsProjectCommandConflict(t *testing.T) {
 	resourceRoot := t.TempDir()
 	userHome := t.TempDir()
 	projectRoot := t.TempDir()
@@ -253,7 +256,7 @@ func TestDoctorReportsUserGlobalCommandConflict(t *testing.T) {
 		filepath.Join(resourceRoot, "skills", "local", "shared"),
 		filepath.Join(resourceRoot, "commands", "shared"),
 		filepath.Join(projectRoot, ".git"),
-		filepath.Join(userHome, ".claude", "commands"),
+		filepath.Join(projectRoot, ".claude", "commands"),
 	} {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			t.Fatal(err)
@@ -262,7 +265,7 @@ func TestDoctorReportsUserGlobalCommandConflict(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(resourceRoot, "commands", "shared", "remember.md"), []byte("catalog\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	conflict := filepath.Join(userHome, ".claude", "commands", "remember.md")
+	conflict := filepath.Join(projectRoot, ".claude", "commands", "remember.md")
 	if err := os.WriteFile(conflict, []byte("user owned\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

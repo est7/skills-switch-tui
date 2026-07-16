@@ -1,6 +1,6 @@
 ---
 name: skills-switch
-description: Manage Agent Skill source repositories, project-level Skill projections, project-level MCP servers, and user-global commands, hooks, and system prompts through the skills-switch CLI. Use when the user asks to add, register, update, query, or remove a GitHub or GitLab Skill repository; enable or disable a Skill or source for one or all registered clients in the current project; scaffold a new local Skill; add, import, remove, enable, or disable a project MCP server; delete a local Skill or group; or manage a client command, hook, or system prompt. Trigger on requests such as "add this GitHub skill for all clients", "delete this skill repo", "disable this skill in this project", "create a local skill", "add this MCP server", "enable this shared command", "turn off this hook", "更新 skills", or equivalent Chinese requests.
+description: Manage project-level Skills, MCP servers, commands, and hooks plus user-global agents, output styles, and system prompts through the skills-switch CLI. Use when the user asks to manage these resources for a project or user account.
 ---
 
 # Skills Switch
@@ -284,7 +284,7 @@ skills-switch agents enable <client>-only/<path> --client <client>
 skills-switch output-styles enable claude-only/<path> --client claude
 ```
 
-These operations are user-global and preserve unmanaged files. Agents are model-specific; output styles currently have only a Claude adapter. Do not create or remove target symlinks manually.
+Commands and hooks are project-scoped. Agents and output styles are user-global; agents are model-specific and output styles currently have only a Claude adapter. All preserve unmanaged files. Do not create or remove target symlinks manually.
 
 ## Verify Every Mutation
 
@@ -293,8 +293,8 @@ Run the nearest read command after each change:
 - Skill or source projection: `skills-switch --project "$PROJECT" skills list --json`
 - Local Skill scaffold or deletion: `skills-switch skills list --json` (the id appears or is gone)
 - MCP server projection or definition: `skills-switch --project "$PROJECT" mcp list --json`
-- User-global command: `skills-switch commands list --json`
-- User-global hook: `skills-switch hooks list --json`
+- Project command: `skills-switch --project "$PROJECT" commands list --json`
+- Project hook: `skills-switch --project "$PROJECT" hooks list --json`
 - User-global agent: `skills-switch agents list --json`
 - User-global output style: `skills-switch output-styles list --json`
 - Source repository: `skills-switch source list --json`

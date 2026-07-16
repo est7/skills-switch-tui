@@ -141,9 +141,9 @@ func discoverScope(catalog *Catalog, scopeRoot, scope string) error {
 func targetRoot(clients client.Registry, userHome string, kind Kind, clientID client.ID) (string, error) {
 	switch kind {
 	case KindCommand:
-		return clients.UserCommandsTargetDir(userHome, clientID)
+		return clients.ProjectCommandsTargetDir(userHome, clientID)
 	case KindHook:
-		return clients.UserHooksTargetDir(userHome, clientID)
+		return clients.ProjectHooksTargetDir(userHome, clientID)
 	case KindAgent:
 		return clients.UserAgentsTargetDir(userHome, clientID)
 	case KindOutputStyle:

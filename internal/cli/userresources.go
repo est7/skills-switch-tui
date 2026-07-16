@@ -13,10 +13,10 @@ import (
 
 func newUserResourceCommand(options *rootOptions, kind userresource.Kind) *cobra.Command {
 	use := "commands"
-	short := "Manage user-global command files"
+	short := "Manage project command files"
 	if kind == userresource.KindHook {
 		use = "hooks"
-		short = "Manage user-global hook files"
+		short = "Manage project hook files"
 	} else if kind == userresource.KindAgent {
 		use = "agents"
 		short = "Manage user-global agent files"

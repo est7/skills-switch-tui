@@ -1,6 +1,6 @@
 # skills-switch
 
-`skills-switch` manages project-local Agent Skills and MCP servers plus user-global commands, hooks, and system prompts from a central resource catalog. Skills are projected into the current project, MCP servers are surgically merged into each client's project configuration, and user-global files are projected into each client's registered directory. There is no per-project manifest to drift away from the real client files.
+`skills-switch` manages project-local Skills, MCP servers, commands, and hooks plus user-global agents, output styles, and system prompts from a central resource catalog. There is no per-project manifest to drift away from the real client files.
 
 The TUI is built with Bubble Tea v2, Bubbles v2, and Lip Gloss v2. Human-facing CLI and TUI text supports English and Simplified Chinese.
 
@@ -56,7 +56,7 @@ Inside `resources/skills`, the physical layout remains a strict `kind / client-s
 
 The built-in client registry owns both project-local and user-global client adapters:
 
-| Client | Project Skills | Project MCP | User commands/hooks | User agents | User output styles | User system prompts |
+| Client | Project Skills | Project MCP | Project commands/hooks | User agents | User output styles | User system prompts |
 | --- | --- | --- | --- | --- | --- | --- |
 | `codex` | `.agents/skills` | `.codex/config.toml` | `.codex/prompts`, `.codex/hooks` | `.codex/agents` | — | `.codex/` |
 | `claude` | `.claude/skills` | `.mcp.json` | `.claude/commands`, `.claude/hooks` | `.claude/agents` | `.claude/output-styles` | `.claude/` |
@@ -72,8 +72,8 @@ clients:
     projectSkillsDir: .pi/skills
     userPromptDir: .pi
     userPromptMode: tree
-    userCommandsDir: .pi/commands
-    userHooksDir: .pi/hooks
+    projectCommandsDir: .pi/commands
+    projectHooksDir: .pi/hooks
     userAgentsDir: .pi/agents
 ```
 
@@ -116,7 +116,7 @@ go build -o dist/skills-switch ./cmd/skills-switch
 
 ## Usage
 
-Every mutating capability is a first-class CLI subcommand grouped under its resource noun — `skills`, `mcp`, `source`, `commands`, `hooks`, `prompt` — alongside the top-level `init`, `status`, `doctor`, `tui`, and `version`. List commands accept `--json` for scripting, and every command accepts `--lang en|zh`; project commands act on the nearest Git root or an explicit `--project`. User-global command, hook, and prompt commands do not require a Git project. The TUI exposes the same mutation surfaces.
+Every mutating capability is a first-class CLI subcommand grouped under its resource noun — `skills`, `mcp`, `source`, `commands`, `hooks`, `agents`, `output-styles`, `prompt` — alongside the top-level `init`, `status`, `doctor`, `tui`, and `version`. Project commands act on the nearest Git root or an explicit `--project`; agents, output styles, and prompts are user-global and do not require a Git project. The TUI exposes the same mutation surfaces.
 
 A complete end-to-end flow, from an empty machine to enabled resources:
 
@@ -256,7 +256,7 @@ When an update drops a Skill the current project had enabled, its projection is 
 
 ## Operations
 
-Run the TUI anywhere inside a Git worktree. The nearest Git root receives Skills and MCP changes; Commands, Hooks, Agents, Output Styles, and System Prompts always manage the current user's client directories:
+Run the TUI anywhere inside a Git worktree. The nearest Git root receives Skills, MCP, Commands, and Hooks changes; Agents, Output Styles, and System Prompts manage the current user's client directories:
 
 ```sh
 skills-switch

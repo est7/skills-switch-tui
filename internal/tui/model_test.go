@@ -618,9 +618,9 @@ func TestResourceTabsToggleMCPCommandsHooksAndSystemPrompts(t *testing.T) {
 		Prompts:        prompts,
 		PromptManager:  systemprompt.NewManager(userHome, loaded.Clients),
 		Commands:       commands,
-		CommandManager: userresource.NewManager(userHome, loaded.Clients),
+		CommandManager: userresource.NewManager(projectRoot, loaded.Clients),
 		Hooks:          hooks,
-		HookManager:    userresource.NewManager(userHome, loaded.Clients),
+		HookManager:    userresource.NewManager(projectRoot, loaded.Clients),
 		UserHome:       userHome,
 	})
 
@@ -648,7 +648,7 @@ func TestResourceTabsToggleMCPCommandsHooksAndSystemPrompts(t *testing.T) {
 	if model.err != nil {
 		t.Fatal(model.err)
 	}
-	if _, err := os.Readlink(filepath.Join(userHome, ".codex", "prompts", "remember.md")); err != nil {
+	if _, err := os.Readlink(filepath.Join(projectRoot, ".codex", "prompts", "remember.md")); err != nil {
 		t.Fatalf("Commands tab did not project command: %v", err)
 	}
 
@@ -664,7 +664,7 @@ func TestResourceTabsToggleMCPCommandsHooksAndSystemPrompts(t *testing.T) {
 	if model.err != nil {
 		t.Fatal(model.err)
 	}
-	if _, err := os.Readlink(filepath.Join(userHome, ".claude", "hooks", "audit.sh")); err != nil {
+	if _, err := os.Readlink(filepath.Join(projectRoot, ".claude", "hooks", "audit.sh")); err != nil {
 		t.Fatalf("Hooks tab did not project hook: %v", err)
 	}
 

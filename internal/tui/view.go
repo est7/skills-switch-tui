@@ -51,7 +51,7 @@ func (m Model) View() tea.View {
 func (m Model) renderHeader() string {
 	scopeLabel := i18n.ProjectLabel
 	scopePath := m.project
-	if m.tab == tabCommands || m.tab == tabHooks || m.tab == tabAgents || m.tab == tabOutputStyles || m.tab == tabSystemPrompts {
+	if m.tab == tabAgents || m.tab == tabOutputStyles || m.tab == tabSystemPrompts {
 		scopeLabel = i18n.UserLabel
 		scopePath = m.userHome
 	}

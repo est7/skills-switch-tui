@@ -342,9 +342,9 @@ func loadRuntime(options *rootOptions) (runtime, error) {
 		prompts:        prompts,
 		promptMgr:      systemprompt.NewManager(userHome, base.catalog.Clients),
 		commands:       commands,
-		commandMgr:     userresource.NewManager(userHome, base.catalog.Clients),
+		commandMgr:     userresource.NewManager(projectRoot, base.catalog.Clients),
 		hooks:          hooks,
-		hookMgr:        userresource.NewManager(userHome, base.catalog.Clients),
+		hookMgr:        userresource.NewManager(projectRoot, base.catalog.Clients),
 		agents:         agents,
 		agentMgr:       userresource.NewManager(userHome, base.catalog.Clients),
 		outputStyles:   outputStyles,
@@ -357,9 +357,22 @@ func loadUserResourceRuntime(options *rootOptions, kind userresource.Kind) (user
 	if err != nil {
 		return userResourceRuntime{}, err
 	}
-	userHome, err := resolveUserHome()
+	targetBase, err := resolveUserHome()
 	if err != nil {
 		return userResourceRuntime{}, err
+	}
+	if kind == userresource.KindCommand || kind == userresource.KindHook {
+		start := options.projectRoot
+		if start == "" {
+			start, err = os.Getwd()
+			if err != nil {
+				return userResourceRuntime{}, fmt.Errorf("get current directory: %w", err)
+			}
+		}
+		targetBase, err = project.FindRoot(start)
+		if err != nil {
+			return userResourceRuntime{}, err
+		}
 	}
 	root := base.resources.CommandsRoot()
 	if kind == userresource.KindHook {
@@ -377,7 +390,7 @@ func loadUserResourceRuntime(options *rootOptions, kind userresource.Kind) (user
 		catalog:    base.catalog,
 		translator: base.translator,
 		resources:  resources,
-		manager:    userresource.NewManager(userHome, base.catalog.Clients),
+		manager:    userresource.NewManager(targetBase, base.catalog.Clients),
 	}, nil
 }
 

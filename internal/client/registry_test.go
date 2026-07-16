@@ -96,12 +96,12 @@ func TestRegistryValidatesConcatPromptAdapter(t *testing.T) {
 
 func TestRegistryExposesBuiltinCommandAndHookAdapters(t *testing.T) {
 	registry := DefaultRegistry()
-	commandDir, err := registry.UserCommandsTargetDir("/tmp/home", Gemini)
-	if err != nil || commandDir != filepath.Join("/tmp/home", ".gemini", "commands") {
-		t.Fatalf("UserCommandsTargetDir() = %q, %v", commandDir, err)
+	commandDir, err := registry.ProjectCommandsTargetDir("/tmp/project", Gemini)
+	if err != nil || commandDir != filepath.Join("/tmp/project", ".gemini", "commands") {
+		t.Fatalf("ProjectCommandsTargetDir() = %q, %v", commandDir, err)
 	}
-	hookDir, err := registry.UserHooksTargetDir("/tmp/home", Codex)
-	if err != nil || hookDir != filepath.Join("/tmp/home", ".codex", "hooks") {
-		t.Fatalf("UserHooksTargetDir() = %q, %v", hookDir, err)
+	hookDir, err := registry.ProjectHooksTargetDir("/tmp/project", Codex)
+	if err != nil || hookDir != filepath.Join("/tmp/project", ".codex", "hooks") {
+		t.Fatalf("ProjectHooksTargetDir() = %q, %v", hookDir, err)
 	}
 }

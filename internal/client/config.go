@@ -19,8 +19,8 @@ type registryClientFile struct {
 	UserPromptDir       string     `yaml:"userPromptDir,omitempty"`
 	UserPromptMode      PromptMode `yaml:"userPromptMode,omitempty"`
 	UserPromptEntry     string     `yaml:"userPromptEntry,omitempty"`
-	UserCommandsDir     string     `yaml:"userCommandsDir,omitempty"`
-	UserHooksDir        string     `yaml:"userHooksDir,omitempty"`
+	ProjectCommandsDir  string     `yaml:"projectCommandsDir,omitempty"`
+	ProjectHooksDir     string     `yaml:"projectHooksDir,omitempty"`
 	UserAgentsDir       string     `yaml:"userAgentsDir,omitempty"`
 	UserOutputStylesDir string     `yaml:"userOutputStylesDir,omitempty"`
 	ProjectMCPFile      string     `yaml:"projectMCPFile,omitempty"`
@@ -61,8 +61,8 @@ func LoadRegistry(path string) (Registry, error) {
 			UserPromptDir:       entry.UserPromptDir,
 			UserPromptMode:      entry.UserPromptMode,
 			UserPromptEntry:     entry.UserPromptEntry,
-			UserCommandsDir:     entry.UserCommandsDir,
-			UserHooksDir:        entry.UserHooksDir,
+			ProjectCommandsDir:  entry.ProjectCommandsDir,
+			ProjectHooksDir:     entry.ProjectHooksDir,
 			UserAgentsDir:       entry.UserAgentsDir,
 			UserOutputStylesDir: entry.UserOutputStylesDir,
 			ProjectMCPFile:      entry.ProjectMCPFile,
