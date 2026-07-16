@@ -577,6 +577,63 @@ func TestPolishedViewFitsNarrowTerminalAndSurfacesAllClientAction(t *testing.T) 
 	}
 }
 
+func TestNarrowTabStripKeepsActiveResourceVisible(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+	resized, _ := model.Update(tea.WindowSizeMsg{Width: 48, Height: 24})
+	model = resized.(Model)
+	model.tab = tabHooks
+	tabs := model.renderTabs()
+	for _, fragment := range []string{"Hooks", "‹", "›"} {
+		if !strings.Contains(tabs, fragment) {
+			t.Fatalf("narrow tab strip does not contain %q:\n%s", fragment, tabs)
+		}
+	}
+	if width := lipgloss.Width(tabs); width > model.contentWidth() {
+		t.Fatalf("tab strip width = %d, content width = %d", width, model.contentWidth())
+	}
+}
+
+func TestScrollHintPreservesPositionInBothDirections(t *testing.T) {
+	model := NewModel(catalog.Catalog{}, t.TempDir(), projection.Manager{}, nil, i18n.New(i18n.English))
+	hint := model.renderScrollHint(3, 7, 10, 40)
+	for _, fragment := range []string{"↑ 3 above", "↓ 3 more"} {
+		if !strings.Contains(hint, fragment) {
+			t.Fatalf("scroll hint does not contain %q: %s", fragment, hint)
+		}
+	}
+
+	model.translator = i18n.New(i18n.Chinese)
+	hint = model.renderScrollHint(2, 5, 8, 40)
+	for _, fragment := range []string{"↑ 上方 2 项", "↓ 还有 3 项"} {
+		if !strings.Contains(hint, fragment) {
+			t.Fatalf("Chinese scroll hint does not contain %q: %s", fragment, hint)
+		}
+	}
+}
+
+func TestErrorStatusStaysInsideFooter(t *testing.T) {
+	model := NewModel(catalog.Catalog{}, t.TempDir(), projection.Manager{}, nil, i18n.New(i18n.English))
+	resized, _ := model.Update(tea.WindowSizeMsg{Width: 48, Height: 24})
+	model = resized.(Model)
+	model.status = "Update failed"
+	model.err = errors.New(strings.Repeat("remote repository unavailable ", 5))
+	statusLine := strings.SplitN(model.renderFooter(), "\n", 2)[0]
+	if !strings.Contains(statusLine, "×") || !strings.Contains(statusLine, "…") {
+		t.Fatalf("error footer lacks semantic icon or truncation:\n%s", statusLine)
+	}
+	if width := lipgloss.Width(statusLine); width > model.contentWidth() {
+		t.Fatalf("error footer width = %d, content width = %d", width, model.contentWidth())
+	}
+}
+
 func TestViewPaintsTheEntireTerminalCanvasInLightAndDarkModes(t *testing.T) {
 	sourcesRoot := t.TempDir()
 	projectRoot := t.TempDir()

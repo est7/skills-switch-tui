@@ -39,8 +39,8 @@ Use `skills-switch` as the only mutation boundary. Let it preserve unmanaged pro
    skills-switch source list --json
    skills-switch --project "$PROJECT" skills list --json
    skills-switch --project "$PROJECT" mcp list --json
-   skills-switch commands list --json
-   skills-switch hooks list --json
+   skills-switch --project "$PROJECT" commands list --json
+   skills-switch --project "$PROJECT" hooks list --json
    skills-switch agents list --json
    skills-switch output-styles list --json
    skills-switch prompt list --json
@@ -227,9 +227,11 @@ Interpret “add/register this MCP server” as `mcp add` (catalog definition) a
 Preview and then update one vendor source:
 
 ```bash
-skills-switch source update <source-id> --dry-run
-skills-switch source update <source-id>
+skills-switch --project "$PROJECT" source update <source-id> --dry-run
+skills-switch --project "$PROJECT" source update <source-id>
 ```
+
+When a project is in scope, pass `--project "$PROJECT"` to `source update` and `source remove` so project reconciliation or projection retirement cannot attach to an unrelated working directory. Omit it only when the operation intentionally has no project scope.
 
 Update every vendor source by omitting the source ID. Each checkout is a read-only mirror: before remote inspection, a real update runs `git reset --hard HEAD` and `git clean -ffdx`, discarding tracked, untracked, and ignored local changes. It initializes a missing registered checkout, reads the exact configured branch tip, fetches that ref, resets to the advertised SHA, and verifies `HEAD`. `--dry-run` is non-mutating. Failures are isolated per source and identify the source, path, operation, and underlying Git error.
 
@@ -238,7 +240,7 @@ After changed sources are rediscovered, the command removes dangling catalog-man
 Remove a vendor repository only when the user explicitly asks to delete the repository source, not merely disable a project Skill:
 
 ```bash
-skills-switch source remove <source-id>
+skills-switch --project "$PROJECT" source remove <source-id>
 ```
 
 This first retires catalog-managed projections in the current project and user-global scopes, then removes the clean vendor submodule and its catalog policy. If Git or catalog removal fails, the retired projections are restored. Report that projects outside the current one may still reference the source and must be handled in their own scope. Never force-remove a dirty source.
@@ -263,7 +265,7 @@ skills-switch --project "$PROJECT" skills delete local-<scope>/<group>/<skill> -
 skills-switch --project "$PROJECT" skills delete local-<scope>/<group> --yes
 ```
 
-`skills delete` refuses to run without `--yes`, and rejects vendor sources (use `source remove`), read-only vendor Skills, archived references, and unknown ids. It first clears the target's projections across every registered client in `--project`, then removes the directory. Confirm the exact user intent before deleting, since the Skill source cannot be restored except from version control.
+`skills delete` refuses to run without `--yes`, and rejects vendor sources (use `source remove`), read-only vendor Skills, archived references, and unknown ids. It first clears the target's project projections and every supported user-global projection across all registered clients, then removes the directory. Confirm the exact user intent before deleting, since the Skill source cannot be restored except from version control.
 
 ## Scaffold a Local Skill
 
@@ -294,13 +296,13 @@ Prompt groups are model-owned source trees. Never copy or symlink rules between 
 Commands and hooks are catalog files under `shared/<path>` or `<client>-only/<path>`. Resolve their logical IDs first, then mutate every requested compatible client in one command:
 
 ```bash
-skills-switch commands list --json
-skills-switch commands enable shared/<path> --client <client-1> --client <client-2>
-skills-switch commands disable shared/<path> --client <client-1> --client <client-2>
+skills-switch --project "$PROJECT" commands list --json
+skills-switch --project "$PROJECT" commands enable shared/<path> --client <client-1> --client <client-2>
+skills-switch --project "$PROJECT" commands disable shared/<path> --client <client-1> --client <client-2>
 
-skills-switch hooks list --json
-skills-switch hooks enable <client>-only/<path> --client <client>
-skills-switch hooks disable <client>-only/<path> --client <client>
+skills-switch --project "$PROJECT" hooks list --json
+skills-switch --project "$PROJECT" hooks enable <client>-only/<path> --client <client>
+skills-switch --project "$PROJECT" hooks disable <client>-only/<path> --client <client>
 
 skills-switch agents enable <client>-only/<path> --client <client>
 skills-switch output-styles enable claude-only/<path> --client claude

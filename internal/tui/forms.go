@@ -82,32 +82,39 @@ func (m Model) huhTheme() huh.Theme {
 	danger := m.styles.issue.GetForeground()
 	buttonForeground := m.styles.selectedCell.GetForeground()
 	buttonBackground := m.styles.selectedCell.GetBackground()
+	canvas := m.styles.canvas
 	isDark := m.isDark
 	return huh.ThemeFunc(func(bool) *huh.Styles {
 		styles := huh.ThemeBase(isDark)
+		styles.Form.Base = styles.Form.Base.Background(canvas)
+		styles.Group.Base = styles.Group.Base.Background(canvas)
+		styles.FieldSeparator = styles.FieldSeparator.Foreground(m.styles.helpSep.GetForeground()).Background(canvas)
 		focused := &styles.Focused
-		focused.Base = focused.Base.BorderForeground(accent)
-		focused.Title = focused.Title.Foreground(accent).Bold(true)
-		focused.Description = focused.Description.Foreground(muted)
-		focused.SelectSelector = focused.SelectSelector.Foreground(accent)
-		focused.Option = focused.Option.Foreground(foreground)
-		focused.SelectedOption = focused.SelectedOption.Foreground(accent).Bold(true)
-		focused.NextIndicator = focused.NextIndicator.Foreground(accent)
-		focused.PrevIndicator = focused.PrevIndicator.Foreground(accent)
-		focused.ErrorIndicator = focused.ErrorIndicator.Foreground(danger)
-		focused.ErrorMessage = focused.ErrorMessage.Foreground(danger)
+		focused.Base = focused.Base.Background(canvas).BorderForeground(accent)
+		focused.Title = focused.Title.Foreground(accent).Background(canvas).Bold(true)
+		focused.Description = focused.Description.Foreground(muted).Background(canvas)
+		focused.SelectSelector = focused.SelectSelector.Foreground(accent).Background(canvas)
+		focused.Option = focused.Option.Foreground(foreground).Background(canvas)
+		focused.SelectedOption = focused.SelectedOption.Foreground(buttonForeground).Background(buttonBackground).Bold(true)
+		focused.NextIndicator = focused.NextIndicator.Foreground(accent).Background(canvas)
+		focused.PrevIndicator = focused.PrevIndicator.Foreground(accent).Background(canvas)
+		focused.ErrorIndicator = focused.ErrorIndicator.Foreground(danger).Background(canvas)
+		focused.ErrorMessage = focused.ErrorMessage.Foreground(danger).Background(canvas)
 		focused.FocusedButton = focused.FocusedButton.Foreground(buttonForeground).Background(buttonBackground)
-		focused.BlurredButton = focused.BlurredButton.Foreground(muted)
-		focused.TextInput.Cursor = focused.TextInput.Cursor.Foreground(accent)
-		focused.TextInput.Prompt = focused.TextInput.Prompt.Foreground(accent)
-		focused.TextInput.Placeholder = focused.TextInput.Placeholder.Foreground(muted)
-		focused.TextInput.Text = focused.TextInput.Text.Foreground(foreground)
-		styles.Group.Title = styles.Group.Title.Foreground(accent).Bold(true)
-		styles.Group.Description = styles.Group.Description.Foreground(muted)
+		focused.BlurredButton = focused.BlurredButton.Foreground(muted).Background(canvas)
+		focused.TextInput.Cursor = focused.TextInput.Cursor.Foreground(accent).Background(canvas)
+		focused.TextInput.Prompt = focused.TextInput.Prompt.Foreground(accent).Background(canvas)
+		focused.TextInput.Placeholder = focused.TextInput.Placeholder.Foreground(muted).Background(canvas)
+		focused.TextInput.Text = focused.TextInput.Text.Foreground(foreground).Background(canvas)
+		styles.Group.Title = styles.Group.Title.Foreground(accent).Background(canvas).Bold(true)
+		styles.Group.Description = styles.Group.Description.Foreground(muted).Background(canvas)
 		blurred := *focused
 		blurred.Base = blurred.Base.BorderStyle(lipgloss.HiddenBorder())
-		blurred.Title = blurred.Title.Foreground(muted).Bold(false)
+		blurred.Title = blurred.Title.Foreground(muted).Background(canvas).Bold(false)
 		styles.Blurred = blurred
+		styles.Help.ShortKey = m.styles.helpKey
+		styles.Help.ShortDesc = m.styles.helpDesc
+		styles.Help.ShortSeparator = m.styles.helpSep
 		return styles
 	})
 }

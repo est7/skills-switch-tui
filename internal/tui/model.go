@@ -210,11 +210,11 @@ func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Man
 	search.CharLimit = 120
 	search.SetWidth(36)
 	search.SetVirtualCursor(true)
-	search.SetStyles(textinput.DefaultDarkStyles())
 	helpModel := help.New()
 	helpModel.ShowAll = false
 	helpModel.SetWidth(96)
 	theme := newStyles(true)
+	applySearchStyles(&search, theme, true)
 	applyHelpStyles(&helpModel, theme)
 	operationContext, cancel := context.WithCancel(context.Background())
 	model := Model{
@@ -261,7 +261,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.isDark = message.IsDark()
 		m.styles = newStyles(m.isDark)
 		applyHelpStyles(&m.help, m.styles)
-		m.search.SetStyles(textinput.DefaultStyles(m.isDark))
+		applySearchStyles(&m.search, m.styles, m.isDark)
 		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = max(message.Width, 48)
@@ -1410,9 +1410,13 @@ func (m *Model) ensureCursorVisible(rowCount int) {
 }
 
 func (m Model) visibleRowCount() int {
-	reserved := 13
+	// The normal four-line header accounts for four of the reserved rows. A
+	// wrapped search field consumes one more line, so derive that part from the
+	// rendered component rather than letting the table disappear under the
+	// pinned footer on narrow terminals.
+	reserved := 10 + strings.Count(m.renderHeader(), "\n")
 	if m.showHelp {
-		reserved = 17
+		reserved += 4
 	}
 	return max(3, m.height-reserved)
 }

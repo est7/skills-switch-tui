@@ -623,21 +623,32 @@ func localizeSkillsCommands(command *cobra.Command, translator i18n.Translator) 
 			if flag := child.Flags().Lookup("client"); flag != nil {
 				flag.Usage = translator.Text(i18n.ClientFlag)
 			}
+		case "prune":
+			child.Short = translator.Text(i18n.SkillsPruneShort)
+			localizeOutputFlags(child, translator)
 		}
 	}
 }
 
 func localizeResourceCommands(command *cobra.Command, translator i18n.Translator) {
-	_, userResourceCommand := userResourceDescriptorForCommand(command.Name())
+	descriptor, userResourceCommand := userResourceDescriptorForCommand(command.Name())
 	for _, child := range command.Commands() {
 		if userResourceCommand {
+			listKey := i18n.UserResourceListShort
+			enableKey := i18n.UserResourceEnableShort
+			disableKey := i18n.UserResourceDisableShort
+			if descriptor.TargetScope == userresource.TargetProject {
+				listKey = i18n.ProjectResourceListShort
+				enableKey = i18n.ProjectResourceEnableShort
+				disableKey = i18n.ProjectResourceDisableShort
+			}
 			switch child.Name() {
 			case "list":
-				child.Short = translator.Text(i18n.UserResourceListShort)
+				child.Short = translator.Text(listKey)
 			case "enable":
-				child.Short = translator.Text(i18n.UserResourceEnableShort)
+				child.Short = translator.Text(enableKey)
 			case "disable":
-				child.Short = translator.Text(i18n.UserResourceDisableShort)
+				child.Short = translator.Text(disableKey)
 			}
 		} else {
 			switch command.Name() + "/" + child.Name() {

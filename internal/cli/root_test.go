@@ -40,6 +40,69 @@ func TestEveryUserResourceDescriptorRegistersACommand(t *testing.T) {
 	}
 }
 
+func TestUserResourceHelpUsesDescriptorScope(t *testing.T) {
+	tests := []struct {
+		command string
+		want    string
+		reject  string
+	}{
+		{command: "commands", want: "List project resources", reject: "List user-global resources"},
+		{command: "hooks", want: "Enable a project resource", reject: "Enable a user-global resource"},
+		{command: "agents", want: "List user-global resources", reject: "List project resources"},
+		{command: "output-styles", want: "Enable a user-global resource", reject: "Enable a project resource"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			output, err := execute(t, "--lang", "en", tt.command, "--help")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(output, []byte(tt.want)) || bytes.Contains(output, []byte(tt.reject)) {
+				t.Fatalf("%s help has wrong scope:\n%s", tt.command, output)
+			}
+		})
+	}
+
+	output, err := execute(t, "--lang", "zh", "commands", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(output, []byte("列出项目级资源")) || bytes.Contains(output, []byte("列出用户级资源")) {
+		t.Fatalf("Chinese commands help has wrong scope:\n%s", output)
+	}
+}
+
+func TestSkillScopeHelpDoesNotClaimProjectOnly(t *testing.T) {
+	tests := []struct {
+		command string
+		want    string
+	}{
+		{command: "list", want: "projection state"},
+		{command: "enable", want: "projection scope"},
+		{command: "disable", want: "projection scope"},
+		{command: "prune", want: "Remove projections"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			output, err := execute(t, "--lang", "en", "skills", tt.command, "--help")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(output, []byte(tt.want)) || bytes.Contains(output, []byte("current project")) {
+				t.Fatalf("skills %s help has stale project-only scope:\n%s", tt.command, output)
+			}
+		})
+	}
+
+	output, err := execute(t, "--lang", "zh", "skills", "prune", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(output, []byte("Skill 投影")) {
+		t.Fatalf("Chinese prune help was not localized:\n%s", output)
+	}
+}
+
 func TestMCPCommandsAppendAndRemoveOnlyManagedServer(t *testing.T) {
 	resourceRoot := t.TempDir()
 	sourcesRoot := filepath.Join(resourceRoot, "skills")

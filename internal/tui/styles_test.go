@@ -5,6 +5,7 @@ import (
 	"math"
 	"testing"
 
+	"charm.land/bubbles/v2/textinput"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -56,10 +57,37 @@ func TestTableStylesNeverFallBackToTransparentBackgrounds(t *testing.T) {
 	}
 }
 
-func TestDarkThemeUsesSlateGrayInsteadOfBlackCanvas(t *testing.T) {
+func TestDarkThemeUsesDeepSlateInsteadOfBlackCanvas(t *testing.T) {
 	theme := newStyles(true)
-	if !sameColor(theme.canvas, lipgloss.Color("#3B4449")) {
-		t.Fatal("dark canvas must use the slate-gray application background")
+	if !sameColor(theme.canvas, lipgloss.Color("#182126")) {
+		t.Fatal("dark canvas must use the deep-slate application background")
+	}
+}
+
+func TestNavigationAndActionFocusUseDifferentEmphasis(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		theme := newStyles(dark)
+		if sameColor(theme.activeTab.GetBackground(), theme.selectedCell.GetBackground()) {
+			t.Error("active tab and actionable cell must not compete at the same emphasis")
+		}
+		if sameColor(theme.activeColumn.GetBackground(), theme.selectedCell.GetBackground()) {
+			t.Error("active column and actionable cell must not compete at the same emphasis")
+		}
+	}
+}
+
+func TestSearchInputUsesApplicationPalette(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		theme := newStyles(dark)
+		input := textinput.New()
+		applySearchStyles(&input, theme, dark)
+		styles := input.Styles()
+		if !sameColor(styles.Focused.Text.GetBackground(), theme.activeFilter.GetBackground()) {
+			t.Error("focused search input must use the active-filter surface")
+		}
+		if !sameColor(styles.Cursor.Color, theme.accent.GetForeground()) {
+			t.Error("search cursor must use the application accent")
+		}
 	}
 }
 
@@ -89,6 +117,7 @@ func themeContrastPairs(theme styles) []contrastPair {
 		{name: "canvas title", foreground: theme.title.GetForeground(), background: canvas},
 		{name: "canvas secondary", foreground: theme.subtitle.GetForeground(), background: canvas},
 		{name: "canvas accent", foreground: theme.scopeLabel.GetForeground(), background: canvas},
+		{name: "scope badge", foreground: theme.badge.GetForeground(), background: theme.badge.GetBackground()},
 		{name: "canvas filter", foreground: theme.filter.GetForeground(), background: canvas},
 		{name: "canvas help key", foreground: theme.helpKey.GetForeground(), background: canvas},
 		{name: "canvas help description", foreground: theme.helpDesc.GetForeground(), background: canvas},
@@ -102,13 +131,14 @@ func themeContrastPairs(theme styles) []contrastPair {
 		{name: "selected row secondary", foreground: theme.disabled.GetForeground(), background: selected},
 		{name: "selected row enabled", foreground: theme.enabled.GetForeground(), background: selected},
 		{name: "selected cell", foreground: theme.selectedCell.GetForeground(), background: selectedCell},
+		{name: "active column", foreground: theme.activeColumn.GetForeground(), background: theme.activeColumn.GetBackground()},
 		{name: "enabled state", foreground: theme.enabled.GetForeground(), background: panel},
 		{name: "disabled state", foreground: theme.disabled.GetForeground(), background: panel},
 		{name: "issue state", foreground: theme.issue.GetForeground(), background: panel},
 		{name: "active filter", foreground: theme.activeFilter.GetForeground(), background: theme.activeFilter.GetBackground()},
 		{name: "status", foreground: theme.status.GetForeground(), background: theme.statusBar.GetBackground()},
 		{name: "status accent", foreground: theme.accent.GetForeground(), background: theme.statusBar.GetBackground()},
-		{name: "error", foreground: theme.error.GetForeground(), background: theme.statusBar.GetBackground()},
+		{name: "error", foreground: theme.error.GetForeground(), background: theme.dangerBar.GetBackground()},
 	}
 }
 

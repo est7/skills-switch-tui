@@ -34,19 +34,19 @@ type pruneOutput struct {
 	Pruned   []prunedLink `json:"pruned"`
 }
 
-// newSkillPruneCommand removes project projections whose skill disappeared from
-// its source — the residue an upstream `source update` leaves when a skill is
-// dropped. It lists candidates by default and only removes them with --yes,
-// mirroring `skills delete`. Detection reuses the same guard as the automatic
-// post-update cleanup: an empty (unavailable) source is never treated as a
-// wholesale removal.
+// newSkillPruneCommand removes projections in the selected scope whose skill
+// disappeared from its source — the residue an upstream `source update` leaves
+// when a skill is dropped. It lists candidates by default and only removes them
+// with --yes, mirroring `skills delete`. Detection reuses the same guard as the
+// automatic post-update cleanup: an empty (unavailable) source is never treated
+// as a wholesale removal.
 func newSkillPruneCommand(options *rootOptions) *cobra.Command {
 	var assumeYes bool
 	var outputJSON bool
 	var rawScope string
 	command := &cobra.Command{
 		Use:   "prune",
-		Short: "Remove project projections whose skill left its source",
+		Short: "Remove projections whose Skill left its source",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			scope, scopeErr := parseSkillScope(rawScope)

@@ -60,18 +60,70 @@ func (m Model) renderHeader() string {
 		brand += "  " + m.styles.subtitle.Render(m.translator.Text(i18n.ProductSubtitle))
 	}
 	brand = alignEdges(brand, m.renderLanguageSelector(), m.contentWidth())
-	scopeWidth := max(12, m.contentWidth()-lipgloss.Width(m.translator.Text(scopeLabel))-3)
-	scope := m.styles.scopeLabel.Render(strings.ToUpper(m.translator.Text(scopeLabel))) + "  " + m.styles.subtle.Render(truncate(scopePath, scopeWidth))
-	tabs := make([]string, 0, len(tabDescriptors))
-	for _, descriptor := range tabDescriptors {
-		candidate := descriptor.tab
+	scopeWidth := max(12, m.contentWidth()-lipgloss.Width(m.translator.Text(scopeLabel))-5)
+	scope := m.styles.badge.Render(strings.ToUpper(m.translator.Text(scopeLabel))) + "  " + m.styles.subtle.Render(truncate(scopePath, scopeWidth))
+	return strings.Join([]string{brand, scope, m.renderTabs(), m.renderFilterLine()}, "\n")
+}
+
+// renderTabs keeps the active resource visible on narrow terminals. It shows
+// as many neighboring tabs as fit and uses edge markers instead of relying on
+// the final canvas clip, which otherwise hides both context and navigation.
+func (m Model) renderTabs() string {
+	rendered := make([]string, len(tabDescriptors))
+	widths := make([]int, len(tabDescriptors))
+	active := 0
+	for index, descriptor := range tabDescriptors {
 		style := m.styles.tab
-		if candidate == m.tab {
+		if descriptor.tab == m.tab {
+			active = index
 			style = m.styles.activeTab
 		}
-		label := fmt.Sprintf("%s  %d", m.tabLabel(candidate), m.tabCount(candidate))
-		tabs = append(tabs, style.Render(label))
+		label := fmt.Sprintf("%s  %d", m.tabLabel(descriptor.tab), m.tabCount(descriptor.tab))
+		rendered[index] = style.Render(label)
+		widths[index] = lipgloss.Width(rendered[index])
 	}
+	if lipgloss.Width(strings.Join(rendered, " ")) <= m.contentWidth() {
+		return strings.Join(rendered, " ")
+	}
+
+	bestStart, bestEnd := active, active+1
+	bestCount := 1
+	bestBalance := len(tabDescriptors)
+	for start := 0; start <= active; start++ {
+		for end := active + 1; end <= len(tabDescriptors); end++ {
+			width := end - start - 1
+			for index := start; index < end; index++ {
+				width += widths[index]
+			}
+			if start > 0 {
+				width += 2
+			}
+			if end < len(tabDescriptors) {
+				width += 2
+			}
+			count := end - start
+			balance := (active - start) - (end - active - 1)
+			if balance < 0 {
+				balance = -balance
+			}
+			if width <= m.contentWidth() && (count > bestCount || count == bestCount && balance < bestBalance) {
+				bestStart, bestEnd = start, end
+				bestCount, bestBalance = count, balance
+			}
+		}
+	}
+	visible := make([]string, 0, bestCount+2)
+	if bestStart > 0 {
+		visible = append(visible, m.styles.subtle.Render("‹"))
+	}
+	visible = append(visible, rendered[bestStart:bestEnd]...)
+	if bestEnd < len(rendered) {
+		visible = append(visible, m.styles.subtle.Render("›"))
+	}
+	return strings.Join(visible, " ")
+}
+
+func (m Model) renderFilterLine() string {
 	filters := make([]string, 0, int(filterArchive)+1)
 	lastFilter := filterIssues
 	if m.tab == tabSkills {
@@ -86,9 +138,17 @@ func (m Model) renderHeader() string {
 	}
 	filterLine := m.styles.scopeLabel.Render("VIEW") + "  " + strings.Join(filters, " ")
 	if m.searching || m.search.Value() != "" {
-		filterLine += "  " + m.search.View()
+		search := m.search
+		available := m.contentWidth() - lipgloss.Width(filterLine) - 2
+		if available >= 12 {
+			search.SetWidth(min(48, available))
+			filterLine += "  " + search.View()
+		} else {
+			search.SetWidth(min(48, m.contentWidth()))
+			filterLine += "\n" + search.View()
+		}
 	}
-	return strings.Join([]string{brand, scope, strings.Join(tabs, " "), filterLine}, "\n")
+	return filterLine
 }
 
 func (m Model) renderTable() string {
@@ -154,8 +214,8 @@ func (m Model) renderSkillsTable() string {
 	for index := start; index < end; index++ {
 		lines = append(lines, m.renderRow(rows[index], index == m.cursor, labelWidth, clientStart, clientEnd, tableWidth))
 	}
-	if end < len(rows) {
-		lines = append(lines, m.styles.subtle.Render("  "+m.translator.Text(i18n.MoreRows, len(rows)-end)))
+	if start > 0 || end < len(rows) {
+		lines = append(lines, m.renderScrollHint(start, end, len(rows), tableWidth))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -264,7 +324,21 @@ func (m Model) renderResourceTable(labels []string, cell func(string, catalog.Cl
 		}
 		lines = append(lines, line)
 	}
+	if start > 0 || end < len(labels) {
+		lines = append(lines, m.renderScrollHint(start, end, len(labels), tableWidth))
+	}
 	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderScrollHint(start, end, total, width int) string {
+	parts := make([]string, 0, 2)
+	if start > 0 {
+		parts = append(parts, m.translator.Text(i18n.RowsAbove, start))
+	}
+	if end < total {
+		parts = append(parts, m.translator.Text(i18n.MoreRows, total-end))
+	}
+	return m.styles.subtle.Width(width - 1).Align(lipgloss.Right).Render(strings.Join(parts, "  ·  "))
 }
 
 func (m Model) renderClientHeaders(start, end int) string {
@@ -274,7 +348,7 @@ func (m Model) renderClientHeaders(start, end int) string {
 		client := clients[index]
 		style := m.styles.tableHeader
 		if index == m.clientIndex {
-			style = m.styles.selectedCell
+			style = m.styles.activeColumn
 		}
 		label := truncate(strings.ToUpper(string(client)), clientColumnWidth-2)
 		if index == start && start > 0 {
@@ -542,7 +616,7 @@ func (m Model) renderModalRegion(card string) string {
 // width (minus the rounded border and horizontal padding) and is what bound huh
 // forms are sized to so their lines never overflow the card border.
 func (m Model) modalWidth() int {
-	return min(m.contentWidth()-4, max(40, m.contentWidth()*2/3))
+	return min(m.contentWidth()-4, max(56, m.contentWidth()*2/3))
 }
 
 func (m Model) modalInnerWidth() int {
@@ -573,7 +647,7 @@ func (m Model) renderConfirmCard() string {
 	lines := []string{
 		m.styles.error.Render(m.translator.Text(i18n.DeleteConfirmTitle)),
 		"",
-		truncate(body, m.detailTextWidth()-6),
+		truncate(body, max(12, m.modalInnerWidth())),
 		m.styles.subtle.Render(m.translator.Text(i18n.DeleteConfirmHint)),
 	}
 	return m.modalCard(strings.Join(lines, "\n"))
@@ -637,19 +711,24 @@ func (m Model) filterLabel(filter filterMode) string {
 
 func (m Model) renderFooter() string {
 	barBackground := m.styles.statusBar.GetBackground()
+	barStyle := m.styles.statusBar
 	statusStyle := m.styles.status.Background(barBackground)
 	status := m.status
-	icon := m.styles.accent.Background(barBackground).Render("●")
+	icon := m.styles.accent.Background(barBackground).Render("◆")
 	gap := lipgloss.NewStyle().Background(barBackground).Render("  ")
 	if m.err != nil {
+		barStyle = m.styles.dangerBar
+		barBackground = barStyle.GetBackground()
 		statusStyle = m.styles.error.Background(barBackground)
 		status += ": " + strings.ReplaceAll(m.err.Error(), "\n", "; ")
-		icon = m.styles.error.Background(barBackground).Render("!")
+		icon = m.styles.error.Background(barBackground).Render("×")
+		gap = lipgloss.NewStyle().Background(barBackground).Render("  ")
 	}
 	if m.updating || m.deleting {
 		icon = m.styles.accent.Background(barBackground).Render("◌")
 	}
-	statusLine := m.styles.statusBar.Width(m.contentWidth()).Render(icon + gap + statusStyle.Render(status))
+	status = truncate(status, max(8, m.contentWidth()-6))
+	statusLine := barStyle.Width(m.contentWidth()).Render(icon + gap + statusStyle.Render(status))
 	return statusLine + "\n" + m.help.View(m.keys)
 }
 

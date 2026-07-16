@@ -39,6 +39,7 @@ const (
 	NoSkillsMatch               Key = "no_skills_match"
 	NoResourcesMatch            Key = "no_resources_match"
 	MoreRows                    Key = "more_rows"
+	RowsAbove                   Key = "rows_above"
 	HelpNavigate                Key = "help_navigate"
 	HelpResource                Key = "help_resource"
 	HelpClient                  Key = "help_client"
@@ -146,6 +147,9 @@ const (
 	HooksCommandShort           Key = "hooks_command_short"
 	AgentsCommandShort          Key = "agents_command_short"
 	OutputStylesCommandShort    Key = "output_styles_command_short"
+	ProjectResourceListShort    Key = "project_resource_list_short"
+	ProjectResourceEnableShort  Key = "project_resource_enable_short"
+	ProjectResourceDisableShort Key = "project_resource_disable_short"
 	UserResourceListShort       Key = "user_resource_list_short"
 	UserResourceEnableShort     Key = "user_resource_enable_short"
 	UserResourceDisableShort    Key = "user_resource_disable_short"
@@ -245,6 +249,7 @@ const (
 	SkillsCreateShort           Key = "skills_create_short"
 	SkillCreated                Key = "skill_created"
 	SkillsDeleteShort           Key = "skills_delete_short"
+	SkillsPruneShort            Key = "skills_prune_short"
 	MCPAddShort                 Key = "mcp_add_short"
 	MCPImportShort              Key = "mcp_import_short"
 	MCPImportFileFlag           Key = "mcp_import_file_flag"
@@ -282,6 +287,7 @@ var messages = map[Language]map[Key]string{
 		NoSkillsMatch:               "No skills match this view.",
 		NoResourcesMatch:            "No resources match this view.",
 		MoreRows:                    "↓ %d more",
+		RowsAbove:                   "↑ %d above",
 		HelpNavigate:                "navigate",
 		HelpResource:                "resource",
 		HelpClient:                  "client",
@@ -344,12 +350,12 @@ var messages = map[Language]map[Key]string{
 		ResourcesFlag:               "agent resources root (default ~/.agents/resources)",
 		ProjectFlag:                 "project directory (default current directory)",
 		LanguageFlag:                "interface language: auto, en, or zh",
-		ListShort:                   "List catalog skills and their current project state",
+		ListShort:                   "List catalog skills and projection state",
 		EmitJSONFlag:                "emit JSON",
 		SkillHeader:                 "SKILL",
 		SourceHeader:                "SOURCE",
-		EnableShort:                 "Enable a skill or source for the current project",
-		DisableShort:                "Disable a skill or source for the current project",
+		EnableShort:                 "Enable a skill or source in one projection scope",
+		DisableShort:                "Disable a skill or source in one projection scope",
 		ClientFlag:                  "registered target client (repeatable)",
 		SourceFlag:                  "operate on every compatible skill in a source",
 		SelectExactlyOne:            "select exactly one skill-id or --source",
@@ -389,6 +395,9 @@ var messages = map[Language]map[Key]string{
 		HooksCommandShort:           "Manage project hook files",
 		AgentsCommandShort:          "Manage user-global agent files",
 		OutputStylesCommandShort:    "Manage user-global output style files",
+		ProjectResourceListShort:    "List project resources and client state",
+		ProjectResourceEnableShort:  "Enable a project resource for selected clients",
+		ProjectResourceDisableShort: "Disable a project resource for selected clients",
 		UserResourceListShort:       "List user-global resources and client state",
 		UserResourceEnableShort:     "Enable a user-global resource for selected clients",
 		UserResourceDisableShort:    "Disable a user-global resource for selected clients",
@@ -488,6 +497,7 @@ var messages = map[Language]map[Key]string{
 		SkillsCreateShort:           "Scaffold a new local Skill skeleton",
 		SkillCreated:                "created local Skill at %s",
 		SkillsDeleteShort:           "Delete a local Skill or group directory from the resource SSOT",
+		SkillsPruneShort:            "Remove projections whose Skill left its source",
 		MCPAddShort:                 "Register a new MCP server in the catalog",
 		MCPImportShort:              "Add MCP servers from a pasted JSON definition",
 		MCPImportFileFlag:           "read the JSON definition from a file",
@@ -519,6 +529,7 @@ var messages = map[Language]map[Key]string{
 		NoSkillsMatch:               "当前视图没有匹配的 Skills。",
 		NoResourcesMatch:            "当前视图没有匹配的资源。",
 		MoreRows:                    "↓ 还有 %d 项",
+		RowsAbove:                   "↑ 上方 %d 项",
 		HelpNavigate:                "导航",
 		HelpResource:                "资源",
 		HelpClient:                  "客户端",
@@ -581,12 +592,12 @@ var messages = map[Language]map[Key]string{
 		ResourcesFlag:               "Agent 资源根目录（默认 ~/.agents/resources）",
 		ProjectFlag:                 "项目目录（默认当前目录）",
 		LanguageFlag:                "界面语言：auto、en 或 zh",
-		ListShort:                   "列出目录 Skills 及当前项目状态",
+		ListShort:                   "列出目录 Skills 及投影状态",
 		EmitJSONFlag:                "输出 JSON",
 		SkillHeader:                 "SKILL",
 		SourceHeader:                "来源",
-		EnableShort:                 "为当前项目启用一个 Skill 或来源",
-		DisableShort:                "为当前项目停用一个 Skill 或来源",
+		EnableShort:                 "在一个投影作用域启用 Skill 或来源",
+		DisableShort:                "在一个投影作用域停用 Skill 或来源",
 		ClientFlag:                  "已注册的目标客户端（可重复）",
 		SourceFlag:                  "操作来源内所有兼容的 Skills",
 		SelectExactlyOne:            "必须且只能选择一个 skill-id 或 --source",
@@ -626,6 +637,9 @@ var messages = map[Language]map[Key]string{
 		HooksCommandShort:           "管理项目级 Hook 文件",
 		AgentsCommandShort:          "管理用户级 Agent 文件",
 		OutputStylesCommandShort:    "管理用户级输出样式文件",
+		ProjectResourceListShort:    "列出项目级资源及客户端状态",
+		ProjectResourceEnableShort:  "为选定客户端启用项目级资源",
+		ProjectResourceDisableShort: "为选定客户端停用项目级资源",
 		UserResourceListShort:       "列出用户级资源及客户端状态",
 		UserResourceEnableShort:     "为选定客户端启用用户级资源",
 		UserResourceDisableShort:    "为选定客户端停用用户级资源",
@@ -725,6 +739,7 @@ var messages = map[Language]map[Key]string{
 		SkillsCreateShort:           "生成一个新的本地 Skill 骨架",
 		SkillCreated:                "已在 %s 创建本地 Skill",
 		SkillsDeleteShort:           "从资源 SSOT 删除本地技能或组目录",
+		SkillsPruneShort:            "清理已从来源移除的 Skill 投影",
 		MCPAddShort:                 "在目录中注册新的 MCP 服务器",
 		MCPImportShort:              "从粘贴的 JSON 定义添加 MCP 服务器",
 		MCPImportFileFlag:           "从文件读取 JSON 定义",
