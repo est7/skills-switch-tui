@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"text/tabwriter"
 
+	"github.com/est7/skills-switch-tui/internal/catalog"
+	"github.com/est7/skills-switch-tui/internal/client"
 	"github.com/est7/skills-switch-tui/internal/i18n"
 	"github.com/est7/skills-switch-tui/internal/mcp"
 	"github.com/est7/skills-switch-tui/internal/projection"
@@ -31,20 +34,17 @@ func runTUI(options *rootOptions) error {
 	if err != nil {
 		return err
 	}
+	userResources := make(map[userresource.Kind]tui.UserResourceSet, len(runtime.userResources))
+	for kind, managed := range runtime.userResources {
+		userResources[kind] = tui.UserResourceSet{Catalog: managed.catalog, Manager: managed.manager}
+	}
 	model := tui.NewModel(runtime.catalog, runtime.projectRoot, runtime.projection, &runtime.manager, runtime.translator, tui.Resources{
-		MCPCatalog:         runtime.mcpCatalog,
-		MCPManager:         runtime.mcpManager,
-		Prompts:            runtime.prompts,
-		PromptManager:      runtime.promptMgr,
-		Commands:           runtime.commands,
-		CommandManager:     runtime.commandMgr,
-		Hooks:              runtime.hooks,
-		HookManager:        runtime.hookMgr,
-		Agents:             runtime.agents,
-		AgentManager:       runtime.agentMgr,
-		OutputStyles:       runtime.outputStyles,
-		OutputStyleManager: runtime.outputStyleMgr,
-		UserHome:           runtime.userHome,
+		MCPCatalog:    runtime.mcpCatalog,
+		MCPManager:    runtime.mcpManager,
+		Prompts:       runtime.prompts,
+		PromptManager: runtime.promptMgr,
+		UserResources: userResources,
+		UserHome:      runtime.userHome,
 	})
 	return tui.Run(model)
 }
@@ -93,7 +93,7 @@ func newShowCommand(options *rootOptions) *cobra.Command {
 				Archived:      source.IsArchived(),
 				Clients:       make(map[string]clientProjectionView),
 			}
-			for _, client := range runtime.catalog.Clients.IDs() {
+			for _, client := range skillClientIDs(runtime.catalog.Clients, projection.ScopeProject) {
 				state, stateErr := runtime.projection.State(skill, client)
 				if stateErr != nil {
 					return stateErr
@@ -117,7 +117,7 @@ func newShowCommand(options *rootOptions) *cobra.Command {
 			}
 			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintf(writer, "%s\t%s\t%s\n", runtime.translator.Text(i18n.ClientHeader), runtime.translator.Text(i18n.StateHeader), runtime.translator.Text(i18n.PathHeader))
-			for _, client := range runtime.catalog.Clients.IDs() {
+			for _, client := range skillClientIDs(runtime.catalog.Clients, projection.ScopeProject) {
 				view := result.Clients[string(client)]
 				fmt.Fprintf(writer, "%s\t%s\t%s\n", client, view.State, view.Target)
 			}
@@ -179,7 +179,7 @@ func newStatusCommand(options *rootOptions) *cobra.Command {
 
 func buildStatus(runtime runtime) (statusOutput, error) {
 	result := statusOutput{Project: runtime.projectRoot}
-	for _, client := range runtime.catalog.Clients.IDs() {
+	for _, client := range skillClientIDs(runtime.catalog.Clients, projection.ScopeProject) {
 		summary := clientStatus{Client: string(client)}
 		for _, source := range runtime.catalog.Sources {
 			if source.IsArchived() {
@@ -214,6 +214,7 @@ type doctorIssue struct {
 	Scope    string `json:"scope,omitempty"`
 	State    string `json:"state"`
 	Path     string `json:"path"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 type doctorOutput struct {
@@ -274,8 +275,15 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 		if source.IsArchived() {
 			continue
 		}
+		if source.IsCheckoutMissing() {
+			result.Healthy = false
+			result.Issues = append(result.Issues, doctorIssue{
+				Kind: "source", Resource: source.ID, State: string(catalog.SourceCheckoutMissing), Path: source.Path,
+				Detail: "configured vendor checkout is missing; run source update " + source.ID,
+			})
+		}
 		for _, skill := range source.Skills {
-			for _, client := range runtime.catalog.Clients.IDs() {
+			for _, client := range skillClientIDs(runtime.catalog.Clients, projection.ScopeProject) {
 				state, err := runtime.projection.State(skill, client)
 				if err != nil {
 					return doctorOutput{}, err
@@ -286,7 +294,8 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 						return doctorOutput{}, pathErr
 					}
 					result.Healthy = false
-					result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: skill.ID, Client: string(client), Scope: string(projection.ScopeProject), State: string(state), Path: path})
+					detail := projectionHealthDetail(runtime.projection, skill, client, projection.ScopeProject)
+					result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: skill.ID, Client: string(client), Scope: string(projection.ScopeProject), State: string(state), Path: path, Detail: detail})
 				}
 				if runtime.projection.SupportsScope(client, projection.ScopeGlobal) {
 					state, err := runtime.projection.StateAt(skill, client, projection.ScopeGlobal)
@@ -299,7 +308,8 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 							return doctorOutput{}, pathErr
 						}
 						result.Healthy = false
-						result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: skill.ID, Client: string(client), Scope: string(projection.ScopeGlobal), State: string(state), Path: path})
+						detail := projectionHealthDetail(runtime.projection, skill, client, projection.ScopeGlobal)
+						result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: skill.ID, Client: string(client), Scope: string(projection.ScopeGlobal), State: string(state), Path: path, Detail: detail})
 					}
 				}
 			}
@@ -322,7 +332,15 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 		result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: orphan.Name, Client: string(orphan.Client), Scope: string(projection.ScopeGlobal), State: "orphaned", Path: orphan.Path})
 	}
 	for _, name := range runtime.mcpCatalog.Names() {
-		for _, clientID := range runtime.catalog.Clients.IDs() {
+		server, _ := runtime.mcpCatalog.Server(name)
+		if secretIssues := mcp.SecretIssues(server); len(secretIssues) > 0 {
+			result.Healthy = false
+			result.Issues = append(result.Issues, doctorIssue{
+				Kind: "mcp-catalog", Resource: name, State: "plaintext-secret", Path: runtime.mcpCatalog.Path,
+				Detail: "replace " + strings.Join(secretIssues, ", ") + " with ${ENV_VAR} references",
+			})
+		}
+		for _, clientID := range runtime.catalog.Clients.IDsFor(client.CapabilityMCP) {
 			state, err := runtime.mcpManager.State(name, clientID)
 			if err != nil {
 				return doctorOutput{}, err
@@ -353,35 +371,38 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 		result.Healthy = false
 		result.Issues = append(result.Issues, doctorIssue{Kind: "system-prompt", Resource: group.ID, Client: string(group.Client), State: string(state), Path: path})
 	}
-	for _, scoped := range []struct {
-		kind    string
-		catalog userresource.Catalog
-		manager userresource.Manager
-	}{
-		{kind: "command", catalog: runtime.commands, manager: runtime.commandMgr},
-		{kind: "hook", catalog: runtime.hooks, manager: runtime.hookMgr},
-		{kind: "agent", catalog: runtime.agents, manager: runtime.agentMgr},
-		{kind: "output-style", catalog: runtime.outputStyles, manager: runtime.outputStyleMgr},
-	} {
-		for _, resource := range scoped.catalog.Resources {
-			for _, clientID := range runtime.catalog.Clients.IDs() {
-				state, err := scoped.manager.State(resource, clientID)
+	for _, descriptor := range userresource.Descriptors() {
+		managed := runtime.userResources[descriptor.Kind]
+		for _, resource := range managed.catalog.Resources {
+			for _, clientID := range runtime.catalog.Clients.IDsFor(descriptor.Capability) {
+				state, err := managed.manager.State(resource, clientID)
 				if err != nil {
 					return doctorOutput{}, err
 				}
 				if state != userresource.StateConflict && state != userresource.StateBroken {
 					continue
 				}
-				path, err := scoped.manager.TargetPath(resource, clientID)
+				path, err := managed.manager.TargetPath(resource, clientID)
 				if err != nil {
 					return doctorOutput{}, err
 				}
 				result.Healthy = false
-				result.Issues = append(result.Issues, doctorIssue{Kind: scoped.kind, Resource: resource.ID, Client: string(clientID), State: string(state), Path: path})
+				result.Issues = append(result.Issues, doctorIssue{Kind: string(descriptor.Kind), Resource: resource.ID, Client: string(clientID), State: string(state), Path: path})
 			}
 		}
 	}
 	return result, nil
+}
+
+func projectionHealthDetail(manager projection.Manager, skill catalog.Skill, clientID catalog.Client, scope projection.Scope) string {
+	health, err := manager.HealthAt(skill, clientID, scope)
+	if err != nil {
+		return err.Error()
+	}
+	if health.Cause != nil {
+		return health.Cause.Error()
+	}
+	return ""
 }
 
 func writeJSON(command *cobra.Command, value any) error {

@@ -3,11 +3,13 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/est7/skills-switch-tui/internal/catalog"
 	"github.com/est7/skills-switch-tui/internal/i18n"
+	"github.com/est7/skills-switch-tui/internal/project"
 	"github.com/est7/skills-switch-tui/internal/projection"
 	"github.com/est7/skills-switch-tui/internal/source"
 	"github.com/spf13/cobra"
@@ -41,7 +43,11 @@ func newSourceRemoveCommand(options *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := runtime.manager.Remove(command.Context(), selected[0]); err != nil {
+			lifecycle, err := sourceLifecycle(options, runtime)
+			if err != nil {
+				return err
+			}
+			if err := lifecycle.Remove(command.Context(), selected[0]); err != nil {
 				return err
 			}
 			fmt.Fprint(command.OutOrStdout(), runtime.translator.Text(i18n.SourceRemoved, selected[0].ID))
@@ -56,6 +62,7 @@ type sourceView struct {
 	Scope             string                      `json:"scope"`
 	Path              string                      `json:"path"`
 	Skills            int                         `json:"skills"`
+	Availability      string                      `json:"availability"`
 	Branch            string                      `json:"branch,omitempty"`
 	SkillPaths        []string                    `json:"skillPaths,omitempty"`
 	SparsePaths       []string                    `json:"sparsePaths,omitempty"`
@@ -88,6 +95,7 @@ func newSourceListCommand(options *rootOptions) *cobra.Command {
 					Scope:             catalogSource.Scope,
 					Path:              catalogSource.Path,
 					Skills:            len(catalogSource.Skills),
+					Availability:      sourceAvailability(catalogSource),
 					Branch:            catalogSource.Branch,
 					SkillPaths:        catalogSource.SkillPaths,
 					SparsePaths:       catalogSource.SparsePaths,
@@ -99,21 +107,23 @@ func newSourceListCommand(options *rootOptions) *cobra.Command {
 				return writeJSON(command, result)
 			}
 			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
-			fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				runtime.translator.Text(i18n.SourceHeader),
 				runtime.translator.Text(i18n.KindHeader),
 				runtime.translator.Text(i18n.SkillsHeader),
 				runtime.translator.Text(i18n.BranchHeader),
 				runtime.translator.Text(i18n.DiscoveryHeader),
+				runtime.translator.Text(i18n.StateHeader),
 				runtime.translator.Text(i18n.PathHeader),
 			)
 			for _, item := range result {
-				fmt.Fprintf(writer, "%s\t%s\t%d\t%s\t%s\t%s\n",
+				fmt.Fprintf(writer, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
 					item.ID,
 					item.Kind,
 					item.Skills,
 					item.Branch,
 					item.DiscoveryStrategy,
+					item.Availability,
 					item.Path,
 				)
 			}
@@ -123,6 +133,13 @@ func newSourceListCommand(options *rootOptions) *cobra.Command {
 	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
 	command.Flags().BoolVar(&includeArchive, "archive", false, "include archived sources")
 	return command
+}
+
+func sourceAvailability(source catalog.Source) string {
+	if source.IsCheckoutMissing() {
+		return string(catalog.SourceCheckoutMissing)
+	}
+	return "available"
 }
 
 func newSourceAddCommand(options *rootOptions) *cobra.Command {
@@ -228,17 +245,15 @@ func newUpdateCommand(options *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			results, updateErr := runtime.manager.Update(command.Context(), selected, dryRun)
-			var pruned []projection.Orphan
-			if !dryRun {
-				var pruneWarning error
-				pruned, pruneWarning = autoPruneAfterUpdate(options, results)
-				if pruneWarning != nil {
-					fmt.Fprintln(command.ErrOrStderr(), runtime.translator.Text(i18n.UpdatePruneFailed, pruneWarning))
-				}
+			lifecycle, err := sourceLifecycle(options, runtime)
+			if err != nil {
+				return err
 			}
+			outcome, updateErr := lifecycle.Update(command.Context(), selected, dryRun)
+			results := outcome.Results
+			pruned := outcome.Pruned
 			if outputJSON {
-				return errors.Join(updateErr, writeJSON(command, updateOutput{Updates: results, Pruned: toPrunedLinks(pruned)}))
+				return errors.Join(updateErr, writeJSON(command, updateOutput{Updates: results, Pruned: toPrunedLinks(pruned), Failures: updateFailures(updateErr)}))
 			}
 			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n",
@@ -273,12 +288,47 @@ func newUpdateCommand(options *rootOptions) *cobra.Command {
 }
 
 type updateOutput struct {
-	Updates []source.UpdateResult `json:"updates"`
-	Pruned  []prunedLink          `json:"pruned"`
+	Updates  []source.UpdateResult `json:"updates"`
+	Pruned   []prunedLink          `json:"pruned"`
+	Failures []updateFailure       `json:"failures"`
+}
+
+type updateFailure struct {
+	Source    string `json:"source,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Operation string `json:"operation,omitempty"`
+	Error     string `json:"error"`
+}
+
+func updateFailures(err error) []updateFailure {
+	if err == nil {
+		return []updateFailure{}
+	}
+	failures := make([]updateFailure, 0)
+	var visit func(error)
+	visit = func(candidate error) {
+		if joined, ok := candidate.(interface{ Unwrap() []error }); ok {
+			for _, nested := range joined.Unwrap() {
+				visit(nested)
+			}
+			return
+		}
+		var attributed *source.SourceError
+		if errors.As(candidate, &attributed) {
+			failures = append(failures, updateFailure{
+				Source: attributed.SourceID, Path: attributed.Path, Operation: attributed.Operation, Error: attributed.Err.Error(),
+			})
+			return
+		}
+		failures = append(failures, updateFailure{Error: candidate.Error()})
+	}
+	visit(err)
+	return failures
 }
 
 type prunedLink struct {
 	Client string `json:"client"`
+	Scope  string `json:"scope"`
 	Name   string `json:"name"`
 	Path   string `json:"path"`
 	Target string `json:"target"`
@@ -289,12 +339,30 @@ func toPrunedLinks(orphans []projection.Orphan) []prunedLink {
 	for _, orphan := range orphans {
 		links = append(links, prunedLink{
 			Client: string(orphan.Client),
+			Scope:  string(orphan.Scope),
 			Name:   orphan.Name,
 			Path:   orphan.Path,
 			Target: orphan.Target,
 		})
 	}
 	return links
+}
+
+func sourceLifecycle(options *rootOptions, runtime catalogRuntime) (source.Lifecycle, error) {
+	start := options.projectRoot
+	if start == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return source.Lifecycle{}, fmt.Errorf("get current directory: %w", err)
+		}
+		start = cwd
+	}
+	projectRoot, _ := project.FindRoot(start)
+	userHome, err := resolveUserHome()
+	if err != nil {
+		return source.Lifecycle{}, err
+	}
+	return source.Lifecycle{Manager: runtime.manager, ProjectRoot: projectRoot, UserHome: userHome}, nil
 }
 
 func renderPrunedProjections(command *cobra.Command, translator i18n.Translator, pruned []projection.Orphan) error {

@@ -11,23 +11,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newUserResourceCommand(options *rootOptions, kind userresource.Kind) *cobra.Command {
-	use := "commands"
-	short := "Manage project command files"
-	if kind == userresource.KindHook {
-		use = "hooks"
-		short = "Manage project hook files"
-	} else if kind == userresource.KindAgent {
-		use = "agents"
-		short = "Manage user-global agent files"
-	} else if kind == userresource.KindOutputStyle {
-		use = "output-styles"
-		short = "Manage user-global output style files"
-	}
-	command := &cobra.Command{Use: use, Short: short, Args: cobra.NoArgs}
-	command.AddCommand(newUserResourceListCommand(options, kind))
-	command.AddCommand(newUserResourceToggleCommand(options, kind, true))
-	command.AddCommand(newUserResourceToggleCommand(options, kind, false))
+func newUserResourceCommand(options *rootOptions, descriptor userresource.Descriptor) *cobra.Command {
+	command := &cobra.Command{Use: descriptor.Command, Short: descriptor.CommandSummary, Args: cobra.NoArgs}
+	command.AddCommand(newUserResourceListCommand(options, descriptor.Kind))
+	command.AddCommand(newUserResourceToggleCommand(options, descriptor.Kind, true))
+	command.AddCommand(newUserResourceToggleCommand(options, descriptor.Kind, false))
 	return command
 }
 
@@ -49,10 +37,15 @@ func newUserResourceListCommand(options *rootOptions, kind userresource.Kind) *c
 			if err != nil {
 				return err
 			}
+			descriptor, err := userresource.Describe(kind)
+			if err != nil {
+				return err
+			}
+			clientIDs := runtime.catalog.Clients.IDsFor(descriptor.Capability)
 			result := make([]userResourceView, 0, len(runtime.resources.Resources))
 			for _, resource := range runtime.resources.Resources {
 				item := userResourceView{ID: resource.ID, Kind: string(kind), Clients: make(map[string]string)}
-				for _, clientID := range runtime.catalog.Clients.IDs() {
+				for _, clientID := range clientIDs {
 					state, err := runtime.manager.State(resource, clientID)
 					if err != nil {
 						return err
@@ -66,13 +59,13 @@ func newUserResourceListCommand(options *rootOptions, kind userresource.Kind) *c
 			}
 			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintf(writer, "%s\t", runtime.translator.Text(i18n.ResourceHeader))
-			for _, clientID := range runtime.catalog.Clients.IDs() {
+			for _, clientID := range clientIDs {
 				fmt.Fprintf(writer, "%s\t", strings.ToUpper(string(clientID)))
 			}
 			fmt.Fprintln(writer)
 			for _, item := range result {
 				fmt.Fprintf(writer, "%s\t", item.ID)
-				for _, clientID := range runtime.catalog.Clients.IDs() {
+				for _, clientID := range clientIDs {
 					fmt.Fprintf(writer, "%s\t", item.Clients[string(clientID)])
 				}
 				fmt.Fprintln(writer)
@@ -105,7 +98,11 @@ func newUserResourceToggleCommand(options *rootOptions, kind userresource.Kind, 
 			if !ok {
 				return fmt.Errorf("unknown %s %q", kind, args[0])
 			}
-			selected, err := parseClients(clients, runtime.catalog, runtime.translator)
+			descriptor, err := userresource.Describe(kind)
+			if err != nil {
+				return err
+			}
+			selected, err := parseClientsForCapability(clients, runtime.catalog, runtime.translator, descriptor.Capability)
 			if err != nil {
 				return err
 			}

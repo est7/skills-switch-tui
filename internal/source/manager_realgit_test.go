@@ -86,6 +86,88 @@ func TestUpdateHardResetsTrackedEditsBeforeUpdatingSubmodule(t *testing.T) {
 	}
 }
 
+func TestUpdateCleansUntrackedAndIgnoredSkillsFromReadOnlySource(t *testing.T) {
+	gitBinary, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
+	t.Setenv("GIT_CONFIG_VALUE_0", "always")
+	t.Setenv("GIT_TERMINAL_PROMPT", "0")
+
+	base := t.TempDir()
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		command := exec.Command(gitBinary, args...)
+		command.Dir = dir
+		command.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e",
+		)
+		out, runErr := command.CombinedOutput()
+		if runErr != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), runErr, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	remote := filepath.Join(base, "remote")
+	if err := os.MkdirAll(filepath.Join(remote, "skills", "remote"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "skills", "remote", "SKILL.md"), []byte("remote\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, ".gitignore"), []byte("ignored/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(remote, "init", "-q", "-b", "main")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "init")
+
+	parent := filepath.Join(base, "parent")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(parent, "init", "-q", "-b", "main")
+	run(parent, "commit", "-q", "--allow-empty", "-m", "init")
+	relative := filepath.FromSlash("resources/skills/vendor/shared/repo")
+	run(parent, "submodule", "add", "-q", "-b", "main", remote, relative)
+	run(parent, "commit", "-q", "-am", "add submodule")
+	target := filepath.Join(parent, relative)
+
+	localOnly := filepath.Join(target, "skills", "local-only", "SKILL.md")
+	ignored := filepath.Join(target, "ignored", "skill", "SKILL.md")
+	for _, path := range []string{localOnly, ignored} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("local pollution\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	manager := Manager{RepositoryRoot: parent, SkillsRoot: filepath.Join(parent, "resources", "skills"), Git: GitCommander{}}
+	results, err := manager.Update(context.Background(), []catalog.Source{{
+		ID: "vendor-shared/repo", Kind: catalog.SourceVendor, Scope: "shared", Path: target, Branch: "main",
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Changed {
+		t.Fatalf("Update() results = %#v, want one clean unchanged source", results)
+	}
+	for _, path := range []string{localOnly, ignored} {
+		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("read-only source pollution survived update at %s: %v", path, statErr)
+		}
+	}
+	if status := run(target, "status", "--porcelain", "--ignored"); status != "" {
+		t.Fatalf("read-only source remains dirty after update:\n%s", status)
+	}
+}
+
 // TestAddRollbackCleansSubmoduleGitdirForReAdd proves that when an add fails
 // after cloning and rolls back, the leftover .git/modules gitdir is removed so a
 // subsequent add of the same path is not refused as an existing local repo.

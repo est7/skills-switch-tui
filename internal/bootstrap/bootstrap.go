@@ -12,6 +12,7 @@ import (
 	"github.com/est7/skills-switch-tui/internal/client"
 	"github.com/est7/skills-switch-tui/internal/resource"
 	"github.com/est7/skills-switch-tui/internal/source"
+	"github.com/est7/skills-switch-tui/internal/userresource"
 )
 
 const (
@@ -105,10 +106,9 @@ func initializeResourceFiles(layout resource.Layout) error {
 		filepath.Join(layout.SkillsRoot(), "vendor", "shared"),
 		filepath.Dir(layout.MCPCatalogFile()),
 		layout.SystemPromptsRoot(),
-		filepath.Join(layout.CommandsRoot(), "shared"),
-		filepath.Join(layout.HooksRoot(), "shared"),
-		filepath.Join(layout.AgentsRoot(), "shared"),
-		filepath.Join(layout.OutputStylesRoot(), "claude-only"),
+	}
+	for _, descriptor := range userresource.Descriptors() {
+		directories = append(directories, filepath.Join(layout.UserResourceRoot(descriptor.Directory), descriptor.BootstrapScope))
 	}
 	for _, directory := range directories {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
@@ -131,19 +131,31 @@ func initializeResourceFiles(layout resource.Layout) error {
 }
 
 func writeFileIfAbsent(path, content string) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if errors.Is(err, os.ErrExist) {
-		return nil
-	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".resource-init-*")
 	if err != nil {
-		return fmt.Errorf("create resource file %s: %w", path, err)
+		return fmt.Errorf("create temporary resource file for %s: %w", path, err)
 	}
+	temporaryPath := file.Name()
+	defer os.Remove(temporaryPath)
 	if _, err := file.WriteString(content); err != nil {
 		file.Close()
 		return fmt.Errorf("write resource file %s: %w", path, err)
 	}
+	if err := file.Chmod(0o644); err != nil {
+		file.Close()
+		return fmt.Errorf("set resource file permissions %s: %w", path, err)
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return fmt.Errorf("sync resource file %s: %w", path, err)
+	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close resource file %s: %w", path, err)
+	}
+	if err := os.Link(temporaryPath, path); errors.Is(err, os.ErrExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("install resource file %s: %w", path, err)
 	}
 	return nil
 }

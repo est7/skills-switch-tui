@@ -251,6 +251,53 @@ func TestSourceToggleAllClientsPreflightsTheWholeMatrixAtomically(t *testing.T) 
 	}
 }
 
+func TestResourceTabsExposeOnlyClientsWithMatchingAdapters(t *testing.T) {
+	registry, err := client.NewRegistry(map[client.ID]client.Definition{
+		"mcp-only":   {ProjectMCPFile: ".mcp-only.json", ProjectMCPFormat: client.MCPClaudeJSON},
+		"skill-only": {ProjectSkillsDir: ".skill-only/skills"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded := catalog.Catalog{Clients: registry}
+	model := NewModel(loaded, t.TempDir(), projection.New(t.TempDir(), loaded), nil, i18n.New(i18n.English))
+
+	if got := model.clientsForTab(); containsClient(got, "mcp-only") || !containsClient(got, "skill-only") {
+		t.Fatalf("Skill tab clients = %v", got)
+	}
+	model.tab = tabMCP
+	if got := model.clientsForTab(); !containsClient(got, "mcp-only") || containsClient(got, "skill-only") {
+		t.Fatalf("MCP tab clients = %v", got)
+	}
+}
+
+func containsClient(clients []client.ID, target client.ID) bool {
+	for _, clientID := range clients {
+		if clientID == target {
+			return true
+		}
+	}
+	return false
+}
+
+func TestEveryUserResourceDescriptorHasExactlyOneTab(t *testing.T) {
+	counts := make(map[userresource.Kind]int)
+	for _, descriptor := range tabDescriptors {
+		if descriptor.userResource {
+			counts[descriptor.resourceKind]++
+		}
+	}
+	for _, descriptor := range userresource.Descriptors() {
+		if counts[descriptor.Kind] != 1 {
+			t.Fatalf("resource kind %s has %d TUI tabs, want 1", descriptor.Kind, counts[descriptor.Kind])
+		}
+		delete(counts, descriptor.Kind)
+	}
+	if len(counts) != 0 {
+		t.Fatalf("TUI tabs reference unknown resource kinds: %v", counts)
+	}
+}
+
 func TestUpdateAllRefreshesEveryVendorSource(t *testing.T) {
 	sourcesRoot := t.TempDir()
 	projectRoot := t.TempDir()
@@ -264,6 +311,7 @@ func TestUpdateAllRefreshesEveryVendorSource(t *testing.T) {
 	git := &tuiSourceGit{responses: make(map[string]string)}
 	for _, candidate := range loaded.Sources {
 		git.responses[candidate.Path+"|reset --hard HEAD"] = "HEAD is now at aaaaaaaa current\n"
+		git.responses[candidate.Path+"|clean -ffdx"] = ""
 		git.responses[candidate.Path+"|rev-parse HEAD"] = "aaaaaaaa\n"
 		git.responses[candidate.Path+"|ls-remote origin refs/heads/main"] = "aaaaaaaa\trefs/heads/main\n"
 	}
@@ -301,10 +349,17 @@ func TestUpdateAllContinuesCleanSourcesAndReportsResetFailure(t *testing.T) {
 	broken := loaded.Sources[0]
 	clean := loaded.Sources[1]
 	git := &tuiSourceGit{responses: map[string]string{
-		clean.Path + "|reset --hard HEAD":                "HEAD is now at aaaaaaaa current\n",
-		clean.Path + "|rev-parse HEAD":                   "aaaaaaaa\n",
-		clean.Path + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
-		repositoryRoot + "|submodule update --init --remote -- resources/skills/vendor/shared/clean": "",
+		clean.Path + "|reset --hard HEAD":                                                   "HEAD is now at aaaaaaaa current\n",
+		clean.Path + "|clean -ffdx":                                                         "",
+		clean.Path + "|rev-parse HEAD":                                                      "aaaaaaaa\n",
+		clean.Path + "|ls-remote origin refs/heads/main":                                    "bbbbbbbb\trefs/heads/main\n",
+		repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/clean": "",
+		clean.Path + "|fetch --no-tags origin refs/heads/main":                              "",
+		clean.Path + "|reset --hard bbbbbbbb":                                               "",
+		clean.Path + "|rev-parse --verify HEAD":                                             "bbbbbbbb\n",
+		clean.Path + "|sparse-checkout disable":                                             "",
+		clean.Path + "|sparse-checkout init --cone":                                         "",
+		clean.Path + "|sparse-checkout set skills":                                          "",
 	}}
 	updater := source.Manager{RepositoryRoot: repositoryRoot, SkillsRoot: sourcesRoot, Git: git}
 	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), &updater, i18n.New(i18n.English))
@@ -323,9 +378,9 @@ func TestUpdateAllContinuesCleanSourcesAndReportsResetFailure(t *testing.T) {
 		}
 	}
 	if !strings.Contains(model.status, "Updated 1 source(s)") {
-		t.Fatalf("partial update status = %q", model.status)
+		t.Fatalf("partial update status = %q err=%v calls=%v", model.status, model.err, git.calls)
 	}
-	if !git.called(repositoryRoot + "|submodule update --init --remote -- resources/skills/vendor/shared/clean") {
+	if !git.called(repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/clean") {
 		t.Fatalf("clean source was not updated; calls = %v", git.calls)
 	}
 }
@@ -662,15 +717,15 @@ func TestResourceTabsToggleMCPCommandsHooksAndSystemPrompts(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English), Resources{
-		MCPCatalog:     mcpCatalog,
-		MCPManager:     mcp.NewManager(projectRoot, mcpCatalog, loaded.Clients),
-		Prompts:        prompts,
-		PromptManager:  systemprompt.NewManager(userHome, loaded.Clients),
-		Commands:       commands,
-		CommandManager: userresource.NewManager(projectRoot, loaded.Clients),
-		Hooks:          hooks,
-		HookManager:    userresource.NewManager(projectRoot, loaded.Clients),
-		UserHome:       userHome,
+		MCPCatalog:    mcpCatalog,
+		MCPManager:    mcp.NewManager(projectRoot, mcpCatalog, loaded.Clients),
+		Prompts:       prompts,
+		PromptManager: systemprompt.NewManager(userHome, loaded.Clients),
+		UserResources: map[userresource.Kind]UserResourceSet{
+			userresource.KindCommand: {Catalog: commands, Manager: userresource.NewManager(projectRoot, loaded.Clients)},
+			userresource.KindHook:    {Catalog: hooks, Manager: userresource.NewManager(projectRoot, loaded.Clients)},
+		},
+		UserHome: userHome,
 	})
 
 	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyTab})

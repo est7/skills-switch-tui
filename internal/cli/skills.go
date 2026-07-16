@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/est7/skills-switch-tui/internal/catalog"
+	"github.com/est7/skills-switch-tui/internal/client"
 	"github.com/est7/skills-switch-tui/internal/i18n"
 	"github.com/est7/skills-switch-tui/internal/projection"
 	"github.com/spf13/cobra"
@@ -109,6 +110,11 @@ func newSkillCreateCommand(options *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if scope != "shared" {
+				if err := runtime.catalog.Clients.Require(client.ID(scope), client.CapabilitySkills); err != nil {
+					return err
+				}
+			}
 			skillDir, err := catalog.ScaffoldLocalSkill(runtime.resources.SkillsRoot(), scope, group, args[0], description)
 			if err != nil {
 				return err
@@ -180,13 +186,10 @@ func newSkillDeleteCommand(options *rootOptions) *cobra.Command {
 			if !assumeYes {
 				return errors.New(runtime.translator.Text(i18n.DeleteNeedsConfirmation, id))
 			}
-			targetClients := runtime.catalog.Clients.IDs()
 			if len(clients) > 0 {
-				targetClients, err = parseClients(clients, runtime.catalog, runtime.translator)
-				if err != nil {
-					return err
-				}
+				return errors.New("--client cannot limit cleanup when deleting a shared provider; omit it to retire every projection")
 			}
+			targetClients := runtime.catalog.Clients.IDsFor(client.CapabilitySkills)
 			operations := make([]projection.Operation, 0, len(targetClients)*2)
 			for _, clientID := range targetClients {
 				operations = append(operations, projection.Operation{Skills: plan.skills, Client: clientID, Enabled: false, Scope: projection.ScopeProject})

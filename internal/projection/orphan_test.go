@@ -69,6 +69,42 @@ func TestOrphanedProjectionsSkipsEmptySource(t *testing.T) {
 	}
 }
 
+func TestOrphanedProjectionsAfterRefreshDetectsEmptySourceRemoval(t *testing.T) {
+	projectRoot := t.TempDir()
+	sourceRoot := t.TempDir()
+	one := newSkill(t, sourceRoot, "one")
+	before := sourceWith(sourceRoot, one)
+	manager := New(projectRoot, catalog.Catalog{Clients: client.DefaultRegistry(), Sources: []catalog.Source{before}})
+	if err := manager.SetEnabled([]catalog.Skill{one}, catalog.ClientCodex, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(one.Path); err != nil {
+		t.Fatal(err)
+	}
+
+	refreshed := catalog.Source{ID: before.ID, Kind: catalog.SourceVendor, Path: sourceRoot}
+	orphans, err := manager.OrphanedProjectionsAfterRefreshAt([]catalog.Source{refreshed}, ScopeProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orphans) != 1 || orphans[0].Name != "one" {
+		t.Fatalf("orphans = %#v, want the last removed skill", orphans)
+	}
+}
+
+func TestOrphanedProjectionsAfterRefreshRejectsMissingCheckout(t *testing.T) {
+	projectRoot := t.TempDir()
+	missingRoot := filepath.Join(t.TempDir(), "missing")
+	manager := New(projectRoot, catalog.Catalog{Clients: client.DefaultRegistry()})
+
+	_, err := manager.OrphanedProjectionsAfterRefreshAt([]catalog.Source{{
+		ID: "vendor-shared/missing", Kind: catalog.SourceVendor, Path: missingRoot,
+	}}, ScopeProject)
+	if err == nil || !strings.Contains(err.Error(), "vendor-shared/missing") {
+		t.Fatalf("error = %v, want missing refreshed checkout attribution", err)
+	}
+}
+
 func TestOrphanedProjectionsIgnoresPresentButUndiscoveredTarget(t *testing.T) {
 	projectRoot := t.TempDir()
 	sourceRoot := t.TempDir()

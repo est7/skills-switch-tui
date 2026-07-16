@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -148,5 +149,59 @@ func TestLoadCatalogRejectsAmbiguousTransport(t *testing.T) {
 
 	if _, err := LoadCatalog(path); err == nil {
 		t.Fatal("ambiguous server unexpectedly loaded")
+	}
+}
+
+func TestConcurrentServerAddsDoNotLoseUpdates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	servers := []Server{
+		{Name: "first", Transport: TransportStdio, Command: "first"},
+		{Name: "second", Transport: TransportStdio, Command: "second"},
+	}
+	errorsByIndex := make([]error, len(servers))
+	var wait sync.WaitGroup
+	for index, server := range servers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			errorsByIndex[index] = AddServer(path, server)
+		}()
+	}
+	wait.Wait()
+	for index, err := range errorsByIndex {
+		if err != nil {
+			t.Fatalf("AddServer(%s): %v", servers[index].Name, err)
+		}
+	}
+	loaded, err := LoadCatalog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, server := range servers {
+		if _, ok := loaded.Server(server.Name); !ok {
+			t.Fatalf("concurrent add lost %s: %v", server.Name, loaded.Names())
+		}
+	}
+}
+
+func TestLoadCatalogRejectsExplicitUnknownVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	if err := os.WriteFile(path, []byte(`{"version":2,"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadCatalog(path); err == nil || !strings.Contains(err.Error(), "unsupported MCP catalog version: 2") {
+		t.Fatalf("LoadCatalog() error = %v", err)
+	}
+}
+
+func TestAddServerRejectsPlaintextSecretsAndAcceptsEnvironmentReferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	plain := Server{Name: "plain", Transport: TransportStdio, Command: "tool", Env: map[string]string{"API_TOKEN": "top-secret"}}
+	if err := AddServer(path, plain); err == nil || !strings.Contains(err.Error(), "env API_TOKEN") {
+		t.Fatalf("plaintext secret error = %v", err)
+	}
+	referenced := Server{Name: "referenced", Transport: TransportHTTP, URL: "https://example.test", Headers: map[string]string{"Authorization": "Bearer ${MCP_TOKEN}"}}
+	if err := AddServer(path, referenced); err != nil {
+		t.Fatalf("environment-backed secret reference rejected: %v", err)
 	}
 }

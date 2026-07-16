@@ -46,8 +46,8 @@ func (c Catalog) Resource(id string) (Resource, bool) {
 }
 
 func Discover(root string, kind Kind, clients client.Registry) (Catalog, error) {
-	if kind != KindCommand && kind != KindHook && kind != KindAgent && kind != KindOutputStyle {
-		return Catalog{}, fmt.Errorf("unknown user resource kind %q", kind)
+	if _, err := Describe(kind); err != nil {
+		return Catalog{}, err
 	}
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -139,16 +139,9 @@ func discoverScope(catalog *Catalog, scopeRoot, scope string) error {
 }
 
 func targetRoot(clients client.Registry, userHome string, kind Kind, clientID client.ID) (string, error) {
-	switch kind {
-	case KindCommand:
-		return clients.ProjectCommandsTargetDir(userHome, clientID)
-	case KindHook:
-		return clients.ProjectHooksTargetDir(userHome, clientID)
-	case KindAgent:
-		return clients.UserAgentsTargetDir(userHome, clientID)
-	case KindOutputStyle:
-		return clients.UserOutputStylesTargetDir(userHome, clientID)
-	default:
-		return "", fmt.Errorf("unknown user resource kind %q", kind)
+	descriptor, err := Describe(kind)
+	if err != nil {
+		return "", err
 	}
+	return descriptor.TargetDir(clients, userHome, clientID)
 }

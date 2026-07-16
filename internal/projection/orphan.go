@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/est7/skills-switch-tui/internal/catalog"
+	"github.com/est7/skills-switch-tui/internal/client"
 )
 
 // Orphan is a managed projection symlink that dangles: it points into a source's
@@ -19,6 +20,7 @@ import (
 // a projection whose skill is still present.
 type Orphan struct {
 	Client catalog.Client
+	Scope  Scope
 	Name   string
 	Path   string
 	Target string
@@ -48,23 +50,49 @@ func (m Manager) OrphanedProjections(sources []catalog.Source) ([]Orphan, error)
 }
 
 func (m Manager) OrphanedProjectionsAt(sources []catalog.Source, scope Scope) ([]Orphan, error) {
+	return m.orphanedProjectionsAt(sources, scope, false)
+}
+
+// OrphanedProjectionsAfterRefreshAt is the update-only variant of orphan
+// detection. A source that was successfully refreshed is known to be available,
+// so zero discovered Skills means the upstream repository genuinely removed its
+// last Skill and dangling projections may be retired. The checkout directory is
+// revalidated before scanning to keep a missing submodule from becoming a mass
+// deletion signal.
+func (m Manager) OrphanedProjectionsAfterRefreshAt(sources []catalog.Source, scope Scope) ([]Orphan, error) {
+	return m.orphanedProjectionsAt(sources, scope, true)
+}
+
+func (m Manager) orphanedProjectionsAt(sources []catalog.Source, scope Scope, refreshed bool) ([]Orphan, error) {
 	if scope == ScopeGlobal && m.userHome == "" {
 		return nil, errors.New("global skill scope requires a user home")
 	}
 	orphans := make([]Orphan, 0)
 	for _, source := range sources {
-		if len(source.Skills) == 0 {
-			continue
-		}
 		sourceRoot := filepath.Clean(source.Path)
 		if sourceRoot == "" || sourceRoot == "." {
+			continue
+		}
+		if refreshed {
+			info, err := os.Stat(sourceRoot)
+			if err != nil {
+				return nil, fmt.Errorf("inspect refreshed source %s at %s: %w", source.ID, sourceRoot, err)
+			}
+			if !info.IsDir() {
+				return nil, fmt.Errorf("inspect refreshed source %s at %s: not a directory", source.ID, sourceRoot)
+			}
+		} else if len(source.Skills) == 0 {
 			continue
 		}
 		live := make(map[string]bool, len(source.Skills))
 		for _, skill := range source.Skills {
 			live[filepath.Clean(skill.Path)] = true
 		}
-		for _, clientID := range m.clients.IDs() {
+		capability := client.CapabilityProjectSkills
+		if scope == ScopeGlobal {
+			capability = client.CapabilityGlobalSkills
+		}
+		for _, clientID := range m.clients.IDsFor(capability) {
 			var targetDir string
 			var err error
 			if scope == ScopeGlobal {
@@ -118,6 +146,7 @@ func (m Manager) OrphanedProjectionsAt(sources []catalog.Source, scope Scope) ([
 				}
 				orphans = append(orphans, Orphan{
 					Client: clientID,
+					Scope:  scope,
 					Name:   entry.Name(),
 					Path:   linkPath,
 					Target: resolved,

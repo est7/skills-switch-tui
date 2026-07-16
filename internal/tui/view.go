@@ -51,7 +51,7 @@ func (m Model) View() tea.View {
 func (m Model) renderHeader() string {
 	scopeLabel := i18n.ProjectLabel
 	scopePath := m.project
-	if (m.tab == tabSkills && m.skillScope == projection.ScopeGlobal) || m.tab == tabAgents || m.tab == tabOutputStyles || m.tab == tabSystemPrompts {
+	if m.tabUsesUserHome() {
 		scopeLabel = i18n.UserLabel
 		scopePath = m.userHome
 	}
@@ -62,8 +62,9 @@ func (m Model) renderHeader() string {
 	brand = alignEdges(brand, m.renderLanguageSelector(), m.contentWidth())
 	scopeWidth := max(12, m.contentWidth()-lipgloss.Width(m.translator.Text(scopeLabel))-3)
 	scope := m.styles.scopeLabel.Render(strings.ToUpper(m.translator.Text(scopeLabel))) + "  " + m.styles.subtle.Render(truncate(scopePath, scopeWidth))
-	tabs := make([]string, 0, int(tabSystemPrompts)+1)
-	for candidate := tabSkills; candidate <= tabSystemPrompts; candidate++ {
+	tabs := make([]string, 0, len(tabDescriptors))
+	for _, descriptor := range tabDescriptors {
+		candidate := descriptor.tab
 		style := m.styles.tab
 		if candidate == m.tab {
 			style = m.styles.activeTab
@@ -91,12 +92,13 @@ func (m Model) renderHeader() string {
 }
 
 func (m Model) renderTable() string {
+	if isUserResourceTab(m.tab) {
+		return m.styles.panel.Width(m.contentWidth()).Render(m.renderUserResourceTable())
+	}
 	var content string
 	switch m.tab {
 	case tabMCP:
 		content = m.renderMCPTable()
-	case tabCommands, tabHooks, tabAgents, tabOutputStyles:
-		content = m.renderUserResourceTable()
 	case tabSystemPrompts:
 		content = m.renderPromptTable()
 	default:
@@ -233,7 +235,7 @@ func (m Model) renderResourceTable(labels []string, cell func(string, catalog.Cl
 	start := min(m.offset, len(labels)-1)
 	end := min(len(labels), start+m.visibleRowCount())
 	lines := []string{header}
-	clients := m.catalog.Clients.IDs()
+	clients := m.clientsForTab()
 	for index := start; index < end; index++ {
 		selected := index == m.cursor
 		rowBackground := m.styles.canvas
@@ -267,7 +269,7 @@ func (m Model) renderResourceTable(labels []string, cell func(string, catalog.Cl
 
 func (m Model) renderClientHeaders(start, end int) string {
 	var builder strings.Builder
-	clients := m.catalog.Clients.IDs()
+	clients := m.clientsForTab()
 	for index := start; index < end; index++ {
 		client := clients[index]
 		style := m.styles.tableHeader
@@ -317,7 +319,7 @@ func (m Model) renderRow(item row, selected bool, labelWidth, clientStart, clien
 	label = lipgloss.NewStyle().Width(labelWidth).MaxWidth(labelWidth).Background(rowBackground).Render(label)
 
 	var cells strings.Builder
-	clients := m.catalog.Clients.IDs()
+	clients := m.clientsForTab()
 	for clientIndex := clientStart; clientIndex < clientEnd; clientIndex++ {
 		client := clients[clientIndex]
 		value, style := m.cell(item, client)
@@ -378,7 +380,7 @@ func alignEdges(left, right string, width int) string {
 }
 
 func (m Model) visibleClientRange() (int, int) {
-	clients := m.catalog.Clients.IDs()
+	clients := m.clientsForTab()
 	if len(clients) == 0 {
 		return 0, 0
 	}
@@ -451,11 +453,12 @@ func (m Model) stateCell(skill catalog.Skill, client catalog.Client) (string, li
 }
 
 func (m Model) renderDetail() string {
+	if isUserResourceTab(m.tab) {
+		return m.renderUserResourceDetail()
+	}
 	switch m.tab {
 	case tabMCP:
 		return m.renderMCPDetail()
-	case tabCommands, tabHooks, tabAgents, tabOutputStyles:
-		return m.renderUserResourceDetail()
 	case tabSystemPrompts:
 		return m.renderPromptDetail()
 	}
@@ -469,6 +472,9 @@ func (m Model) renderDetail() string {
 		kind := m.translator.Text(i18n.LocalSource)
 		if source.IsVendor() {
 			kind = m.translator.Text(i18n.VendorBranch, source.Branch)
+			if source.IsCheckoutMissing() {
+				kind += " · " + m.translator.Text(i18n.SourceCheckoutMissing)
+			}
 			if source.DiscoveryStrategy != "" {
 				kind += " · " + m.translator.Text(i18n.DiscoveryLabel, source.DiscoveryStrategy)
 			}
@@ -482,8 +488,8 @@ func (m Model) renderDetail() string {
 		skill := source.Skills[selected.skillIndex]
 		lines = append(lines, m.styles.accent.Render(skill.Name)+"  "+m.styles.subtle.Render(skill.ID))
 		lines = append(lines, truncate(skill.Description, m.detailTextWidth()))
-		targets := make([]string, 0, len(m.catalog.Clients.IDs()))
-		for _, client := range m.catalog.Clients.IDs() {
+		targets := make([]string, 0, len(m.clientsForTab()))
+		for _, client := range m.clientsForTab() {
 			if skill.Supports(client) {
 				targets = append(targets, string(client))
 			}
@@ -611,22 +617,7 @@ func (m Model) renderPromptDetail() string {
 }
 
 func (m Model) tabLabel(tab resourceTab) string {
-	switch tab {
-	case tabMCP:
-		return m.translator.Text(i18n.TabMCP)
-	case tabCommands:
-		return m.translator.Text(i18n.TabCommands)
-	case tabHooks:
-		return m.translator.Text(i18n.TabHooks)
-	case tabAgents:
-		return m.translator.Text(i18n.TabAgents)
-	case tabOutputStyles:
-		return m.translator.Text(i18n.TabOutputStyles)
-	case tabSystemPrompts:
-		return m.translator.Text(i18n.TabSystemPrompts)
-	default:
-		return m.translator.Text(i18n.TabSkills)
-	}
+	return m.translator.Text(describeTab(tab).label)
 }
 
 func (m Model) filterLabel(filter filterMode) string {
@@ -674,17 +665,12 @@ func paintCanvasBackground(content string, background color.Color) string {
 }
 
 func (m Model) tabCount(tab resourceTab) int {
+	if isUserResourceTab(tab) {
+		return len(m.userResourceSets[describeTab(tab).resourceKind].Catalog.Resources)
+	}
 	switch tab {
 	case tabMCP:
 		return len(m.mcpCatalog.Servers)
-	case tabCommands:
-		return len(m.commands.Resources)
-	case tabHooks:
-		return len(m.hooks.Resources)
-	case tabAgents:
-		return len(m.agents.Resources)
-	case tabOutputStyles:
-		return len(m.outputStyles.Resources)
 	case tabSystemPrompts:
 		return len(m.prompts.Groups)
 	default:

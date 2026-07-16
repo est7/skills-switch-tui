@@ -145,6 +145,28 @@ func TestStateReportsHistoricalGlobalProjectDuplicate(t *testing.T) {
 	}
 }
 
+func TestProjectStateSurfacesBrokenGlobalProjection(t *testing.T) {
+	projectRoot := t.TempDir()
+	userHome := t.TempDir()
+	sourceRoot := t.TempDir()
+	skill := newSkill(t, sourceRoot, "global-broken")
+	loaded := catalog.Catalog{Clients: client.DefaultRegistry(), Sources: []catalog.Source{{ID: "test", Skills: []catalog.Skill{skill}}}}
+	manager := NewWithUserHome(projectRoot, userHome, loaded)
+	if err := manager.SetEnabledAt([]catalog.Skill{skill}, catalog.ClientCodex, true, ScopeGlobal); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(skill.Path, "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+	state, err := manager.StateAt(skill, catalog.ClientCodex, ScopeProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != StateBroken {
+		t.Fatalf("project state = %s, want broken global projection", state)
+	}
+}
+
 func TestGlobalPromotionConflictPreservesProjectProjection(t *testing.T) {
 	projectRoot := t.TempDir()
 	userHome := t.TempDir()
@@ -343,6 +365,83 @@ func TestRollbackPreservesLinksReplacedDuringApply(t *testing.T) {
 		}
 		if !strings.Contains(string(contents), want) {
 			t.Fatalf("replacement contents at %s = %q", path, contents)
+		}
+	}
+}
+
+func TestRetireSourceRemovesOnlyExactLinksAndCanRestoreThem(t *testing.T) {
+	projectRoot := t.TempDir()
+	userHome := t.TempDir()
+	sourceRoot := t.TempDir()
+	skill := newSkill(t, sourceRoot, "owned")
+	source := catalog.Source{ID: skill.SourceID, Path: sourceRoot, Skills: []catalog.Skill{skill}}
+	manager := NewWithUserHome(projectRoot, userHome, catalog.Catalog{
+		Clients: client.DefaultRegistry(),
+		Sources: []catalog.Source{source},
+	})
+
+	projectLink := filepath.Join(projectRoot, ".agents", "skills", skill.Name)
+	globalLink := filepath.Join(userHome, ".agents", "skills", skill.Name)
+	for _, link := range []string{projectLink, globalLink} {
+		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(skill.Path, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	userFile := filepath.Join(projectRoot, ".claude", "skills", skill.Name)
+	if err := os.MkdirAll(filepath.Dir(userFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userFile, []byte("user owned\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(skill.Path, "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	retirement, err := manager.RetireSource(source, ScopeProject, ScopeGlobal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range []string{projectLink, globalLink} {
+		assertMissing(t, link)
+	}
+	if contents, err := os.ReadFile(userFile); err != nil || string(contents) != "user owned\n" {
+		t.Fatalf("user file changed: contents=%q err=%v", contents, err)
+	}
+
+	if err := retirement.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range []string{projectLink, globalLink} {
+		assertLinkTarget(t, link, skill.Path)
+	}
+}
+
+func TestHealthAtPreservesBrokenProjectionCause(t *testing.T) {
+	projectRoot := t.TempDir()
+	sourceRoot := t.TempDir()
+	skill := newSkill(t, sourceRoot, "broken")
+	manager := newManager(projectRoot, []catalog.Skill{skill})
+	if err := manager.SetEnabled([]catalog.Skill{skill}, catalog.ClientCodex, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(skill.Path, "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	health, err := manager.HealthAt(skill, catalog.ClientCodex, ScopeProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.State != StateBroken || health.Cause == nil {
+		t.Fatalf("health = %#v, want broken with a concrete cause", health)
+	}
+	for _, fragment := range []string{"provider SKILL.md", "no such file"} {
+		if !strings.Contains(health.Cause.Error(), fragment) {
+			t.Fatalf("health cause %q does not contain %q", health.Cause, fragment)
 		}
 	}
 }

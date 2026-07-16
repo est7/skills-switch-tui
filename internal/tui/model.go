@@ -32,6 +32,49 @@ const (
 	tabSystemPrompts
 )
 
+type tabDescriptor struct {
+	tab          resourceTab
+	capability   client.Capability
+	label        i18n.Key
+	userResource bool
+	resourceKind userresource.Kind
+}
+
+var tabDescriptors = []tabDescriptor{
+	{tab: tabSkills, capability: client.CapabilityProjectSkills, label: i18n.TabSkills},
+	{tab: tabMCP, capability: client.CapabilityMCP, label: i18n.TabMCP},
+	{tab: tabCommands, label: i18n.TabCommands, userResource: true, resourceKind: userresource.KindCommand},
+	{tab: tabHooks, label: i18n.TabHooks, userResource: true, resourceKind: userresource.KindHook},
+	{tab: tabAgents, label: i18n.TabAgents, userResource: true, resourceKind: userresource.KindAgent},
+	{tab: tabOutputStyles, label: i18n.TabOutputStyles, userResource: true, resourceKind: userresource.KindOutputStyle},
+	{tab: tabSystemPrompts, capability: client.CapabilitySystemPrompts, label: i18n.TabSystemPrompts},
+}
+
+func describeTab(tab resourceTab) tabDescriptor {
+	for _, descriptor := range tabDescriptors {
+		if descriptor.tab == tab {
+			return descriptor
+		}
+	}
+	return tabDescriptors[0]
+}
+
+func isUserResourceTab(tab resourceTab) bool {
+	return describeTab(tab).userResource
+}
+
+func (m Model) tabUsesUserHome() bool {
+	if m.tab == tabSystemPrompts || (m.tab == tabSkills && m.skillScope == projection.ScopeGlobal) {
+		return true
+	}
+	descriptor := describeTab(m.tab)
+	if !descriptor.userResource {
+		return false
+	}
+	resourceDescriptor, err := userresource.Describe(descriptor.resourceKind)
+	return err == nil && resourceDescriptor.TargetScope == userresource.TargetUser
+}
+
 type filterMode int
 
 const (
@@ -71,6 +114,8 @@ type row struct {
 
 type updateFinishedMsg struct {
 	results []source.UpdateResult
+	catalog catalog.Catalog
+	pruned  []projection.Orphan
 	err     error
 }
 
@@ -107,64 +152,55 @@ type deleteFinishedMsg struct {
 }
 
 type Model struct {
-	catalog        catalog.Catalog
-	project        string
-	userHome       string
-	projection     projection.Manager
-	mcpCatalog     mcp.Catalog
-	mcpManager     mcp.Manager
-	prompts        systemprompt.Catalog
-	promptMgr      systemprompt.Manager
-	commands       userresource.Catalog
-	commandMgr     userresource.Manager
-	hooks          userresource.Catalog
-	hookMgr        userresource.Manager
-	agents         userresource.Catalog
-	agentMgr       userresource.Manager
-	outputStyles   userresource.Catalog
-	outputStyleMgr userresource.Manager
-	updater        *source.Manager
-	tab            resourceTab
-	skillScope     projection.Scope
-	clientIndex    int
-	cursor         int
-	offset         int
-	width          int
-	height         int
-	expanded       map[string]bool
-	filter         filterMode
-	searching      bool
-	search         textinput.Model
-	help           help.Model
-	keys           keyMap
-	showHelp       bool
-	updating       bool
-	deleting       bool
-	pendingDelete  *deletionPlan
-	active         *activeForm
-	isDark         bool
-	styles         styles
-	translator     i18n.Translator
-	status         string
-	err            error
-	context        context.Context
-	cancel         context.CancelFunc
+	catalog          catalog.Catalog
+	project          string
+	userHome         string
+	projection       projection.Manager
+	mcpCatalog       mcp.Catalog
+	mcpManager       mcp.Manager
+	prompts          systemprompt.Catalog
+	promptMgr        systemprompt.Manager
+	userResourceSets map[userresource.Kind]UserResourceSet
+	updater          *source.Manager
+	tab              resourceTab
+	skillScope       projection.Scope
+	clientIndex      int
+	cursor           int
+	offset           int
+	width            int
+	height           int
+	expanded         map[string]bool
+	filter           filterMode
+	searching        bool
+	search           textinput.Model
+	help             help.Model
+	keys             keyMap
+	showHelp         bool
+	updating         bool
+	deleting         bool
+	pendingDelete    *deletionPlan
+	active           *activeForm
+	isDark           bool
+	styles           styles
+	translator       i18n.Translator
+	status           string
+	err              error
+	context          context.Context
+	cancel           context.CancelFunc
 }
 
 type Resources struct {
-	MCPCatalog         mcp.Catalog
-	MCPManager         mcp.Manager
-	Prompts            systemprompt.Catalog
-	PromptManager      systemprompt.Manager
-	Commands           userresource.Catalog
-	CommandManager     userresource.Manager
-	Hooks              userresource.Catalog
-	HookManager        userresource.Manager
-	Agents             userresource.Catalog
-	AgentManager       userresource.Manager
-	OutputStyles       userresource.Catalog
-	OutputStyleManager userresource.Manager
-	UserHome           string
+	MCPCatalog    mcp.Catalog
+	MCPManager    mcp.Manager
+	Prompts       systemprompt.Catalog
+	PromptManager systemprompt.Manager
+	UserResources map[userresource.Kind]UserResourceSet
+	UserHome      string
+}
+
+type UserResourceSet struct {
+	Catalog userresource.Catalog
+	Manager userresource.Manager
 }
 
 func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Manager, updater *source.Manager, translator i18n.Translator, resources ...Resources) Model {
@@ -182,37 +218,33 @@ func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Man
 	applyHelpStyles(&helpModel, theme)
 	operationContext, cancel := context.WithCancel(context.Background())
 	model := Model{
-		catalog:    loaded,
-		project:    projectRoot,
-		projection: manager,
-		skillScope: projection.ScopeProject,
-		updater:    updater,
-		width:      100,
-		height:     30,
-		expanded:   make(map[string]bool),
-		search:     search,
-		help:       helpModel,
-		keys:       defaultKeyMap(translator),
-		isDark:     true,
-		styles:     theme,
-		translator: translator,
-		status:     translator.Text(i18n.Ready),
-		context:    operationContext,
-		cancel:     cancel,
+		catalog:          loaded,
+		project:          projectRoot,
+		projection:       manager,
+		skillScope:       projection.ScopeProject,
+		updater:          updater,
+		width:            100,
+		height:           30,
+		expanded:         make(map[string]bool),
+		search:           search,
+		help:             helpModel,
+		keys:             defaultKeyMap(translator),
+		isDark:           true,
+		styles:           theme,
+		translator:       translator,
+		status:           translator.Text(i18n.Ready),
+		context:          operationContext,
+		cancel:           cancel,
+		userResourceSets: make(map[userresource.Kind]UserResourceSet),
 	}
 	if len(resources) > 0 {
 		model.mcpCatalog = resources[0].MCPCatalog
 		model.mcpManager = resources[0].MCPManager
 		model.prompts = resources[0].Prompts
 		model.promptMgr = resources[0].PromptManager
-		model.commands = resources[0].Commands
-		model.commandMgr = resources[0].CommandManager
-		model.hooks = resources[0].Hooks
-		model.hookMgr = resources[0].HookManager
-		model.agents = resources[0].Agents
-		model.agentMgr = resources[0].AgentManager
-		model.outputStyles = resources[0].OutputStyles
-		model.outputStyleMgr = resources[0].OutputStyleManager
+		for kind, set := range resources[0].UserResources {
+			model.userResourceSets[kind] = set
+		}
 		model.userHome = resources[0].UserHome
 	}
 	model.syncContextKeys()
@@ -247,11 +279,15 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case updateFinishedMsg:
 		m.updating = false
-		reloaded, reloadErr := catalog.Load(m.catalog.Root, m.catalog.Clients)
+		reloaded := message.catalog
+		var reloadErr error
+		if reloaded.Root == "" {
+			reloaded, reloadErr = catalog.Load(m.catalog.Root, m.catalog.Clients)
+		}
 		if reloadErr == nil {
 			m.catalog = reloaded
 			m.projection = projection.NewWithUserHome(m.project, m.userHome, reloaded)
-			if clients := m.catalog.Clients.IDs(); m.clientIndex >= len(clients) {
+			if clients := m.clientsForTab(); m.clientIndex >= len(clients) {
 				m.clientIndex = max(0, len(clients)-1)
 			}
 			m.clampCursor()
@@ -489,27 +525,12 @@ func (m Model) executeDelete() (tea.Model, tea.Cmd) {
 	m.err = nil
 	m.status = m.translator.Text(i18n.Deleting, plan.label)
 
-	clients := m.catalog.Clients.IDs()
+	clients := m.clientsForTab()
 	if plan.kind == deleteMCPServer {
 		mcpManager := m.mcpManager
 		catalogPath := m.mcpCatalog.Path
 		return m, func() tea.Msg {
-			operations := make([]mcp.Operation, 0, len(clients))
-			for _, clientID := range clients {
-				state, err := mcpManager.State(plan.server, clientID)
-				if err != nil {
-					return deleteFinishedMsg{plan: plan, err: fmt.Errorf("inspect MCP projection: %w", err)}
-				}
-				if state == mcp.StateEnabled {
-					operations = append(operations, mcp.Operation{Server: plan.server, Client: clientID, Enabled: false})
-				}
-			}
-			if len(operations) > 0 {
-				if err := mcpManager.Apply(operations); err != nil {
-					return deleteFinishedMsg{plan: plan, err: fmt.Errorf("clear MCP projections before delete: %w", err)}
-				}
-			}
-			return deleteFinishedMsg{plan: plan, err: mcp.RemoveServer(catalogPath, plan.server)}
+			return deleteFinishedMsg{plan: plan, err: mcp.RemoveWithProjections(mcpManager, catalogPath, plan.server, clients)}
 		}
 	}
 
@@ -517,7 +538,16 @@ func (m Model) executeDelete() (tea.Model, tea.Cmd) {
 	root := m.catalog.Root
 	ctx := m.context
 	updater := m.updater
+	projectRoot := m.project
+	userHome := m.userHome
+	registry := m.catalog.Clients
 	return m, func() tea.Msg {
+		if plan.kind == deleteVendorSource {
+			manager := *updater
+			manager.Clients = registry
+			err := (source.Lifecycle{Manager: manager, ProjectRoot: projectRoot, UserHome: userHome}).Remove(ctx, plan.source)
+			return deleteFinishedMsg{plan: plan, err: err}
+		}
 		operations := make([]projection.Operation, 0, len(clients)*2)
 		for _, clientID := range clients {
 			operations = append(operations, projection.Operation{Skills: plan.skills, Client: clientID, Enabled: false, Scope: projection.ScopeProject})
@@ -528,12 +558,7 @@ func (m Model) executeDelete() (tea.Model, tea.Cmd) {
 		if err := proj.Apply(operations); err != nil {
 			return deleteFinishedMsg{plan: plan, err: fmt.Errorf("clear projections before delete: %w", err)}
 		}
-		var err error
-		if plan.kind == deleteVendorSource {
-			err = updater.Remove(ctx, plan.source)
-		} else {
-			err = catalog.RemoveLocalResource(root, plan.path)
-		}
+		err := catalog.RemoveLocalResource(root, plan.path)
 		return deleteFinishedMsg{plan: plan, err: err}
 	}
 }
@@ -553,7 +578,7 @@ func (m *Model) reloadCatalog() error {
 		m.mcpCatalog = mcpReloaded
 		m.mcpManager = mcp.NewManager(m.project, mcpReloaded, reloaded.Clients)
 	}
-	if clients := m.catalog.Clients.IDs(); m.clientIndex >= len(clients) {
+	if clients := m.clientsForTab(); m.clientIndex >= len(clients) {
 		m.clientIndex = max(0, len(clients)-1)
 	}
 	m.clampCursor()
@@ -620,8 +645,20 @@ func (m *Model) cycleFilter(delta int) {
 }
 
 func (m *Model) cycleResource(delta int) {
-	count := int(tabSystemPrompts) + 1
-	m.tab = resourceTab((int(m.tab) + delta + count) % count)
+	var previous client.ID
+	if clients := m.clientsForTab(); len(clients) > 0 && m.clientIndex < len(clients) {
+		previous = clients[m.clientIndex]
+	}
+	current := 0
+	for index, descriptor := range tabDescriptors {
+		if descriptor.tab == m.tab {
+			current = index
+			break
+		}
+	}
+	next := (current + delta + len(tabDescriptors)) % len(tabDescriptors)
+	m.tab = tabDescriptors[next].tab
+	m.clientIndex = indexClient(m.clientsForTab(), previous)
 	if m.tab != tabSkills && m.filter == filterArchive {
 		m.filter = filterAll
 	}
@@ -640,14 +677,25 @@ func (m *Model) toggleSkillScope() {
 	if m.tab != tabSkills {
 		return
 	}
+	previous := m.currentClient()
 	if m.skillScope == projection.ScopeGlobal {
 		m.skillScope = projection.ScopeProject
 	} else {
 		m.skillScope = projection.ScopeGlobal
 	}
+	m.clientIndex = indexClient(m.clientsForTab(), previous)
 	m.cursor = 0
 	m.offset = 0
 	m.status = m.translator.Text(i18n.ScopeSelected, m.skillScope)
+}
+
+func indexClient(clients []client.ID, target client.ID) int {
+	for index, clientID := range clients {
+		if clientID == target {
+			return index
+		}
+	}
+	return 0
 }
 
 func (m Model) skillState(skill catalog.Skill, client catalog.Client) (projection.State, error) {
@@ -665,7 +713,7 @@ func (m *Model) moveCursor(delta int) {
 }
 
 func (m *Model) moveClient(delta int) {
-	clients := m.catalog.Clients.IDs()
+	clients := m.clientsForTab()
 	m.clientIndex = (m.clientIndex + delta + len(clients)) % len(clients)
 	m.status = m.translator.Text(i18n.TargetSelected, m.currentClient())
 }
@@ -684,12 +732,13 @@ func (m *Model) toggleExpanded() {
 }
 
 func (m *Model) toggleSelection() {
+	if isUserResourceTab(m.tab) {
+		m.toggleUserResourceSelection()
+		return
+	}
 	switch m.tab {
 	case tabMCP:
 		m.toggleMCPSelection()
-		return
-	case tabCommands, tabHooks, tabAgents, tabOutputStyles:
-		m.toggleUserResourceSelection()
 		return
 	case tabSystemPrompts:
 		m.togglePromptSelection()
@@ -785,12 +834,13 @@ func (m *Model) toggleSkillSelection() {
 }
 
 func (m *Model) toggleAllClients() {
+	if isUserResourceTab(m.tab) {
+		m.toggleAllClientsUserResource()
+		return
+	}
 	switch m.tab {
 	case tabMCP:
 		m.toggleAllClientsMCP()
-		return
-	case tabCommands, tabHooks, tabAgents, tabOutputStyles:
-		m.toggleAllClientsUserResource()
 		return
 	case tabSystemPrompts:
 		m.status = m.translator.Text(i18n.AllClientsNotForPrompts)
@@ -808,7 +858,7 @@ func (m *Model) toggleAllClients() {
 	if !sourceSelection {
 		skills = []catalog.Skill{source.Skills[selected.skillIndex]}
 	}
-	clients := m.catalog.Clients.IDs()
+	clients := m.clientsForTab()
 	type stateKey struct {
 		skill  int
 		client catalog.Client
@@ -939,7 +989,7 @@ func (m *Model) toggleAllClientsMCP() {
 		return
 	}
 	name := names[m.cursor]
-	clients := m.catalog.Clients.IDs()
+	clients := m.clientsForTab()
 	states := make(map[catalog.Client]mcp.State, len(clients))
 	compatibleCount := 0
 	enable := false
@@ -1034,7 +1084,7 @@ func (m *Model) toggleAllClientsUserResource() {
 	}
 	resource := resources[m.cursor]
 	manager := m.userResourceManager()
-	clients := m.catalog.Clients.IDs()
+	clients := m.clientsForTab()
 	states := make(map[catalog.Client]userresource.State, len(clients))
 	compatibleCount := 0
 	enable := false
@@ -1158,9 +1208,11 @@ func (m Model) startUpdate(all bool) (tea.Model, tea.Cmd) {
 		m.status = m.translator.Text(i18n.UpdatingSource, selectedSources[0].ID)
 	}
 	updater := *m.updater
+	updater.Clients = m.catalog.Clients
+	lifecycle := source.Lifecycle{Manager: updater, ProjectRoot: m.project, UserHome: m.userHome}
 	return m, func() tea.Msg {
-		results, err := updater.Update(m.context, selectedSources, false)
-		return updateFinishedMsg{results: results, err: err}
+		outcome, err := lifecycle.Update(m.context, selectedSources, false)
+		return updateFinishedMsg{results: outcome.Results, catalog: outcome.Catalog, pruned: outcome.Pruned, err: err}
 	}
 }
 
@@ -1189,7 +1241,21 @@ func (m Model) startPromptBuild() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) currentClient() catalog.Client {
-	return m.catalog.Clients.IDs()[m.clientIndex]
+	return m.clientsForTab()[m.clientIndex]
+}
+
+func (m Model) clientsForTab() []client.ID {
+	tab := describeTab(m.tab)
+	capability := tab.capability
+	if tab.userResource {
+		if descriptor, err := userresource.Describe(tab.resourceKind); err == nil {
+			capability = descriptor.Capability
+		}
+	}
+	if m.tab == tabSkills && m.skillScope == projection.ScopeGlobal {
+		capability = client.CapabilityGlobalSkills
+	}
+	return m.catalog.Clients.IDsFor(capability)
 }
 
 func (m Model) selectedRow() (row, bool) {
@@ -1214,11 +1280,12 @@ func (m *Model) clampCursor() {
 }
 
 func (m Model) activeRowCount() int {
+	if describeTab(m.tab).userResource {
+		return len(m.userResourcesForTab())
+	}
 	switch m.tab {
 	case tabMCP:
 		return len(m.mcpNames())
-	case tabCommands, tabHooks, tabAgents, tabOutputStyles:
-		return len(m.userResources())
 	case tabSystemPrompts:
 		return len(m.promptGroups())
 	default:
@@ -1227,18 +1294,9 @@ func (m Model) activeRowCount() int {
 }
 
 func (m Model) userResources() []userresource.Resource {
-	catalog := m.commands
-	manager := m.commandMgr
-	if m.tab == tabHooks {
-		catalog = m.hooks
-		manager = m.hookMgr
-	} else if m.tab == tabAgents {
-		catalog = m.agents
-		manager = m.agentMgr
-	} else if m.tab == tabOutputStyles {
-		catalog = m.outputStyles
-		manager = m.outputStyleMgr
-	}
+	set := m.userResourceSet()
+	catalog := set.Catalog
+	manager := set.Manager
 	query := strings.ToLower(strings.TrimSpace(m.search.Value()))
 	result := make([]userresource.Resource, 0, len(catalog.Resources))
 	for _, resource := range catalog.Resources {
@@ -1247,7 +1305,7 @@ func (m Model) userResources() []userresource.Resource {
 		}
 		if m.filter != filterAll {
 			matches := false
-			for _, clientID := range m.catalog.Clients.IDs() {
+			for _, clientID := range m.clientsForTab() {
 				state, err := manager.State(resource, clientID)
 				if err != nil {
 					matches = m.filter == filterIssues
@@ -1272,16 +1330,16 @@ func (m Model) userResources() []userresource.Resource {
 }
 
 func (m Model) userResourceManager() userresource.Manager {
-	if m.tab == tabHooks {
-		return m.hookMgr
-	}
-	if m.tab == tabAgents {
-		return m.agentMgr
-	}
-	if m.tab == tabOutputStyles {
-		return m.outputStyleMgr
-	}
-	return m.commandMgr
+	return m.userResourceSet().Manager
+}
+
+func (m Model) userResourceSet() UserResourceSet {
+	descriptor := describeTab(m.tab)
+	return m.userResourceSets[descriptor.resourceKind]
+}
+
+func (m Model) userResourcesForTab() []userresource.Resource {
+	return m.userResourceSet().Catalog.Resources
 }
 
 func (m Model) mcpNames() []string {
@@ -1303,7 +1361,7 @@ func (m Model) mcpMatchesFilter(name string) bool {
 	if m.filter == filterAll {
 		return true
 	}
-	for _, clientID := range m.catalog.Clients.IDs() {
+	for _, clientID := range m.clientsForTab() {
 		state, err := m.mcpManager.State(name, clientID)
 		if err != nil {
 			return m.filter == filterIssues
@@ -1410,6 +1468,9 @@ func (m Model) sourceMatchesFilter(source catalog.Source) bool {
 	if m.filter == filterAll || m.filter == filterArchive {
 		return true
 	}
+	if m.filter == filterIssues && source.IsCheckoutMissing() {
+		return true
+	}
 	for _, skill := range source.Skills {
 		if m.skillMatchesFilter(skill) {
 			return true
@@ -1422,7 +1483,7 @@ func (m Model) skillMatchesFilter(skill catalog.Skill) bool {
 	if m.filter == filterAll || m.filter == filterArchive {
 		return true
 	}
-	for _, client := range m.catalog.Clients.IDs() {
+	for _, client := range m.clientsForTab() {
 		state, err := m.skillState(skill, client)
 		if err != nil {
 			return m.filter == filterIssues

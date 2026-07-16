@@ -15,6 +15,8 @@ import (
 
 	"github.com/est7/skills-switch-tui/internal/client"
 	"gopkg.in/yaml.v3"
+
+	"github.com/est7/skills-switch-tui/internal/filelock"
 )
 
 type Client = client.ID
@@ -59,6 +61,18 @@ type Source struct {
 	DiscoveryPriority []DiscoveryStrategy
 	DiscoveryStrategy DiscoveryStrategy
 	Skills            []Skill
+	Availability      SourceAvailability
+}
+
+type SourceAvailability string
+
+const (
+	SourceAvailable       SourceAvailability = ""
+	SourceCheckoutMissing SourceAvailability = "checkout-missing"
+)
+
+func (s Source) IsCheckoutMissing() bool {
+	return s.Availability == SourceCheckoutMissing
 }
 
 func (s Source) IsArchived() bool {
@@ -128,10 +142,21 @@ type SourcePolicy struct {
 }
 
 func RegisterSource(root, id string, policy SourcePolicy) error {
+	configPath := filepath.Join(root, "catalog.yaml")
+	return filelock.WithExclusive(configPath, func() error {
+		return registerSourceLocked(root, id, policy)
+	})
+}
+
+func registerSourceLocked(root, id string, policy SourcePolicy) error {
 	if err := validateVendorSourceID(id); err != nil {
 		return err
 	}
 	configPath := filepath.Join(root, "catalog.yaml")
+	mode, err := configPermissions(configPath)
+	if err != nil {
+		return err
+	}
 	config, err := loadConfig(configPath)
 	if err != nil {
 		return err
@@ -168,12 +193,15 @@ func RegisterSource(root, id string, policy SourcePolicy) error {
 		temporary.Close()
 		return fmt.Errorf("write catalog temporary file: %w", err)
 	}
-	if err := temporary.Chmod(0o644); err != nil {
+	if err := temporary.Chmod(mode); err != nil {
 		temporary.Close()
 		return fmt.Errorf("set catalog permissions: %w", err)
 	}
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close catalog temporary file: %w", err)
+	}
+	if err := syncFile(temporaryPath); err != nil {
+		return fmt.Errorf("sync catalog temporary file: %w", err)
 	}
 	if err := os.Rename(temporaryPath, configPath); err != nil {
 		return fmt.Errorf("replace catalog config: %w", err)
@@ -196,10 +224,21 @@ func ValidateSourceRegistration(root, id string) error {
 }
 
 func UnregisterSource(root, id string) error {
+	configPath := filepath.Join(root, "catalog.yaml")
+	return filelock.WithExclusive(configPath, func() error {
+		return unregisterSourceLocked(root, id)
+	})
+}
+
+func unregisterSourceLocked(root, id string) error {
 	if err := validateVendorSourceID(id); err != nil {
 		return err
 	}
 	configPath := filepath.Join(root, "catalog.yaml")
+	mode, err := configPermissions(configPath)
+	if err != nil {
+		return err
+	}
 	config, err := loadConfig(configPath)
 	if err != nil {
 		return err
@@ -222,7 +261,7 @@ func UnregisterSource(root, id string) error {
 		temporary.Close()
 		return fmt.Errorf("write catalog temporary file: %w", err)
 	}
-	if err := temporary.Chmod(0o644); err != nil {
+	if err := temporary.Chmod(mode); err != nil {
 		temporary.Close()
 		return fmt.Errorf("set catalog permissions: %w", err)
 	}
@@ -237,6 +276,26 @@ func UnregisterSource(root, id string) error {
 		return fmt.Errorf("replace catalog config: %w", err)
 	}
 	return nil
+}
+
+func configPermissions(path string) (os.FileMode, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0o644, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("stat catalog config: %w", err)
+	}
+	return info.Mode().Perm(), nil
+}
+
+func syncFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return file.Sync()
 }
 
 // RemoveLocalResource deletes a local group or Skill directory rooted under
@@ -319,11 +378,25 @@ func ScaffoldLocalSkill(skillsRoot, scope, group, name, description string) (str
 }
 
 func validateVendorSourceID(id string) error {
+	_, _, err := parseVendorSourceID(id)
+	return err
+}
+
+func parseVendorSourceID(id string) (string, string, error) {
 	namespace, name, found := strings.Cut(id, "/")
-	if !found || name == "" || !strings.HasPrefix(namespace, "vendor-") {
-		return fmt.Errorf("invalid vendor source id: %s", id)
+	if !found || !skillNamePattern.MatchString(name) {
+		return "", "", fmt.Errorf("invalid vendor source id: %s", id)
 	}
-	return nil
+	if namespace == "vendor-shared" {
+		return "shared", name, nil
+	}
+	if strings.HasPrefix(namespace, "vendor-") && strings.HasSuffix(namespace, "-only") {
+		scope := strings.TrimSuffix(strings.TrimPrefix(namespace, "vendor-"), "-only")
+		if skillNamePattern.MatchString(scope) {
+			return scope, name, nil
+		}
+	}
+	return "", "", fmt.Errorf("invalid vendor source id: %s", id)
 }
 
 func Load(root string, clients client.Registry) (Catalog, error) {
@@ -348,7 +421,7 @@ func Load(root string, clients client.Registry) (Catalog, error) {
 		return Catalog{}, fmt.Errorf("catalog defaults: %w", err)
 	}
 	if len(defaultTargets) == 0 {
-		defaultTargets, _ = targetSet(clients.IDs(), clients)
+		defaultTargets, _ = targetSet(clients.IDsFor(client.CapabilitySkills), clients)
 	}
 	if err := validateNoLegacySourceRoots(absRoot); err != nil {
 		return Catalog{}, err
@@ -427,6 +500,7 @@ func discoverVendorSources(root string, defaults map[Client]bool, config configF
 		return nil, err
 	}
 	sources := make([]Source, 0)
+	discovered := make(map[string]bool)
 	for _, scopeEntry := range scopeEntries {
 		scope := scopeEntry.Name()
 		targets, err := targetsForScope(scope, defaults, clients)
@@ -440,6 +514,7 @@ func discoverVendorSources(root string, defaults map[Client]bool, config configF
 		}
 		for _, repository := range repositories {
 			id := ScopedSourceID(SourceVendor, scope, repository.Name())
+			discovered[id] = true
 			path := filepath.Join(scopeRoot, repository.Name())
 			policy := config.Sources[id]
 			source, discoverErr := discoverManagedSource(id, path, policy.DiscoveryPriority, policy.SkillPaths, targets, config.Overrides, clients, fallbackWhenNoManifest)
@@ -459,6 +534,37 @@ func discoverVendorSources(root string, defaults map[Client]bool, config configF
 			}
 			sources = append(sources, source)
 		}
+	}
+	for id, policy := range config.Sources {
+		if discovered[id] {
+			continue
+		}
+		scope, name, err := parseVendorSourceID(id)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := targetsForScope(scope, defaults, clients); err != nil {
+			return nil, fmt.Errorf("vendor source %s: %w", id, err)
+		}
+		branch := policy.Branch
+		if branch == "" {
+			branch = "main"
+		}
+		var discoveryPriority []DiscoveryStrategy
+		if len(policy.SkillPaths) == 0 {
+			discoveryPriority = normalizedDiscoveryPriority(policy.DiscoveryPriority)
+		}
+		sources = append(sources, Source{
+			ID:                id,
+			Kind:              SourceVendor,
+			Scope:             scope,
+			Path:              filepath.Join(vendorRoot, scope, name),
+			Branch:            branch,
+			SkillPaths:        append([]string(nil), policy.SkillPaths...),
+			SparsePaths:       append([]string(nil), policy.SparsePaths...),
+			DiscoveryPriority: discoveryPriority,
+			Availability:      SourceCheckoutMissing,
+		})
 	}
 	return sources, nil
 }
@@ -537,8 +643,8 @@ func targetsForScope(scope string, defaults map[Client]bool, clients client.Regi
 		return defaults, nil
 	}
 	clientID := Client(scope)
-	if !clients.Has(clientID) {
-		return nil, fmt.Errorf("unknown client %q", scope)
+	if err := clients.Require(clientID, client.CapabilitySkills); err != nil {
+		return nil, err
 	}
 	return map[Client]bool{clientID: true}, nil
 }
@@ -745,8 +851,8 @@ func recoverFrontmatterScalars(lines []string) skillFrontmatter {
 func targetSet(ids []Client, registry client.Registry) (map[Client]bool, error) {
 	targets := make(map[Client]bool, len(ids))
 	for _, id := range ids {
-		if !registry.Has(id) {
-			return nil, fmt.Errorf("unknown client %q", id)
+		if err := registry.Require(id, client.CapabilitySkills); err != nil {
+			return nil, err
 		}
 		targets[id] = true
 	}

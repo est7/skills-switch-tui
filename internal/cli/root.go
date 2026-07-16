@@ -30,25 +30,23 @@ type rootOptions struct {
 }
 
 type runtime struct {
-	catalog        catalog.Catalog
-	projectRoot    string
-	userHome       string
-	projection     projection.Manager
-	translator     i18n.Translator
-	resources      resource.Layout
-	manager        source.Manager
-	mcpCatalog     mcp.Catalog
-	mcpManager     mcp.Manager
-	prompts        systemprompt.Catalog
-	promptMgr      systemprompt.Manager
-	commands       userresource.Catalog
-	commandMgr     userresource.Manager
-	hooks          userresource.Catalog
-	hookMgr        userresource.Manager
-	agents         userresource.Catalog
-	agentMgr       userresource.Manager
-	outputStyles   userresource.Catalog
-	outputStyleMgr userresource.Manager
+	catalog       catalog.Catalog
+	projectRoot   string
+	userHome      string
+	projection    projection.Manager
+	translator    i18n.Translator
+	resources     resource.Layout
+	manager       source.Manager
+	mcpCatalog    mcp.Catalog
+	mcpManager    mcp.Manager
+	prompts       systemprompt.Catalog
+	promptMgr     systemprompt.Manager
+	userResources map[userresource.Kind]managedUserResource
+}
+
+type managedUserResource struct {
+	catalog userresource.Catalog
+	manager userresource.Manager
 }
 
 type promptRuntime struct {
@@ -97,10 +95,9 @@ func NewRootCommand(version string) *cobra.Command {
 	command.AddCommand(newSourceCommand(options))
 	command.AddCommand(newMCPCommand(options))
 	command.AddCommand(newPromptCommand(options))
-	command.AddCommand(newUserResourceCommand(options, userresource.KindCommand))
-	command.AddCommand(newUserResourceCommand(options, userresource.KindHook))
-	command.AddCommand(newUserResourceCommand(options, userresource.KindAgent))
-	command.AddCommand(newUserResourceCommand(options, userresource.KindOutputStyle))
+	for _, descriptor := range userresource.Descriptors() {
+		command.AddCommand(newUserResourceCommand(options, descriptor))
+	}
 	command.AddCommand(newDoctorCommand(options))
 	command.AddCommand(newTUICommand(options))
 	command.AddCommand(newVersionCommand(version))
@@ -147,15 +144,16 @@ func newListCommand(options *rootOptions) *cobra.Command {
 				encoder.SetIndent("", "  ")
 				return encoder.Encode(result)
 			}
+			skillClients := skillClientIDs(runtime.catalog.Clients, scope)
 			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintf(writer, "%s\t%s", runtime.translator.Text(i18n.SkillHeader), runtime.translator.Text(i18n.SourceHeader))
-			for _, client := range runtime.catalog.Clients.IDs() {
+			for _, client := range skillClients {
 				fmt.Fprintf(writer, "\t%s", strings.ToUpper(string(client)))
 			}
 			fmt.Fprintln(writer)
 			for _, skill := range result.Skills {
 				fmt.Fprintf(writer, "%s\t%s", skill.ID, skill.Source)
-				for _, client := range runtime.catalog.Clients.IDs() {
+				for _, client := range skillClients {
 					fmt.Fprintf(writer, "\t%s", skill.Clients[string(client)])
 				}
 				fmt.Fprintln(writer)
@@ -199,7 +197,11 @@ func newEnableCommand(options *rootOptions, enabled bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			parsedClients, err := parseClients(clients, runtime.catalog, runtime.translator)
+			capability := client.CapabilityProjectSkills
+			if scope == projection.ScopeGlobal {
+				capability = client.CapabilityGlobalSkills
+			}
+			parsedClients, err := parseClientsForCapability(clients, runtime.catalog, runtime.translator, capability)
 			if err != nil {
 				return err
 			}
@@ -274,6 +276,7 @@ type skillView struct {
 
 func buildListOutput(runtime runtime, includeArchive bool, scope projection.Scope) (listOutput, error) {
 	result := listOutput{Project: runtime.projectRoot, Scope: string(scope)}
+	skillClients := skillClientIDs(runtime.catalog.Clients, scope)
 	for _, source := range runtime.catalog.Sources {
 		if source.IsArchived() && !includeArchive {
 			continue
@@ -284,9 +287,9 @@ func buildListOutput(runtime runtime, includeArchive bool, scope projection.Scop
 				Name:        skill.Name,
 				Source:      skill.SourceID,
 				Description: skill.Description,
-				Clients:     make(map[string]string, len(runtime.catalog.Clients.IDs())),
+				Clients:     make(map[string]string, len(skillClients)),
 			}
-			for _, client := range runtime.catalog.Clients.IDs() {
+			for _, client := range skillClients {
 				state, err := runtime.projection.StateAt(skill, client, scope)
 				if err != nil {
 					return listOutput{}, err
@@ -298,6 +301,13 @@ func buildListOutput(runtime runtime, includeArchive bool, scope projection.Scop
 	}
 	sort.Slice(result.Skills, func(i, j int) bool { return result.Skills[i].ID < result.Skills[j].ID })
 	return result, nil
+}
+
+func skillClientIDs(registry client.Registry, scope projection.Scope) []client.ID {
+	if scope == projection.ScopeGlobal {
+		return registry.IDsFor(client.CapabilityGlobalSkills)
+	}
+	return registry.IDsFor(client.CapabilityProjectSkills)
 }
 
 func loadRuntime(options *rootOptions) (runtime, error) {
@@ -334,46 +344,42 @@ func loadRuntime(options *rootOptions) (runtime, error) {
 	if err != nil {
 		return runtime{}, err
 	}
-	commands, err := userresource.Discover(base.resources.CommandsRoot(), userresource.KindCommand, base.catalog.Clients)
-	if err != nil {
-		return runtime{}, err
-	}
-	hooks, err := userresource.Discover(base.resources.HooksRoot(), userresource.KindHook, base.catalog.Clients)
-	if err != nil {
-		return runtime{}, err
-	}
-	agents, err := userresource.Discover(base.resources.AgentsRoot(), userresource.KindAgent, base.catalog.Clients)
-	if err != nil {
-		return runtime{}, err
-	}
-	outputStyles, err := userresource.Discover(base.resources.OutputStylesRoot(), userresource.KindOutputStyle, base.catalog.Clients)
-	if err != nil {
-		return runtime{}, err
+	userResources := make(map[userresource.Kind]managedUserResource)
+	for _, descriptor := range userresource.Descriptors() {
+		resources, discoverErr := userresource.Discover(base.resources.UserResourceRoot(descriptor.Directory), descriptor.Kind, base.catalog.Clients)
+		if discoverErr != nil {
+			return runtime{}, discoverErr
+		}
+		targetBase := projectRoot
+		if descriptor.TargetScope == userresource.TargetUser {
+			targetBase = userHome
+		}
+		userResources[descriptor.Kind] = managedUserResource{
+			catalog: resources,
+			manager: userresource.NewManager(targetBase, base.catalog.Clients),
+		}
 	}
 	return runtime{
-		catalog:        base.catalog,
-		projectRoot:    projectRoot,
-		userHome:       userHome,
-		projection:     projection.NewWithUserHome(projectRoot, userHome, base.catalog),
-		translator:     base.translator,
-		resources:      base.resources,
-		manager:        base.manager,
-		mcpCatalog:     mcpCatalog,
-		mcpManager:     mcp.NewManager(projectRoot, mcpCatalog, base.catalog.Clients),
-		prompts:        prompts,
-		promptMgr:      systemprompt.NewManager(userHome, base.catalog.Clients),
-		commands:       commands,
-		commandMgr:     userresource.NewManager(projectRoot, base.catalog.Clients),
-		hooks:          hooks,
-		hookMgr:        userresource.NewManager(projectRoot, base.catalog.Clients),
-		agents:         agents,
-		agentMgr:       userresource.NewManager(userHome, base.catalog.Clients),
-		outputStyles:   outputStyles,
-		outputStyleMgr: userresource.NewManager(userHome, base.catalog.Clients),
+		catalog:       base.catalog,
+		projectRoot:   projectRoot,
+		userHome:      userHome,
+		projection:    projection.NewWithUserHome(projectRoot, userHome, base.catalog),
+		translator:    base.translator,
+		resources:     base.resources,
+		manager:       base.manager,
+		mcpCatalog:    mcpCatalog,
+		mcpManager:    mcp.NewManager(projectRoot, mcpCatalog, base.catalog.Clients),
+		prompts:       prompts,
+		promptMgr:     systemprompt.NewManager(userHome, base.catalog.Clients),
+		userResources: userResources,
 	}, nil
 }
 
 func loadUserResourceRuntime(options *rootOptions, kind userresource.Kind) (userResourceRuntime, error) {
+	descriptor, err := userresource.Describe(kind)
+	if err != nil {
+		return userResourceRuntime{}, err
+	}
 	base, err := loadCatalogRuntime(options)
 	if err != nil {
 		return userResourceRuntime{}, err
@@ -382,7 +388,7 @@ func loadUserResourceRuntime(options *rootOptions, kind userresource.Kind) (user
 	if err != nil {
 		return userResourceRuntime{}, err
 	}
-	if kind == userresource.KindCommand || kind == userresource.KindHook {
+	if descriptor.TargetScope == userresource.TargetProject {
 		start := options.projectRoot
 		if start == "" {
 			start, err = os.Getwd()
@@ -395,14 +401,7 @@ func loadUserResourceRuntime(options *rootOptions, kind userresource.Kind) (user
 			return userResourceRuntime{}, err
 		}
 	}
-	root := base.resources.CommandsRoot()
-	if kind == userresource.KindHook {
-		root = base.resources.HooksRoot()
-	} else if kind == userresource.KindAgent {
-		root = base.resources.AgentsRoot()
-	} else if kind == userresource.KindOutputStyle {
-		root = base.resources.OutputStylesRoot()
-	}
+	root := base.resources.UserResourceRoot(descriptor.Directory)
 	resources, err := userresource.Discover(root, kind, base.catalog.Clients)
 	if err != nil {
 		return userResourceRuntime{}, err
@@ -497,64 +496,20 @@ func activeSources(loaded catalog.Catalog) []catalog.Source {
 	return sources
 }
 
-// autoPruneAfterUpdate removes project and user-global projections whose skill
-// disappeared from one of the just-updated sources. It reloads the catalog so
-// detection sees the post-update skill set, scopes cleanup to the sources that
-// actually changed, and only ever removes managed symlinks that lost their
-// provider (see projection.OrphanedProjections for the empty-source guard).
-//
-// It is a best-effort side effect of `source update`: user-global cleanup does
-// not require a Git project, while project cleanup applies only when a project
-// root can be resolved. Cleanup failures are returned as a non-fatal warning so
-// the update itself still reports success.
+// autoPruneAfterUpdate is retained as a narrow test adapter. Production CLI and
+// TUI update paths call Lifecycle.Update directly, while this helper exercises
+// the same shared reconciliation contract against an already-updated catalog.
 func autoPruneAfterUpdate(options *rootOptions, results []source.UpdateResult) ([]projection.Orphan, error) {
-	changed := make(map[string]bool)
-	for _, result := range results {
-		if result.Changed {
-			changed[result.SourceID] = true
-		}
-	}
-	if len(changed) == 0 {
-		return nil, nil
-	}
-	start := options.projectRoot
-	if start == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return nil, nil
-		}
-		start = cwd
-	}
-	projectRoot, _ := project.FindRoot(start)
 	base, err := loadCatalogRuntime(options)
-	if err != nil {
-		return nil, fmt.Errorf("reload catalog for cleanup: %w", err)
-	}
-	scoped := make([]catalog.Source, 0, len(changed))
-	for _, candidate := range base.catalog.Sources {
-		if changed[candidate.ID] {
-			scoped = append(scoped, candidate)
-		}
-	}
-	userHome, err := resolveUserHome()
 	if err != nil {
 		return nil, err
 	}
-	manager := projection.NewWithUserHome(projectRoot, userHome, base.catalog)
-	orphans := make([]projection.Orphan, 0)
-	if projectRoot != "" {
-		projectOrphans, projectErr := manager.OrphanedProjectionsAt(scoped, projection.ScopeProject)
-		if projectErr != nil {
-			return nil, projectErr
-		}
-		orphans = append(orphans, projectOrphans...)
+	lifecycle, err := sourceLifecycle(options, base)
+	if err != nil {
+		return nil, err
 	}
-	globalOrphans, globalErr := manager.OrphanedProjectionsAt(scoped, projection.ScopeGlobal)
-	if globalErr != nil {
-		return nil, globalErr
-	}
-	orphans = append(orphans, globalOrphans...)
-	return manager.PruneOrphans(orphans)
+	outcome, err := lifecycle.ReconcileUpdated(results)
+	return outcome.Pruned, err
 }
 
 func resolveResourcesRoot(configured string) (string, error) {
@@ -598,6 +553,19 @@ func parseClients(values []string, loaded catalog.Catalog, translator i18n.Trans
 	return clients, nil
 }
 
+func parseClientsForCapability(values []string, loaded catalog.Catalog, translator i18n.Translator, capability client.Capability) ([]catalog.Client, error) {
+	parsed, err := parseClients(values, loaded, translator)
+	if err != nil {
+		return nil, err
+	}
+	for _, clientID := range parsed {
+		if err := loaded.Clients.Require(clientID, capability); err != nil {
+			return nil, err
+		}
+	}
+	return parsed, nil
+}
+
 func localizeCommandTree(root *cobra.Command, translator i18n.Translator) {
 	root.Short = translator.Text(i18n.RootShort)
 	root.SetUsageTemplate(localizedUsageTemplate(translator))
@@ -611,6 +579,11 @@ func localizeCommandTree(root *cobra.Command, translator i18n.Translator) {
 		flag.Usage = translator.Text(i18n.LanguageFlag)
 	}
 	for _, command := range root.Commands() {
+		if descriptor, ok := userResourceDescriptorForCommand(command.Name()); ok {
+			command.Short = translator.Text(userResourceCommandShortKeys[descriptor.Kind])
+			localizeResourceCommands(command, translator)
+			continue
+		}
 		switch command.Name() {
 		case "version":
 			command.Short = translator.Text(i18n.VersionShort)
@@ -636,18 +609,6 @@ func localizeCommandTree(root *cobra.Command, translator i18n.Translator) {
 			localizeResourceCommands(command, translator)
 		case "prompt":
 			command.Short = translator.Text(i18n.PromptCommandShort)
-			localizeResourceCommands(command, translator)
-		case "commands":
-			command.Short = translator.Text(i18n.CommandsCommandShort)
-			localizeResourceCommands(command, translator)
-		case "hooks":
-			command.Short = translator.Text(i18n.HooksCommandShort)
-			localizeResourceCommands(command, translator)
-		case "agents":
-			command.Short = translator.Text(i18n.AgentsCommandShort)
-			localizeResourceCommands(command, translator)
-		case "output-styles":
-			command.Short = translator.Text(i18n.OutputStylesCommandShort)
 			localizeResourceCommands(command, translator)
 		case "help":
 			command.Short = translator.Text(i18n.HelpCommandShort)
@@ -683,46 +644,68 @@ func localizeSkillsCommands(command *cobra.Command, translator i18n.Translator) 
 }
 
 func localizeResourceCommands(command *cobra.Command, translator i18n.Translator) {
+	_, userResourceCommand := userResourceDescriptorForCommand(command.Name())
 	for _, child := range command.Commands() {
-		switch command.Name() + "/" + child.Name() {
-		case "mcp/list":
-			child.Short = translator.Text(i18n.MCPListShort)
-		case "mcp/enable":
-			child.Short = translator.Text(i18n.MCPEnableShort)
-		case "mcp/disable":
-			child.Short = translator.Text(i18n.MCPDisableShort)
-		case "mcp/add":
-			child.Short = translator.Text(i18n.MCPAddShort)
-		case "mcp/import":
-			child.Short = translator.Text(i18n.MCPImportShort)
-			if flag := child.Flags().Lookup("file"); flag != nil {
-				flag.Usage = translator.Text(i18n.MCPImportFileFlag)
+		if userResourceCommand {
+			switch child.Name() {
+			case "list":
+				child.Short = translator.Text(i18n.UserResourceListShort)
+			case "enable":
+				child.Short = translator.Text(i18n.UserResourceEnableShort)
+			case "disable":
+				child.Short = translator.Text(i18n.UserResourceDisableShort)
 			}
-			if flag := child.Flags().Lookup("name"); flag != nil {
-				flag.Usage = translator.Text(i18n.MCPImportNameFlag)
+		} else {
+			switch command.Name() + "/" + child.Name() {
+			case "mcp/list":
+				child.Short = translator.Text(i18n.MCPListShort)
+			case "mcp/enable":
+				child.Short = translator.Text(i18n.MCPEnableShort)
+			case "mcp/disable":
+				child.Short = translator.Text(i18n.MCPDisableShort)
+			case "mcp/add":
+				child.Short = translator.Text(i18n.MCPAddShort)
+			case "mcp/import":
+				child.Short = translator.Text(i18n.MCPImportShort)
+				if flag := child.Flags().Lookup("file"); flag != nil {
+					flag.Usage = translator.Text(i18n.MCPImportFileFlag)
+				}
+				if flag := child.Flags().Lookup("name"); flag != nil {
+					flag.Usage = translator.Text(i18n.MCPImportNameFlag)
+				}
+			case "mcp/remove":
+				child.Short = translator.Text(i18n.MCPRemoveShort)
+			case "prompt/list":
+				child.Short = translator.Text(i18n.PromptListShort)
+			case "prompt/enable":
+				child.Short = translator.Text(i18n.PromptEnableShort)
+			case "prompt/disable":
+				child.Short = translator.Text(i18n.PromptDisableShort)
+			case "prompt/build":
+				child.Short = translator.Text(i18n.PromptBuildShort)
 			}
-		case "mcp/remove":
-			child.Short = translator.Text(i18n.MCPRemoveShort)
-		case "prompt/list":
-			child.Short = translator.Text(i18n.PromptListShort)
-		case "prompt/enable":
-			child.Short = translator.Text(i18n.PromptEnableShort)
-		case "prompt/disable":
-			child.Short = translator.Text(i18n.PromptDisableShort)
-		case "prompt/build":
-			child.Short = translator.Text(i18n.PromptBuildShort)
-		case "commands/list", "hooks/list":
-			child.Short = translator.Text(i18n.UserResourceListShort)
-		case "commands/enable", "hooks/enable":
-			child.Short = translator.Text(i18n.UserResourceEnableShort)
-		case "commands/disable", "hooks/disable":
-			child.Short = translator.Text(i18n.UserResourceDisableShort)
 		}
 		localizeOutputFlags(child, translator)
 		if flag := child.Flags().Lookup("client"); flag != nil {
 			flag.Usage = translator.Text(i18n.ClientFlag)
 		}
 	}
+}
+
+var userResourceCommandShortKeys = map[userresource.Kind]i18n.Key{
+	userresource.KindCommand:     i18n.CommandsCommandShort,
+	userresource.KindHook:        i18n.HooksCommandShort,
+	userresource.KindAgent:       i18n.AgentsCommandShort,
+	userresource.KindOutputStyle: i18n.OutputStylesCommandShort,
+}
+
+func userResourceDescriptorForCommand(name string) (userresource.Descriptor, bool) {
+	for _, descriptor := range userresource.Descriptors() {
+		if descriptor.Command == name {
+			return descriptor, true
+		}
+	}
+	return userresource.Descriptor{}, false
 }
 
 func localizedUsageTemplate(translator i18n.Translator) string {

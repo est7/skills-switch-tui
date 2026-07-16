@@ -16,10 +16,14 @@ func TestUpdateHardResetsReadOnlySourceBeforeInspectingAndUpdating(t *testing.T)
 	agentsRoot := t.TempDir()
 	target := filepath.Join(agentsRoot, "sources", "vendor", "shared", "modified")
 	git := &recordingGit{responses: map[string]string{
-		target + "|reset --hard HEAD":                "HEAD is now at aaaaaaaa current\n",
-		target + "|rev-parse HEAD":                   "aaaaaaaa\n",
-		target + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
-		agentsRoot + "|submodule update --init --remote -- sources/vendor/shared/modified": "",
+		target + "|reset --hard HEAD":                                             "HEAD is now at aaaaaaaa current\n",
+		target + "|clean -ffdx":                                                   "Removing local-only/\n",
+		target + "|rev-parse HEAD":                                                "aaaaaaaa\n",
+		target + "|ls-remote origin refs/heads/main":                              "bbbbbbbb\trefs/heads/main\n",
+		agentsRoot + "|submodule update --init -- sources/vendor/shared/modified": "",
+		target + "|fetch --no-tags origin refs/heads/main":                        "",
+		target + "|reset --hard bbbbbbbb":                                         "HEAD is now at bbbbbbbb remote\n",
+		target + "|rev-parse --verify HEAD":                                       "bbbbbbbb\n",
 	}}
 	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: filepath.Join(agentsRoot, "sources"), Git: git}
 	sources := []catalog.Source{{ID: "vendor-shared/modified", Kind: catalog.SourceVendor, Scope: "shared", Path: target, Branch: "main"}}
@@ -31,10 +35,12 @@ func TestUpdateHardResetsReadOnlySourceBeforeInspectingAndUpdating(t *testing.T)
 	if len(results) != 1 || results[0].SourceID != "vendor-shared/modified" {
 		t.Fatalf("Update() results = %#v, want the updated source", results)
 	}
-	if len(git.calls) < 4 || git.calls[0] != "reset --hard HEAD" || git.calls[1] != "rev-parse HEAD" {
-		t.Fatalf("Update() did not hard-reset before inspection: %v", git.calls)
+	if len(git.calls) < 7 || git.calls[0] != "reset --hard HEAD" || git.calls[1] != "clean -ffdx" || git.calls[2] != "rev-parse HEAD" {
+		t.Fatalf("Update() did not clean the read-only checkout before inspection: %v", git.calls)
 	}
-	if !git.called("submodule update --init --remote -- sources/vendor/shared/modified") {
+	if !git.called("submodule update --init -- sources/vendor/shared/modified") ||
+		!git.called("fetch --no-tags origin refs/heads/main") ||
+		!git.called("reset --hard bbbbbbbb") {
 		t.Fatalf("Update() did not update the reset source; calls = %v", git.calls)
 	}
 	if git.called("status --porcelain") {
@@ -48,6 +54,7 @@ func TestUpdateContinuesAfterResetFailureAndIdentifiesRepository(t *testing.T) {
 	cleanPath := filepath.Join(agentsRoot, "sources", "vendor", "shared", "clean")
 	git := &recordingGit{responses: map[string]string{
 		cleanPath + "|reset --hard HEAD":                "HEAD is now at aaaaaaaa current\n",
+		cleanPath + "|clean -ffdx":                      "",
 		cleanPath + "|rev-parse HEAD":                   "aaaaaaaa\n",
 		cleanPath + "|ls-remote origin refs/heads/main": "aaaaaaaa\trefs/heads/main\n",
 	}}
@@ -90,6 +97,55 @@ func TestUpdateDryRunDoesNotResetReadOnlySource(t *testing.T) {
 	}
 }
 
+func TestUpdateInitializesConfiguredMissingCheckoutBeforeReset(t *testing.T) {
+	repositoryRoot := t.TempDir()
+	sourcesRoot := filepath.Join(repositoryRoot, "resources", "skills")
+	target := filepath.Join(sourcesRoot, "vendor", "shared", "missing")
+	git := &recordingGit{responses: map[string]string{
+		repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/missing": "",
+		target + "|reset --hard HEAD":                "",
+		target + "|clean -ffdx":                      "",
+		target + "|rev-parse HEAD":                   "aaaaaaaa\n",
+		target + "|ls-remote origin refs/heads/main": "aaaaaaaa\trefs/heads/main\n",
+	}}
+	manager := Manager{RepositoryRoot: repositoryRoot, SkillsRoot: sourcesRoot, Git: git}
+	selected := catalog.Source{
+		ID: "vendor-shared/missing", Kind: catalog.SourceVendor, Scope: "shared", Path: target, Branch: "main",
+		Availability: catalog.SourceCheckoutMissing,
+	}
+
+	results, err := manager.Update(context.Background(), []catalog.Source{selected}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Changed {
+		t.Fatalf("results = %#v", results)
+	}
+	if len(git.calls) < 3 || git.calls[0] != "submodule update --init -- resources/skills/vendor/shared/missing" || git.calls[1] != "reset --hard HEAD" {
+		t.Fatalf("missing checkout was not initialized before reset: %v", git.calls)
+	}
+}
+
+func TestRemoveSubmoduleGitdirRejectsPathOutsideCommonModules(t *testing.T) {
+	repositoryRoot := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "must-survive")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git := &recordingGit{responses: map[string]string{
+		repositoryRoot + "|rev-parse --git-path modules/resources/skills/vendor/shared/repo": outside,
+		repositoryRoot + "|rev-parse --git-common-dir":                                       ".git",
+	}}
+	manager := Manager{RepositoryRoot: repositoryRoot, Git: git}
+	err := manager.removeSubmoduleGitdir(context.Background(), repositoryRoot, "resources/skills/vendor/shared/repo")
+	if err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("cleanup error = %v, want containment rejection", err)
+	}
+	if _, statErr := os.Stat(outside); statErr != nil {
+		t.Fatalf("outside path was removed: %v", statErr)
+	}
+}
+
 func TestUpdateRecomputesDerivedSparsePathsAfterManifestChanges(t *testing.T) {
 	agentsRoot := t.TempDir()
 	sourcesRoot := filepath.Join(agentsRoot, "sources")
@@ -100,16 +156,20 @@ func TestUpdateRecomputesDerivedSparsePathsAfterManifestChanges(t *testing.T) {
   "skills": ["./skills/old"]
 }`)
 	git := &recordingGit{responses: map[string]string{
-		target + "|reset --hard HEAD":                "HEAD is now at aaaaaaaa current\n",
-		target + "|rev-parse HEAD":                   "aaaaaaaa\n",
-		target + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
-		agentsRoot + "|submodule update --init --remote -- sources/vendor/shared/changing": "",
-		target + "|sparse-checkout disable":                                                "",
-		target + "|sparse-checkout init --cone":                                            "",
-		target + "|sparse-checkout set .claude-plugin skills/new":                          "",
+		target + "|reset --hard HEAD":                                             "HEAD is now at aaaaaaaa current\n",
+		target + "|clean -ffdx":                                                   "",
+		target + "|rev-parse HEAD":                                                "aaaaaaaa\n",
+		target + "|ls-remote origin refs/heads/main":                              "bbbbbbbb\trefs/heads/main\n",
+		agentsRoot + "|submodule update --init -- sources/vendor/shared/changing": "",
+		target + "|fetch --no-tags origin refs/heads/main":                        "",
+		target + "|reset --hard bbbbbbbb":                                         "",
+		target + "|rev-parse --verify HEAD":                                       "bbbbbbbb\n",
+		target + "|sparse-checkout disable":                                       "",
+		target + "|sparse-checkout init --cone":                                   "",
+		target + "|sparse-checkout set .claude-plugin skills/new":                 "",
 	}}
 	git.onCall = func(key string) {
-		if !strings.Contains(key, "|submodule update ") {
+		if !strings.Contains(key, "|reset --hard bbbbbbbb") {
 			return
 		}
 		writeSourceSkill(t, filepath.Join(target, "skills", "new"))
@@ -203,6 +263,7 @@ func TestRemoveUsesGitRMAndUnregistersCatalogPolicy(t *testing.T) {
 		target + "|status --porcelain":                                                    "",
 		agentsRoot + "|rm -f -- resources/skills/vendor/shared/clean":                     "",
 		agentsRoot + "|rev-parse --git-path modules/resources/skills/vendor/shared/clean": ".git/modules/resources/skills/vendor/shared/clean",
+		agentsRoot + "|rev-parse --git-common-dir":                                        ".git",
 	}}
 	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: git}
 
@@ -425,6 +486,7 @@ func TestAddRollsBackSubmoduleWhenDiscoveryFails(t *testing.T) {
 		agentsRoot + "|submodule add -b main https://example.invalid/empty.git resources/skills/vendor/shared/empty": "",
 		agentsRoot + "|rm -f -- resources/skills/vendor/shared/empty":                                                "",
 		agentsRoot + "|rev-parse --git-path modules/resources/skills/vendor/shared/empty":                            ".git/modules/resources/skills/vendor/shared/empty",
+		agentsRoot + "|rev-parse --git-common-dir":                                                                   ".git",
 	}}
 	git.onCall = func(key string) {
 		if strings.Contains(key, "|submodule add ") {

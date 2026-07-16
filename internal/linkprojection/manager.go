@@ -2,10 +2,11 @@ package linkprojection
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/est7/skills-switch-tui/internal/linktransaction"
 )
 
 type State string
@@ -42,18 +43,15 @@ func (e *ConflictError) Error() string {
 	return e.Label + " conflicts: " + strings.Join(parts, "; ")
 }
 
-type Action int
+type Action = linktransaction.Action
 
 const (
-	CreateLink Action = iota
-	RemoveLink
+	CreateLink  = linktransaction.Create
+	RemoveLink  = linktransaction.Remove
+	ReplaceLink = linktransaction.Replace
 )
 
-type Change struct {
-	Action Action
-	Path   string
-	Target string
-}
+type Change = linktransaction.Change
 
 type Manager struct {
 	Label       string
@@ -123,9 +121,15 @@ func (m Manager) SetEnabled(files []File, enabled bool) error {
 			continue
 		}
 		if legacyManaged {
-			changes = append(changes, Change{Action: RemoveLink, Path: file.TargetPath, Target: legacySource})
+			originalTarget, readErr := os.Readlink(file.TargetPath)
+			if readErr != nil {
+				conflicts = append(conflicts, Conflict{Path: file.TargetPath, Reason: "read managed legacy link: " + readErr.Error()})
+				continue
+			}
 			if enabled {
-				changes = append(changes, Change{Action: CreateLink, Path: file.TargetPath, Target: file.SourcePath})
+				changes = append(changes, Change{Action: ReplaceLink, Path: file.TargetPath, Target: file.SourcePath, OriginalTarget: originalTarget})
+			} else {
+				changes = append(changes, Change{Action: RemoveLink, Path: file.TargetPath, Target: legacySource, OriginalTarget: originalTarget})
 			}
 			continue
 		}
@@ -133,40 +137,39 @@ func (m Manager) SetEnabled(files []File, enabled bool) error {
 			changes = append(changes, Change{Action: CreateLink, Path: file.TargetPath, Target: file.SourcePath})
 		}
 		if !enabled && exists && matches {
-			changes = append(changes, Change{Action: RemoveLink, Path: file.TargetPath, Target: file.SourcePath})
+			originalTarget, readErr := os.Readlink(file.TargetPath)
+			if readErr != nil {
+				conflicts = append(conflicts, Conflict{Path: file.TargetPath, Reason: "read managed link: " + readErr.Error()})
+				continue
+			}
+			changes = append(changes, Change{Action: RemoveLink, Path: file.TargetPath, Target: file.SourcePath, OriginalTarget: originalTarget})
 		}
 	}
 	if len(conflicts) > 0 {
 		return m.conflictError(conflicts)
 	}
 
-	createdDirs := make([]string, 0)
-	executed := make([]Change, 0, len(changes))
-	for _, next := range changes {
-		if m.BeforeApply != nil {
-			m.BeforeApply(next)
-		}
-		if err := m.validateChange(next); err != nil {
-			return m.failApply(err, executed, createdDirs)
-		}
-		if next.Action == CreateLink {
-			created, err := ensureDirectory(filepath.Dir(next.Path))
+	engine := linktransaction.Engine{
+		Label:       m.label(),
+		BeforeApply: m.BeforeApply,
+		MatchTarget: linktransaction.EquivalentTarget,
+		Conflict: func(path, reason string) error {
+			return m.conflictError([]Conflict{{Path: path, Reason: reason}})
+		},
+		ValidateSource: func(next Change) error {
+			info, err := os.Stat(next.Target)
+			if err == nil && info.Mode().IsRegular() {
+				return nil
+			}
+			reason := "source file changed after preflight"
 			if err != nil {
-				return m.failApply(fmt.Errorf("create %s directory: %w", m.label(), err), executed, createdDirs)
+				reason += ": " + err.Error()
 			}
-			createdDirs = append(createdDirs, created...)
-			if err := m.validateChange(next); err != nil {
-				return m.failApply(err, executed, createdDirs)
-			}
-			if err := os.Symlink(next.Target, next.Path); err != nil {
-				return m.failApply(fmt.Errorf("create %s link %s: %w", m.label(), next.Path, err), executed, createdDirs)
-			}
-		} else if err := os.Remove(next.Path); err != nil {
-			return m.failApply(fmt.Errorf("remove %s link %s: %w", m.label(), next.Path, err), executed, createdDirs)
-		}
-		executed = append(executed, next)
+			return m.conflictError([]Conflict{{Path: next.Target, Reason: reason}})
+		},
 	}
-	return nil
+	_, err := engine.Execute(changes)
+	return err
 }
 
 func matchingLegacySource(path string, sources []string) (string, bool, error) {
@@ -180,37 +183,6 @@ func matchingLegacySource(path string, sources []string) (string, bool, error) {
 		}
 	}
 	return "", false, nil
-}
-
-func (m Manager) validateChange(next Change) error {
-	if next.Action == CreateLink {
-		info, err := os.Stat(next.Target)
-		if err != nil || !info.Mode().IsRegular() {
-			reason := "source file changed after preflight"
-			if err != nil {
-				reason += ": " + err.Error()
-			}
-			return m.conflictError([]Conflict{{Path: next.Target, Reason: reason}})
-		}
-	}
-	matches, exists, conflict, err := inspectLink(next.Path, next.Target)
-	if err != nil {
-		return m.conflictError([]Conflict{{Path: next.Path, Reason: "inspect after preflight: " + err.Error()}})
-	}
-	valid := next.Action == CreateLink && !exists && !conflict || next.Action == RemoveLink && exists && matches && !conflict
-	if valid {
-		return nil
-	}
-	return m.conflictError([]Conflict{{Path: next.Path, Reason: "target changed after preflight"}})
-}
-
-func (m Manager) failApply(applyErr error, executed []Change, createdDirs []string) error {
-	rollbackErr := rollbackChanges(executed)
-	cleanupDirectories(createdDirs)
-	if rollbackErr == nil {
-		return applyErr
-	}
-	return errors.Join(applyErr, fmt.Errorf("rollback %s changes: %w", m.label(), rollbackErr))
 }
 
 func (m Manager) conflictError(conflicts []Conflict) error {
@@ -246,70 +218,4 @@ func inspectLink(path, source string) (matches, exists, conflict bool, err error
 		return false, true, true, nil
 	}
 	return true, true, false, nil
-}
-
-func ensureDirectory(path string) ([]string, error) {
-	missing := make([]string, 0)
-	for current := path; ; current = filepath.Dir(current) {
-		info, err := os.Stat(current)
-		if err == nil {
-			if !info.IsDir() {
-				return nil, fmt.Errorf("%s exists and is not a directory", current)
-			}
-			break
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		missing = append(missing, current)
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
-		}
-	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		return nil, err
-	}
-	return missing, nil
-}
-
-func rollbackChanges(changes []Change) error {
-	var rollbackErrors []error
-	for index := len(changes) - 1; index >= 0; index-- {
-		next := changes[index]
-		matches, exists, conflict, err := inspectLink(next.Path, next.Target)
-		if err != nil {
-			rollbackErrors = append(rollbackErrors, fmt.Errorf("inspect %s: %w", next.Path, err))
-			continue
-		}
-		if next.Action == CreateLink {
-			if !exists {
-				continue
-			}
-			if conflict || !matches {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("preserve concurrently changed target %s", next.Path))
-				continue
-			}
-			if err := os.Remove(next.Path); err != nil {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("remove %s: %w", next.Path, err))
-			}
-			continue
-		}
-		if exists {
-			if conflict || !matches {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("preserve concurrently changed target %s", next.Path))
-			}
-			continue
-		}
-		if err := os.Symlink(next.Target, next.Path); err != nil {
-			rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", next.Path, err))
-		}
-	}
-	return errors.Join(rollbackErrors...)
-}
-
-func cleanupDirectories(paths []string) {
-	for _, path := range paths {
-		_ = os.Remove(path)
-	}
 }

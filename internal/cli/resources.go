@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/est7/skills-switch-tui/internal/client"
 	"github.com/est7/skills-switch-tui/internal/i18n"
 	"github.com/est7/skills-switch-tui/internal/mcp"
 	"github.com/est7/skills-switch-tui/internal/systemprompt"
@@ -62,10 +63,10 @@ func newMCPImportCommand(options *rootOptions) *cobra.Command {
 					return errors.New(runtime.translator.Text(i18n.MCPServerExists, server.Name))
 				}
 			}
+			if err := mcp.AddServers(runtime.mcpCatalog.Path, servers); err != nil {
+				return err
+			}
 			for _, server := range servers {
-				if err := mcp.AddServer(runtime.mcpCatalog.Path, server); err != nil {
-					return err
-				}
 				fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.MCPServerAdded, server.Name))
 			}
 			return nil
@@ -168,22 +169,7 @@ func newMCPRemoveCommand(options *rootOptions) *cobra.Command {
 			if _, ok := runtime.mcpCatalog.Server(name); !ok {
 				return errors.New(runtime.translator.Text(i18n.UnknownMCPServer, name))
 			}
-			operations := make([]mcp.Operation, 0)
-			for _, clientID := range runtime.catalog.Clients.IDs() {
-				state, err := runtime.mcpManager.State(name, clientID)
-				if err != nil {
-					return err
-				}
-				if state == mcp.StateEnabled {
-					operations = append(operations, mcp.Operation{Server: name, Client: clientID, Enabled: false})
-				}
-			}
-			if len(operations) > 0 {
-				if err := runtime.mcpManager.Apply(operations); err != nil {
-					return err
-				}
-			}
-			if err := mcp.RemoveServer(runtime.mcpCatalog.Path, name); err != nil {
+			if err := mcp.RemoveWithProjections(runtime.mcpManager, runtime.mcpCatalog.Path, name, runtime.catalog.Clients.IDsFor(client.CapabilityMCP)); err != nil {
 				return err
 			}
 			fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.DeletedMCPServer, name))
@@ -227,7 +213,7 @@ func newMCPListCommand(options *rootOptions) *cobra.Command {
 			result := make([]mcpView, 0, len(runtime.mcpCatalog.Servers))
 			for _, name := range runtime.mcpCatalog.Names() {
 				item := mcpView{Name: name, Clients: make(map[string]string)}
-				for _, clientID := range runtime.catalog.Clients.IDs() {
+				for _, clientID := range runtime.catalog.Clients.IDsFor(client.CapabilityMCP) {
 					state, err := runtime.mcpManager.State(name, clientID)
 					if err != nil {
 						return err
@@ -241,13 +227,13 @@ func newMCPListCommand(options *rootOptions) *cobra.Command {
 			}
 			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprint(writer, "MCP")
-			for _, clientID := range runtime.catalog.Clients.IDs() {
+			for _, clientID := range runtime.catalog.Clients.IDsFor(client.CapabilityMCP) {
 				fmt.Fprintf(writer, "\t%s", clientID)
 			}
 			fmt.Fprintln(writer)
 			for _, item := range result {
 				fmt.Fprint(writer, item.Name)
-				for _, clientID := range runtime.catalog.Clients.IDs() {
+				for _, clientID := range runtime.catalog.Clients.IDsFor(client.CapabilityMCP) {
 					fmt.Fprintf(writer, "\t%s", item.Clients[string(clientID)])
 				}
 				fmt.Fprintln(writer)
@@ -279,7 +265,7 @@ func newMCPToggleCommand(options *rootOptions, enabled bool) *cobra.Command {
 			if _, ok := runtime.mcpCatalog.Server(args[0]); !ok {
 				return errors.New(runtime.translator.Text(i18n.UnknownMCPServer, args[0]))
 			}
-			parsed, err := parseClients(clients, runtime.catalog, runtime.translator)
+			parsed, err := parseClientsForCapability(clients, runtime.catalog, runtime.translator, client.CapabilityMCP)
 			if err != nil {
 				return err
 			}

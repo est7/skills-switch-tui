@@ -8,8 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/est7/skills-switch-tui/internal/filelock"
 )
 
 type Transport string
@@ -83,6 +86,11 @@ func LoadCatalog(path string) (Catalog, error) {
 	if file.MCPServers == nil {
 		return Catalog{}, fmt.Errorf("MCP catalog %s is missing mcpServers", path)
 	}
+	// Version was historically optional; treat zero as the legacy v1 encoding
+	// while rejecting explicit versions whose semantics are unknown.
+	if file.Version != 0 && file.Version != 1 {
+		return Catalog{}, fmt.Errorf("unsupported MCP catalog version: %d", file.Version)
+	}
 	loaded := Catalog{Path: path, Servers: make(map[string]Server, len(file.MCPServers))}
 	for name, raw := range file.MCPServers {
 		server, err := normalizeServer(name, raw)
@@ -97,20 +105,73 @@ func LoadCatalog(path string) (Catalog, error) {
 // AddServer registers a new server in the catalog file at path, preserving all
 // other entries and any unknown fields. It fails if the server already exists.
 func AddServer(path string, server Server) error {
-	if err := validateServer(server); err != nil {
-		return err
-	}
-	return mutateCatalogServers(path, func(servers map[string]any) error {
-		if _, exists := servers[server.Name]; exists {
-			return fmt.Errorf("MCP server already exists: %s", server.Name)
-		}
-		entry, err := serverEntry(server)
-		if err != nil {
+	return AddServers(path, []Server{server})
+}
+
+// AddServers registers a batch in one locked catalog transaction. Validation
+// and duplicate checks complete before the single atomic replacement.
+func AddServers(path string, additions []Server) error {
+	seen := make(map[string]bool, len(additions))
+	for _, server := range additions {
+		if err := validateServer(server); err != nil {
 			return err
 		}
-		servers[server.Name] = entry
+		if issues := SecretIssues(server); len(issues) > 0 {
+			return fmt.Errorf("MCP server %s contains plaintext secret-like values: %s; use ${ENV_VAR} references", server.Name, strings.Join(issues, ", "))
+		}
+		if seen[server.Name] {
+			return fmt.Errorf("MCP server appears more than once in batch: %s", server.Name)
+		}
+		seen[server.Name] = true
+	}
+	return mutateCatalogServers(path, func(servers map[string]any) error {
+		for _, server := range additions {
+			if _, exists := servers[server.Name]; exists {
+				return fmt.Errorf("MCP server already exists: %s", server.Name)
+			}
+		}
+		entries := make(map[string]map[string]any, len(additions))
+		for _, server := range additions {
+			entry, err := serverEntry(server)
+			if err != nil {
+				return err
+			}
+			entries[server.Name] = entry
+		}
+		for name, entry := range entries {
+			servers[name] = entry
+		}
 		return nil
 	})
+}
+
+var (
+	secretNamePattern           = regexp.MustCompile(`(?i)(token|secret|password|passwd|api[-_]?key|authorization)`)
+	environmentReferencePattern = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
+)
+
+// SecretIssues reports values that look like credentials but are not delegated
+// to an environment reference. Loading remains tolerant so existing catalogs
+// stay inspectable and doctor can guide migration; new mutations reject them.
+func SecretIssues(server Server) []string {
+	issues := make([]string, 0)
+	for _, entry := range []struct {
+		label  string
+		values map[string]string
+	}{{label: "env", values: server.Env}, {label: "header", values: server.Headers}} {
+		keys := make([]string, 0, len(entry.values))
+		for key := range entry.values {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			value := entry.values[key]
+			if secretNamePattern.MatchString(key) && !environmentReferencePattern.MatchString(value) {
+				issues = append(issues, entry.label+" "+key)
+			}
+		}
+	}
+	return issues
 }
 
 // RemoveServer deletes a server from the catalog file at path, preserving all
@@ -147,6 +208,12 @@ func serverEntry(server Server) (map[string]any, error) {
 }
 
 func mutateCatalogServers(path string, mutate func(map[string]any) error) error {
+	return filelock.WithExclusive(path, func() error {
+		return mutateCatalogServersLocked(path, mutate)
+	})
+}
+
+func mutateCatalogServersLocked(path string, mutate func(map[string]any) error) error {
 	data, exists, mode, err := readConfig(path)
 	if err != nil {
 		return fmt.Errorf("read MCP catalog %s: %w", path, err)

@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/est7/skills-switch-tui/internal/catalog"
 	"github.com/est7/skills-switch-tui/internal/source"
 )
 
@@ -59,6 +61,54 @@ func TestAutoPruneAfterUpdateRemovesOrphanedProjections(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(skillsDir, name)); err != nil {
 			t.Fatalf("live link %q was removed: %v", name, err)
 		}
+	}
+}
+
+func TestMissingConfiguredSourceRemainsVisibleAndDoctorExplainsIt(t *testing.T) {
+	resourceRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillsRoot := filepath.Join(resourceRoot, "skills")
+	if err := catalog.RegisterSource(skillsRoot, "vendor-shared/missing", catalog.SourcePolicy{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"--resources", resourceRoot, "--project", projectRoot}
+	out, err := execute(t, append(base, "source", "list", "--json")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{"vendor-shared/missing", "checkout-missing"} {
+		if !strings.Contains(string(out), fragment) {
+			t.Fatalf("source list omitted %q:\n%s", fragment, out)
+		}
+	}
+	out, err = execute(t, append(base, "doctor", "--json")...)
+	if err == nil {
+		t.Fatal("doctor reported healthy for a missing configured checkout")
+	}
+	for _, fragment := range []string{"vendor-shared/missing", "checkout-missing", "run source update vendor-shared/missing"} {
+		if !strings.Contains(string(out), fragment) {
+			t.Fatalf("doctor omitted %q:\n%s", fragment, out)
+		}
+	}
+}
+
+func TestUpdateJSONIncludesStructuredSourceFailures(t *testing.T) {
+	err := errors.Join(
+		&source.SourceError{SourceID: "vendor-shared/one", Path: "/sources/one", Operation: "fetch tracked branch", Err: errors.New("network down")},
+		&source.SourceError{SourceID: "vendor-shared/two", Path: "/sources/two", Operation: "clean read-only checkout", Err: errors.New("permission denied")},
+	)
+	failures := updateFailures(err)
+	if len(failures) != 2 {
+		t.Fatalf("failures = %#v", failures)
+	}
+	if failures[0].Source != "vendor-shared/one" || failures[0].Operation != "fetch tracked branch" || failures[0].Error != "network down" {
+		t.Fatalf("first failure = %#v", failures[0])
+	}
+	if failures[1].Source != "vendor-shared/two" || failures[1].Path != "/sources/two" {
+		t.Fatalf("second failure = %#v", failures[1])
 	}
 }
 

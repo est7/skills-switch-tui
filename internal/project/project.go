@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 var ErrNotGitProject = errors.New("not inside a Git project")
@@ -24,9 +25,29 @@ func FindRoot(start string) (string, error) {
 	}
 
 	for {
-		_, err := os.Lstat(filepath.Join(current, ".git"))
+		gitEntry := filepath.Join(current, ".git")
+		info, err := os.Lstat(gitEntry)
 		if err == nil {
-			return current, nil
+			if info.IsDir() {
+				return current, nil
+			}
+			if info.Mode().IsRegular() {
+				data, readErr := os.ReadFile(gitEntry)
+				gitdir, found := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir:")
+				if found {
+					gitdir = strings.TrimSpace(gitdir)
+					if !filepath.IsAbs(gitdir) {
+						gitdir = filepath.Join(current, gitdir)
+					}
+					if target, statErr := os.Stat(gitdir); statErr == nil && target.IsDir() {
+						return current, nil
+					}
+				}
+				if readErr != nil {
+					return "", fmt.Errorf("read %s: %w", gitEntry, readErr)
+				}
+			}
+			err = os.ErrNotExist
 		}
 		if !errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("inspect %s: %w", current, err)

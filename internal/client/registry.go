@@ -12,6 +12,7 @@ type ID string
 
 type MCPFormat string
 type PromptMode string
+type Capability string
 
 const (
 	Codex  ID = "codex"
@@ -28,6 +29,18 @@ const (
 const (
 	PromptTree   PromptMode = "tree"
 	PromptConcat PromptMode = "concat"
+)
+
+const (
+	CapabilitySkills        Capability = "skills"
+	CapabilityProjectSkills Capability = "project-skills"
+	CapabilityGlobalSkills  Capability = "global-skills"
+	CapabilitySystemPrompts Capability = "system-prompts"
+	CapabilityCommands      Capability = "commands"
+	CapabilityHooks         Capability = "hooks"
+	CapabilityAgents        Capability = "agents"
+	CapabilityOutputStyles  Capability = "output-styles"
+	CapabilityMCP           Capability = "mcp"
 )
 
 type Definition struct {
@@ -163,6 +176,56 @@ func (r Registry) IDs() []ID {
 		ids = append(ids, definition.ID)
 	}
 	return ids
+}
+
+func (r Registry) IDsFor(capability Capability) []ID {
+	ids := make([]ID, 0, len(r.ordered))
+	for _, definition := range r.ordered {
+		if definition.Supports(capability) {
+			ids = append(ids, definition.ID)
+		}
+	}
+	return ids
+}
+
+func (r Registry) Supports(id ID, capability Capability) bool {
+	definition, ok := r.byID[id]
+	return ok && definition.Supports(capability)
+}
+
+func (r Registry) Require(id ID, capability Capability) error {
+	if !r.Has(id) {
+		return fmt.Errorf("unknown client %q", id)
+	}
+	if !r.Supports(id, capability) {
+		return fmt.Errorf("client %s does not support %s", id, capability)
+	}
+	return nil
+}
+
+func (d Definition) Supports(capability Capability) bool {
+	switch capability {
+	case CapabilitySkills:
+		return d.ProjectSkillsDir != "" || d.UserSkillsDir != ""
+	case CapabilityProjectSkills:
+		return d.ProjectSkillsDir != ""
+	case CapabilityGlobalSkills:
+		return d.UserSkillsDir != ""
+	case CapabilitySystemPrompts:
+		return d.UserPromptDir != ""
+	case CapabilityCommands:
+		return d.ProjectCommandsDir != ""
+	case CapabilityHooks:
+		return d.ProjectHooksDir != ""
+	case CapabilityAgents:
+		return d.UserAgentsDir != ""
+	case CapabilityOutputStyles:
+		return d.UserOutputStylesDir != ""
+	case CapabilityMCP:
+		return d.ProjectMCPFile != "" && d.ProjectMCPFormat != ""
+	default:
+		return false
+	}
 }
 
 func (r Registry) Definitions() []Definition {

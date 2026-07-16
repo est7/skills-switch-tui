@@ -38,6 +38,7 @@ type changeAction int
 const (
 	createLink changeAction = iota
 	removeLink
+	replaceLink
 )
 
 type change struct {
@@ -108,6 +109,8 @@ func (m Manager) SetEnabled(groups []Group, enabled bool) error {
 			action := createLink
 			if next.Action == linkprojection.RemoveLink {
 				action = removeLink
+			} else if next.Action == linkprojection.ReplaceLink {
+				action = replaceLink
 			}
 			m.beforeApply(change{action: action, path: next.Path, target: next.Target})
 		}

@@ -17,8 +17,7 @@ func TestLayoutOwnsResourceTopology(t *testing.T) {
 		layout.SkillsRoot():        filepath.Join(root, "skills"),
 		layout.MCPCatalogFile():    filepath.Join(root, "mcp", "mcp.json"),
 		layout.SystemPromptsRoot(): filepath.Join(root, "system-prompts"),
-		layout.CommandsRoot():      filepath.Join(root, "commands"),
-		layout.HooksRoot():         filepath.Join(root, "hooks"),
+		layout.UserResourceRoot("commands"): filepath.Join(root, "commands"),
 	}
 	for got, want := range tests {
 		if got != want {

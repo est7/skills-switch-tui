@@ -91,6 +91,7 @@ const (
 	NoSelection                 Key = "no_selection"
 	LocalSource                 Key = "local_source"
 	VendorBranch                Key = "vendor_branch"
+	SourceCheckoutMissing       Key = "source_checkout_missing"
 	DiscoveryLabel              Key = "discovery_label"
 	ArchiveReference            Key = "archive_reference"
 	TargetsLabel                Key = "targets_label"
@@ -333,6 +334,7 @@ var messages = map[Language]map[Key]string{
 		NoSelection:                 "No selection",
 		LocalSource:                 "local",
 		VendorBranch:                "vendor · branch %s",
+		SourceCheckoutMissing:       "checkout missing · run source update",
 		DiscoveryLabel:              "discovery %s",
 		ArchiveReference:            "archive · reference-only",
 		TargetsLabel:                "targets  %s",
@@ -569,6 +571,7 @@ var messages = map[Language]map[Key]string{
 		NoSelection:                 "未选择",
 		LocalSource:                 "本地",
 		VendorBranch:                "vendor · 分支 %s",
+		SourceCheckoutMissing:       "检出缺失 · 请运行 source update",
 		DiscoveryLabel:              "发现策略 %s",
 		ArchiveReference:            "归档 · 仅供参考",
 		TargetsLabel:                "适用客户端  %s",

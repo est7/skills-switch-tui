@@ -37,6 +37,25 @@ func TestRegistryExtendsBuiltinsWithConfiguredClient(t *testing.T) {
 	}
 }
 
+func TestRegistryFiltersClientsByResourceCapability(t *testing.T) {
+	registry, err := NewRegistry(map[ID]Definition{
+		"mcp-only":   {ProjectMCPFile: ".mcp-only.json", ProjectMCPFormat: MCPClaudeJSON},
+		"skill-only": {ProjectSkillsDir: ".skill-only/skills"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := registry.IDsFor(CapabilityProjectSkills); !reflect.DeepEqual(got, []ID{Codex, Claude, Gemini, "skill-only"}) {
+		t.Fatalf("project Skill clients = %v", got)
+	}
+	if got := registry.IDsFor(CapabilityMCP); !reflect.DeepEqual(got, []ID{Codex, Claude, Gemini, "mcp-only"}) {
+		t.Fatalf("MCP clients = %v", got)
+	}
+	if err := registry.Require("mcp-only", CapabilitySkills); err == nil {
+		t.Fatal("MCP-only client unexpectedly accepted as a Skill adapter")
+	}
+}
+
 func TestRegistryRejectsProjectEscapingPath(t *testing.T) {
 	if _, err := NewRegistry(map[ID]Definition{"pi": {ProjectSkillsDir: "../shared/skills"}}); err == nil {
 		t.Fatal("NewRegistry() accepted a path outside the project")

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/est7/skills-switch-tui/internal/systemprompt"
+	"github.com/est7/skills-switch-tui/internal/userresource"
 )
 
 func TestDefaultResourcesRootUsesResourceFirstHierarchy(t *testing.T) {
@@ -23,6 +24,19 @@ func TestDefaultResourcesRootUsesResourceFirstHierarchy(t *testing.T) {
 	want := filepath.Join(home, ".agents", "resources")
 	if got != want {
 		t.Fatalf("resolveResourcesRoot() = %q, want %q", got, want)
+	}
+}
+
+func TestEveryUserResourceDescriptorRegistersACommand(t *testing.T) {
+	root := NewRootCommand("test")
+	for _, descriptor := range userresource.Descriptors() {
+		command, _, err := root.Find([]string{descriptor.Command})
+		if err != nil || command == nil || command.Name() != descriptor.Command {
+			t.Fatalf("resource kind %s command %q was not registered: command=%v err=%v", descriptor.Kind, descriptor.Command, command, err)
+		}
+		if _, exists := userResourceCommandShortKeys[descriptor.Kind]; !exists {
+			t.Fatalf("resource kind %s has no localized command label", descriptor.Kind)
+		}
 	}
 }
 

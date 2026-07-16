@@ -63,6 +63,24 @@ func TestSkillsDeleteRejectsVendorArchivedAndUnknown(t *testing.T) {
 	}
 }
 
+func TestSkillsDeleteRejectsPartialClientCleanup(t *testing.T) {
+	resourceRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(resourceRoot, "skills", "local", "shared", "core", "alpha")
+	writeCLISkill(t, skillDir, "alpha")
+	base := []string{"--resources", resourceRoot, "--project", projectRoot}
+	_, err := execute(t, append(base, "skills", "delete", "local-shared/core/alpha", "--yes", "--client", "codex")...)
+	if err == nil || !strings.Contains(err.Error(), "cannot limit cleanup") {
+		t.Fatalf("partial delete error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err != nil {
+		t.Fatalf("partial delete removed the shared provider: %v", err)
+	}
+}
+
 func TestMCPAddAndRemoveRoundTrip(t *testing.T) {
 	resourceRoot := t.TempDir()
 	projectRoot := t.TempDir()
@@ -134,6 +152,38 @@ func TestSkillsCreateScaffoldsADiscoverableLocalSkill(t *testing.T) {
 	// Re-creating the same skill fails.
 	if _, err := execute(t, append(base, "skills", "create", "make-goal")...); err == nil {
 		t.Fatal("duplicate skills create must fail")
+	}
+}
+
+func TestSkillCommandsIgnoreMCPOnlyClientsAndRejectTheirScope(t *testing.T) {
+	resourceRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry := `version: 1
+clients:
+  mcp-only:
+    projectMCPFile: .mcp-only.json
+    projectMCPFormat: claude-json
+`
+	if err := os.WriteFile(filepath.Join(resourceRoot, "registry.yaml"), []byte(registry), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"--resources", resourceRoot, "--project", projectRoot}
+	if _, err := execute(t, append(base, "skills", "create", "valid")...); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range [][]string{{"skills", "list", "--json"}, {"status", "--json"}, {"doctor", "--json"}} {
+		if _, err := execute(t, append(base, command...)...); err != nil {
+			t.Fatalf("%v failed because of an MCP-only client: %v", command, err)
+		}
+	}
+	if _, err := execute(t, append(base, "skills", "create", "invalid", "--scope", "mcp-only")...); err == nil || !strings.Contains(err.Error(), "does not support skills") {
+		t.Fatalf("MCP-only Skill scope error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(resourceRoot, "skills", "local", "mcp-only")); !os.IsNotExist(err) {
+		t.Fatalf("invalid scope wrote to disk: %v", err)
 	}
 }
 
