@@ -56,11 +56,11 @@ Inside `resources/skills`, the physical layout remains a strict `kind / client-s
 
 The built-in client registry owns both project-local and user-global client adapters:
 
-| Client | Project Skills | Project MCP | Project commands/hooks | User agents | User output styles | User system prompts |
-| --- | --- | --- | --- | --- | --- | --- |
-| `codex` | `.agents/skills` | `.codex/config.toml` | `.codex/prompts`, `.codex/hooks` | `.codex/agents` | — | `.codex/` |
-| `claude` | `.claude/skills` | `.mcp.json` | `.claude/commands`, `.claude/hooks` | `.claude/agents` | `.claude/output-styles` | `.claude/` |
-| `gemini` | `.gemini/skills` | `.gemini/settings.json` | `.gemini/commands`, `.gemini/hooks` | `.gemini/agents` | — | `.gemini/` |
+| Client | Project Skills | User Skills | Project MCP | Project commands/hooks | User agents | User output styles | User system prompts |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `codex` | `.agents/skills` | `~/.agents/skills` | `.codex/config.toml` | `.codex/prompts`, `.codex/hooks` | `.codex/agents` | — | `.codex/` |
+| `claude` | `.claude/skills` | `~/.claude/skills` | `.mcp.json` | `.claude/commands`, `.claude/hooks` | `.claude/agents` | `.claude/output-styles` | `.claude/` |
+| `gemini` | `.gemini/skills` | `~/.gemini/skills` | `.gemini/settings.json` | `.gemini/commands`, `.gemini/hooks` | `.gemini/agents` | — | `.gemini/` |
 
 Clients are data, not a closed enum. Built-ins live in the binary; `resources/registry.yaml` can override them or add another client without changing Go code:
 
@@ -70,6 +70,7 @@ version: 1
 clients:
   pi:
     projectSkillsDir: .pi/skills
+    userSkillsDir: .pi/skills
     userPromptDir: .pi
     userPromptMode: tree
     projectCommandsDir: .pi/commands
@@ -135,6 +136,9 @@ skills-switch skills list
 # 4. enable a Skill (or a whole --source) for this project, across clients atomically
 cd ~/my-project
 skills-switch skills enable <skill-id> --client claude --client codex
+
+# Or promote an always-on Skill to each client's native user-global directory
+skills-switch skills enable <skill-id> --client claude --client codex --scope global
 
 # 5. register and enable a project MCP server
 skills-switch mcp import '{"mcpServers":{"context7":{"command":"npx","args":["-y","ctx7"]}}}'
@@ -295,6 +299,8 @@ Source-group and multi-client changes are preflighted as one transaction. A conf
 
 Skills from different active sources may intentionally share a name. They are alternative providers for the same project link: enabling one atomically switches a link currently owned by another catalog provider. A real directory or a symlink outside the active catalog remains an unmanaged conflict and is never overwritten.
 
+Skill scope is selected with `--scope project|global` and defaults to `project`. The two scopes are mutually exclusive by final Skill name and client target: a global projection locks the matching project projection, so project enablement is rejected instead of creating a redundant shadow link. Promoting a catalog-managed project Skill to global atomically removes its project link and creates the user-global link. Disabling the global projection unlocks project scope. `doctor` reports historical global/project duplicates with both the scope and exact path. Because Codex's native `~/.agents/skills` target sits beside the default `~/.agents/resources` catalog, `init` keeps the derived `skills/` directory out of the catalog repository through `.gitignore`.
+
 MCP ownership is entry-level. Enabling adds only the selected server; disabling removes it only when the live definition is semantically identical to the catalog definition. Unknown servers, sibling settings, JSONC comments, TOML comments, ordering, and config-file symlinks are preserved. A same-name different definition is an unmanaged conflict and is never overwritten.
 
 Commands and hooks use the same scoped catalog convention: `shared/<path>` supports every client with a registered target directory, while `<client>-only/<path>` supports only that client. Files are recursively projected at the same relative path. Multi-client changes preflight the whole selected set and roll back on apply failure; an unmanaged file or foreign symlink is a conflict and is never overwritten.
@@ -318,6 +324,7 @@ skills-switch source list --archive
 | `Space` | Toggle the selected resource or Skill source group for the selected client |
 | `a` | Toggle the selected Skill, source, MCP server, command, or hook for every compatible client atomically |
 | `b` | Build the selected concat system prompt (System Prompts tab only) |
+| `s` | Switch project/global scope (Skills tab only); `G` marks a project row locked by a global Skill |
 | `n` | New: on Skills, a menu to add a remote repo source or scaffold a local Skill; on MCP, paste a JSON server definition |
 | `d` | Delete the selected source, local Skill/group, or MCP server (two-step confirmation) |
 | `Enter` | Expand or collapse a Skill source |

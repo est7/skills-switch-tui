@@ -1,6 +1,6 @@
 ---
 name: skills-switch
-description: Manage project-level Skills, MCP servers, commands, and hooks plus user-global agents, output styles, and system prompts through the skills-switch CLI. Use when the user asks to manage these resources for a project or user account.
+description: Manage mutually exclusive project or user-global Skills, project MCP servers, commands, and hooks, plus user-global agents, output styles, and system prompts through the skills-switch CLI. Use when the user asks to manage these resources for a project or user account.
 ---
 
 # Skills Switch
@@ -56,6 +56,24 @@ skills-switch --project "$PROJECT" skills enable <skill-id> \
 ```
 
 Use only compatible clients reported for the selected Skill. For source-level enablement, the CLI filters each source to compatible Skills and rejects a client with no compatible Skills.
+
+## Choose Exactly One Skill Scope
+
+Skills support `--scope project|global`; project is the default. Resolve both views before changing an existing Skill:
+
+```bash
+skills-switch --project "$PROJECT" skills list --scope project --json
+skills-switch --project "$PROJECT" skills list --scope global --json
+```
+
+The scopes are mutually exclusive by final Skill name for each client. A project state of `global` is locked and must not be enabled at project scope. To make an always-on Skill global, use one global command; it atomically retires any catalog-managed project link and creates the native user-global link:
+
+```bash
+skills-switch --project "$PROJECT" skills enable <skill-id> \
+  --client <client-1> --client <client-2> --scope global
+```
+
+To return it to project ownership, disable global first, then enable project. Never create both links manually; `doctor` reports that historical state as `duplicate`.
 
 ## Add a GitHub Skill Repository
 
