@@ -50,6 +50,11 @@ func (m Manager) Initialize(ctx context.Context) (Result, error) {
 	if err := ensureRepository(ctx, git, repositoryRoot); err != nil {
 		return Result{}, err
 	}
+	if filepath.Base(repositoryRoot) == ".agents" && filepath.Base(layout.Root) == "resources" {
+		if err := ensureGitIgnoreEntry(filepath.Join(repositoryRoot, ".gitignore"), "skills/"); err != nil {
+			return Result{}, err
+		}
+	}
 
 	clients, err := client.LoadRegistry(layout.RegistryFile())
 	if err != nil {
@@ -139,6 +144,34 @@ func writeFileIfAbsent(path, content string) error {
 	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close resource file %s: %w", path, err)
+	}
+	return nil
+}
+
+func ensureGitIgnoreEntry(path, entry string) error {
+	contents, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read Git ignore file %s: %w", path, err)
+	}
+	for _, line := range strings.Split(string(contents), "\n") {
+		if strings.TrimSpace(line) == entry {
+			return nil
+		}
+	}
+	prefix := ""
+	if len(contents) > 0 && contents[len(contents)-1] != '\n' {
+		prefix = "\n"
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open Git ignore file %s: %w", path, err)
+	}
+	if _, err := file.WriteString(prefix + entry + "\n"); err != nil {
+		file.Close()
+		return fmt.Errorf("write Git ignore file %s: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close Git ignore file %s: %w", path, err)
 	}
 	return nil
 }

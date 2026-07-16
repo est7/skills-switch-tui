@@ -42,6 +42,10 @@ func TestInitializeCreatesResourceSkeletonAndRegistersBundledSkillIdempotently(t
 			t.Fatalf("bootstrap path %s: %v", path, err)
 		}
 	}
+	ignore, err := os.ReadFile(filepath.Join(agentsRoot, ".gitignore"))
+	if err != nil || string(ignore) != "skills/\n" {
+		t.Fatalf("bootstrap .gitignore = %q, %v", ignore, err)
+	}
 	loaded, err := catalog.Load(filepath.Join(resourcesRoot, "skills"), client.DefaultRegistry())
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +74,26 @@ func TestInitializeCreatesResourceSkeletonAndRegistersBundledSkillIdempotently(t
 	}
 	if string(data) != string(customMCP) {
 		t.Fatalf("second initialize overwrote MCP catalog: %s", data)
+	}
+}
+
+func TestEnsureGitIgnoreEntryPreservesExistingContentAndIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".gitignore")
+	if err := os.WriteFile(path, []byte("generated/"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureGitIgnoreEntry(path, "skills/"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureGitIgnoreEntry(path, "skills/"); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(contents), "generated/\nskills/\n"; got != want {
+		t.Fatalf(".gitignore = %q, want %q", got, want)
 	}
 }
 
