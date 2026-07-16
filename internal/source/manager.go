@@ -165,6 +165,32 @@ type UpdateResult struct {
 
 type DirtyError struct {
 	SourceIDs []string
+	Sources   []DirtySource
+}
+
+type DirtySource struct {
+	SourceID string
+	Path     string
+	Status   string
+}
+
+type SourceError struct {
+	SourceID  string
+	Path      string
+	Operation string
+	Err       error
+}
+
+func (e *SourceError) Error() string {
+	return fmt.Sprintf("%s (%s): %s: %v", e.SourceID, e.Path, e.Operation, e.Err)
+}
+
+func (e *SourceError) Unwrap() error {
+	return e.Err
+}
+
+func sourceError(source catalog.Source, operation string, err error) error {
+	return &SourceError{SourceID: source.ID, Path: source.Path, Operation: operation, Err: err}
 }
 
 func (m Manager) Remove(ctx context.Context, source catalog.Source) error {
@@ -179,7 +205,7 @@ func (m Manager) Remove(ctx context.Context, source catalog.Source) error {
 		return fmt.Errorf("inspect %s: %w", source.ID, err)
 	}
 	if strings.TrimSpace(string(status)) != "" {
-		return &DirtyError{SourceIDs: []string{source.ID}}
+		return newDirtyError([]DirtySource{{SourceID: source.ID, Path: source.Path, Status: string(status)}})
 	}
 	repositoryRoot, err := m.repositoryRoot(ctx)
 	if err != nil {
@@ -227,96 +253,136 @@ func (m Manager) removeSubmoduleGitdir(ctx context.Context, repositoryRoot, rela
 }
 
 func (e *DirtyError) Error() string {
+	if len(e.Sources) > 0 {
+		messages := make([]string, 0, len(e.Sources))
+		for _, source := range e.Sources {
+			messages = append(messages, fmt.Sprintf("%s (%s): working tree has local changes: %s",
+				source.SourceID, source.Path, formatGitStatus(source.Status)))
+		}
+		return strings.Join(messages, "; ")
+	}
 	return "dirty vendor sources block the operation: " + strings.Join(e.SourceIDs, ", ")
+}
+
+func newDirtyError(sources []DirtySource) *DirtyError {
+	ids := make([]string, 0, len(sources))
+	for _, source := range sources {
+		ids = append(ids, source.SourceID)
+	}
+	return &DirtyError{SourceIDs: ids, Sources: sources}
+}
+
+func formatGitStatus(status string) string {
+	lines := strings.Split(strings.TrimSpace(status), "\n")
+	for index := range lines {
+		lines[index] = strings.TrimSpace(lines[index])
+	}
+	return strings.Join(lines, "; ")
+}
+
+type updatePlan struct {
+	source catalog.Source
+	result UpdateResult
 }
 
 func (m Manager) Update(ctx context.Context, sources []catalog.Source, dryRun bool) ([]UpdateResult, error) {
 	if m.Git == nil {
 		m.Git = GitCommander{}
 	}
-	results := make([]UpdateResult, 0, len(sources))
-	dirty := make([]string, 0)
+	plans := make([]updatePlan, 0, len(sources))
+	updateErrors := make([]error, 0)
 	for _, source := range sources {
 		if source.IsArchived() || !source.IsVendor() {
 			continue
 		}
-		status, err := m.Git.Output(ctx, source.Path, "status", "--porcelain")
-		if err != nil {
-			return nil, fmt.Errorf("inspect %s: %w", source.ID, err)
-		}
-		if strings.TrimSpace(string(status)) != "" {
-			dirty = append(dirty, source.ID)
-			continue
+		if !dryRun {
+			if _, err := m.Git.Output(ctx, source.Path, "reset", "--hard", "HEAD"); err != nil {
+				updateErrors = append(updateErrors, sourceError(source, "reset read-only checkout", err))
+				continue
+			}
 		}
 		current, err := m.Git.Output(ctx, source.Path, "rev-parse", "HEAD")
 		if err != nil {
-			return nil, fmt.Errorf("read %s revision: %w", source.ID, err)
+			updateErrors = append(updateErrors, sourceError(source, "read current revision", err))
+			continue
 		}
 		remote, err := m.Git.Output(ctx, source.Path, "ls-remote", "origin", "refs/heads/"+source.Branch)
 		if err != nil {
-			return nil, fmt.Errorf("read %s remote revision: %w", source.ID, err)
+			updateErrors = append(updateErrors, sourceError(source, "read remote revision", err))
+			continue
 		}
 		remoteFields := strings.Fields(string(remote))
 		if len(remoteFields) == 0 {
-			return nil, fmt.Errorf("source %s remote branch not found: %s", source.ID, source.Branch)
+			updateErrors = append(updateErrors, sourceError(source, "read remote revision", fmt.Errorf("remote branch not found: %s", source.Branch)))
+			continue
 		}
 		currentRevision := strings.TrimSpace(string(current))
-		results = append(results, UpdateResult{
+		plans = append(plans, updatePlan{source: source, result: UpdateResult{
 			SourceID: source.ID,
 			Branch:   source.Branch,
 			Current:  currentRevision,
 			Remote:   remoteFields[0],
 			Changed:  currentRevision != remoteFields[0],
-		})
+		}})
 	}
-	if len(dirty) > 0 {
-		return nil, &DirtyError{SourceIDs: dirty}
-	}
+	results := make([]UpdateResult, 0, len(plans))
 	if dryRun {
-		return results, nil
+		for _, plan := range plans {
+			results = append(results, plan.result)
+		}
+		return results, errors.Join(updateErrors...)
 	}
-	for _, result := range results {
-		if !result.Changed {
+	for _, plan := range plans {
+		if !plan.result.Changed {
+			results = append(results, plan.result)
 			continue
 		}
-		source, ok := findSource(sources, result.SourceID)
-		if !ok {
-			return nil, fmt.Errorf("source disappeared during update: %s", result.SourceID)
+		applied, err := m.applyUpdate(ctx, plan.source)
+		if applied {
+			results = append(results, plan.result)
 		}
-		repositoryRoot, err := m.repositoryRoot(ctx)
 		if err != nil {
-			return nil, err
-		}
-		relativePath, err := filepath.Rel(repositoryRoot, source.Path)
-		if err != nil || strings.HasPrefix(relativePath, "..") {
-			return nil, fmt.Errorf("source path is outside repository root %s: %s", repositoryRoot, source.Path)
-		}
-		if _, err := m.Git.Output(ctx, repositoryRoot,
-			"submodule", "update", "--init", "--remote", "--", filepath.ToSlash(relativePath),
-		); err != nil {
-			return nil, fmt.Errorf("update %s: %w", source.ID, err)
-		}
-		if len(source.DiscoveryPriority) > 0 || len(source.SkillPaths) > 0 || len(source.SparsePaths) > 0 {
-			if _, err := m.Git.Output(ctx, source.Path, "sparse-checkout", "disable"); err != nil {
-				return nil, fmt.Errorf("expand %s sparse checkout: %w", source.ID, err)
-			}
-			discovery, err := catalog.PlanVendorDiscovery(source.Path, source.DiscoveryPriority, source.SkillPaths)
-			if err != nil {
-				return nil, fmt.Errorf("recompute %s discovery: %w", source.ID, err)
-			}
-			effectiveSparsePaths := mergeSparsePaths(source.SparsePaths, discovery.SparsePaths)
-			if len(effectiveSparsePaths) == 0 {
-				continue
-			}
-			if _, err := m.Git.Output(ctx, source.Path, "sparse-checkout", "init", "--cone"); err != nil {
-				return nil, fmt.Errorf("initialize %s sparse checkout: %w", source.ID, err)
-			}
-			if _, err := m.Git.Output(ctx, source.Path, append([]string{"sparse-checkout", "set"}, effectiveSparsePaths...)...); err != nil {
-				return nil, fmt.Errorf("reapply %s sparse checkout: %w", source.ID, err)
-			}
+			updateErrors = append(updateErrors, err)
 		}
 	}
-	return results, nil
+	return results, errors.Join(updateErrors...)
+}
+
+func (m Manager) applyUpdate(ctx context.Context, source catalog.Source) (bool, error) {
+	repositoryRoot, err := m.repositoryRoot(ctx)
+	if err != nil {
+		return false, sourceError(source, "resolve resources repository root", err)
+	}
+	relativePath, err := filepath.Rel(repositoryRoot, source.Path)
+	if err != nil || relativePath == "." || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+		return false, sourceError(source, "resolve submodule path", fmt.Errorf("path is outside repository root %s", repositoryRoot))
+	}
+	if _, err := m.Git.Output(ctx, repositoryRoot,
+		"submodule", "update", "--init", "--remote", "--", filepath.ToSlash(relativePath),
+	); err != nil {
+		return false, sourceError(source, "update submodule", err)
+	}
+	if len(source.DiscoveryPriority) == 0 && len(source.SkillPaths) == 0 && len(source.SparsePaths) == 0 {
+		return true, nil
+	}
+	if _, err := m.Git.Output(ctx, source.Path, "sparse-checkout", "disable"); err != nil {
+		return true, sourceError(source, "expand sparse checkout", err)
+	}
+	discovery, err := catalog.PlanVendorDiscovery(source.Path, source.DiscoveryPriority, source.SkillPaths)
+	if err != nil {
+		return true, sourceError(source, "recompute discovery", err)
+	}
+	effectiveSparsePaths := mergeSparsePaths(source.SparsePaths, discovery.SparsePaths)
+	if len(effectiveSparsePaths) == 0 {
+		return true, nil
+	}
+	if _, err := m.Git.Output(ctx, source.Path, "sparse-checkout", "init", "--cone"); err != nil {
+		return true, sourceError(source, "initialize sparse checkout", err)
+	}
+	if _, err := m.Git.Output(ctx, source.Path, append([]string{"sparse-checkout", "set"}, effectiveSparsePaths...)...); err != nil {
+		return true, sourceError(source, "reapply sparse checkout", err)
+	}
+	return true, nil
 }
 
 func (m Manager) repositoryRoot(ctx context.Context) (string, error) {
@@ -332,13 +398,4 @@ func (m Manager) repositoryRoot(ctx context.Context) (string, error) {
 		return "", errors.New("resolve catalog repository root: git returned an empty path")
 	}
 	return root, nil
-}
-
-func findSource(sources []catalog.Source, id string) (catalog.Source, bool) {
-	for _, source := range sources {
-		if source.ID == id {
-			return source, true
-		}
-	}
-	return catalog.Source{}, false
 }

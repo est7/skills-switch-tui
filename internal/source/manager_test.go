@@ -12,29 +12,81 @@ import (
 	"github.com/est7/skills-switch-tui/internal/client"
 )
 
-func TestUpdateDoesNotMutateAnySourceWhenPreflightFindsDirtySource(t *testing.T) {
+func TestUpdateHardResetsReadOnlySourceBeforeInspectingAndUpdating(t *testing.T) {
 	agentsRoot := t.TempDir()
+	target := filepath.Join(agentsRoot, "sources", "vendor", "shared", "modified")
 	git := &recordingGit{responses: map[string]string{
-		"clean|status --porcelain":               "",
-		"clean|rev-parse HEAD":                   "aaaaaaaa\n",
-		"clean|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
-		"dirty|status --porcelain":               " M SKILL.md\n",
+		target + "|reset --hard HEAD":                "HEAD is now at aaaaaaaa current\n",
+		target + "|rev-parse HEAD":                   "aaaaaaaa\n",
+		target + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
+		agentsRoot + "|submodule update --init --remote -- sources/vendor/shared/modified": "",
 	}}
 	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: filepath.Join(agentsRoot, "sources"), Git: git}
-	sources := []catalog.Source{
-		{ID: "vendor-shared/clean", Kind: catalog.SourceVendor, Scope: "shared", Path: "clean", Branch: "main"},
-		{ID: "vendor-shared/dirty", Kind: catalog.SourceVendor, Scope: "shared", Path: "dirty", Branch: "main"},
-	}
+	sources := []catalog.Source{{ID: "vendor-shared/modified", Kind: catalog.SourceVendor, Scope: "shared", Path: target, Branch: "main"}}
 
-	_, err := manager.Update(context.Background(), sources, false)
-	var dirty *DirtyError
-	if !errors.As(err, &dirty) {
-		t.Fatalf("Update() error = %v, want DirtyError", err)
+	results, err := manager.Update(context.Background(), sources, false)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, call := range git.calls {
-		if strings.Contains(call, "submodule update") {
-			t.Fatalf("Update() mutated sources after failed preflight: %s", call)
+	if len(results) != 1 || results[0].SourceID != "vendor-shared/modified" {
+		t.Fatalf("Update() results = %#v, want the updated source", results)
+	}
+	if len(git.calls) < 4 || git.calls[0] != "reset --hard HEAD" || git.calls[1] != "rev-parse HEAD" {
+		t.Fatalf("Update() did not hard-reset before inspection: %v", git.calls)
+	}
+	if !git.called("submodule update --init --remote -- sources/vendor/shared/modified") {
+		t.Fatalf("Update() did not update the reset source; calls = %v", git.calls)
+	}
+	if git.called("status --porcelain") {
+		t.Fatalf("Update() still treats local modifications as a blocking state: %v", git.calls)
+	}
+}
+
+func TestUpdateContinuesAfterResetFailureAndIdentifiesRepository(t *testing.T) {
+	agentsRoot := t.TempDir()
+	brokenPath := filepath.Join(agentsRoot, "sources", "vendor", "shared", "broken")
+	cleanPath := filepath.Join(agentsRoot, "sources", "vendor", "shared", "clean")
+	git := &recordingGit{responses: map[string]string{
+		cleanPath + "|reset --hard HEAD":                "HEAD is now at aaaaaaaa current\n",
+		cleanPath + "|rev-parse HEAD":                   "aaaaaaaa\n",
+		cleanPath + "|ls-remote origin refs/heads/main": "aaaaaaaa\trefs/heads/main\n",
+	}}
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: filepath.Join(agentsRoot, "sources"), Git: git}
+
+	results, err := manager.Update(context.Background(), []catalog.Source{{
+		ID: "vendor-shared/broken", Kind: catalog.SourceVendor, Scope: "shared", Path: brokenPath, Branch: "main",
+	}, {
+		ID: "vendor-shared/clean", Kind: catalog.SourceVendor, Scope: "shared", Path: cleanPath, Branch: "main",
+	}}, false)
+	if err == nil {
+		t.Fatal("Update() succeeded despite reset failure")
+	}
+	if len(results) != 1 || results[0].SourceID != "vendor-shared/clean" {
+		t.Fatalf("Update() results = %#v, want the independent clean source", results)
+	}
+	for _, fragment := range []string{"vendor-shared/broken", brokenPath, "reset read-only checkout", "unexpected git call"} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Fatalf("Update() error %q does not contain %q", err, fragment)
 		}
+	}
+}
+
+func TestUpdateDryRunDoesNotResetReadOnlySource(t *testing.T) {
+	agentsRoot := t.TempDir()
+	target := filepath.Join(agentsRoot, "sources", "vendor", "shared", "preview")
+	git := &recordingGit{responses: map[string]string{
+		target + "|rev-parse HEAD":                   "aaaaaaaa\n",
+		target + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
+	}}
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: filepath.Join(agentsRoot, "sources"), Git: git}
+
+	if _, err := manager.Update(context.Background(), []catalog.Source{{
+		ID: "vendor-shared/preview", Kind: catalog.SourceVendor, Scope: "shared", Path: target, Branch: "main",
+	}}, true); err != nil {
+		t.Fatal(err)
+	}
+	if git.called("reset --hard HEAD") {
+		t.Fatalf("dry-run mutated the source: %v", git.calls)
 	}
 }
 
@@ -48,7 +100,7 @@ func TestUpdateRecomputesDerivedSparsePathsAfterManifestChanges(t *testing.T) {
   "skills": ["./skills/old"]
 }`)
 	git := &recordingGit{responses: map[string]string{
-		target + "|status --porcelain":               "",
+		target + "|reset --hard HEAD":                "HEAD is now at aaaaaaaa current\n",
 		target + "|rev-parse HEAD":                   "aaaaaaaa\n",
 		target + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
 		agentsRoot + "|submodule update --init --remote -- sources/vendor/shared/changing": "",
@@ -437,6 +489,15 @@ type recordingGit struct {
 	responses map[string]string
 	calls     []string
 	onCall    func(key string)
+}
+
+func (g *recordingGit) called(expected string) bool {
+	for _, call := range g.calls {
+		if call == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *recordingGit) Output(_ context.Context, directory string, arguments ...string) ([]byte, error) {

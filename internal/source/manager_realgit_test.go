@@ -11,6 +11,81 @@ import (
 	"github.com/est7/skills-switch-tui/internal/catalog"
 )
 
+func TestUpdateHardResetsTrackedEditsBeforeUpdatingSubmodule(t *testing.T) {
+	gitBinary, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
+	t.Setenv("GIT_CONFIG_VALUE_0", "always")
+	t.Setenv("GIT_TERMINAL_PROMPT", "0")
+
+	base := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		command := exec.Command(gitBinary, args...)
+		command.Dir = dir
+		command.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e",
+		)
+		if out, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	remote := filepath.Join(base, "remote")
+	skillFile := filepath.Join(remote, "skills", "tool", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillFile, []byte("remote v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(remote, "init", "-q", "-b", "main")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "v1")
+
+	parent := filepath.Join(base, "parent")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(parent, "init", "-q", "-b", "main")
+	run(parent, "commit", "-q", "--allow-empty", "-m", "init")
+	relative := filepath.FromSlash("resources/skills/vendor/shared/repo")
+	run(parent, "submodule", "add", "-q", "-b", "main", remote, relative)
+	run(parent, "commit", "-q", "-am", "add submodule")
+	target := filepath.Join(parent, relative)
+	targetSkill := filepath.Join(target, "skills", "tool", "SKILL.md")
+	if err := os.WriteFile(targetSkill, []byte("local tracked edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillFile, []byte("remote v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "v2")
+
+	manager := Manager{RepositoryRoot: parent, SkillsRoot: filepath.Join(parent, "resources", "skills"), Git: GitCommander{}}
+	results, err := manager.Update(context.Background(), []catalog.Source{{
+		ID: "vendor-shared/repo", Kind: catalog.SourceVendor, Scope: "shared", Path: target, Branch: "main",
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || !results[0].Changed {
+		t.Fatalf("Update() results = %#v, want one changed source", results)
+	}
+	contents, err := os.ReadFile(targetSkill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(contents), "remote v2\n"; got != want {
+		t.Fatalf("updated Skill = %q, want %q", got, want)
+	}
+}
+
 // TestAddRollbackCleansSubmoduleGitdirForReAdd proves that when an add fails
 // after cloning and rolls back, the leftover .git/modules gitdir is removed so a
 // subsequent add of the same path is not refused as an existing local repo.

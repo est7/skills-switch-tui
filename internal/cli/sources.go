@@ -228,10 +228,7 @@ func newUpdateCommand(options *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			results, err := runtime.manager.Update(command.Context(), selected, dryRun)
-			if err != nil {
-				return err
-			}
+			results, updateErr := runtime.manager.Update(command.Context(), selected, dryRun)
 			var pruned []projection.Orphan
 			if !dryRun {
 				var pruneWarning error
@@ -241,7 +238,7 @@ func newUpdateCommand(options *rootOptions) *cobra.Command {
 				}
 			}
 			if outputJSON {
-				return writeJSON(command, updateOutput{Updates: results, Pruned: toPrunedLinks(pruned)})
+				return errors.Join(updateErr, writeJSON(command, updateOutput{Updates: results, Pruned: toPrunedLinks(pruned)}))
 			}
 			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n",
@@ -265,9 +262,9 @@ func newUpdateCommand(options *rootOptions) *cobra.Command {
 				)
 			}
 			if err := writer.Flush(); err != nil {
-				return err
+				return errors.Join(updateErr, err)
 			}
-			return renderPrunedProjections(command, runtime.translator, pruned)
+			return errors.Join(updateErr, renderPrunedProjections(command, runtime.translator, pruned))
 		},
 	}
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "inspect updates without changing submodules")
