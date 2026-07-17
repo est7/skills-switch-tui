@@ -43,7 +43,7 @@ func TestInitializeCreatesResourceSkeletonAndRegistersBundledSkillIdempotently(t
 		}
 	}
 	ignore, err := os.ReadFile(filepath.Join(agentsRoot, ".gitignore"))
-	if err != nil || string(ignore) != "skills/\n" {
+	if err != nil || string(ignore) != "/skills/\n" {
 		t.Fatalf("bootstrap .gitignore = %q, %v", ignore, err)
 	}
 	loaded, err := catalog.Load(filepath.Join(resourcesRoot, "skills"), client.DefaultRegistry())
@@ -82,18 +82,62 @@ func TestEnsureGitIgnoreEntryPreservesExistingContentAndIsIdempotent(t *testing.
 	if err := os.WriteFile(path, []byte("generated/"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureGitIgnoreEntry(path, "skills/"); err != nil {
+	if err := ensureGitIgnoreEntry(path, "/skills/"); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureGitIgnoreEntry(path, "skills/"); err != nil {
+	if err := ensureGitIgnoreEntry(path, "/skills/"); err != nil {
 		t.Fatal(err)
 	}
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(contents), "generated/\nskills/\n"; got != want {
+	if got, want := string(contents), "generated/\n/skills/\n"; got != want {
 		t.Fatalf(".gitignore = %q, want %q", got, want)
+	}
+}
+
+func TestEnsureGitIgnoreEntryMigratesLegacySpellingsInPlace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".gitignore")
+	// The unanchored skills/ that earlier releases wrote also ignored
+	// resources/skills/, blocking vendor submodule adds; it must be rewritten
+	// even when the anchored entry is already present.
+	if err := os.WriteFile(path, []byte("generated/\n/skills/\nskills/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureGitIgnoreEntry(path, "/skills/", "skills/"); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(contents), "generated/\n/skills/\n"; got != want {
+		t.Fatalf(".gitignore = %q, want %q", got, want)
+	}
+
+	if err := os.WriteFile(path, []byte("generated/\nskills/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureGitIgnoreEntry(path, "/skills/", "skills/"); err != nil {
+		t.Fatal(err)
+	}
+	contents, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(contents), "generated/\n/skills/\n"; got != want {
+		t.Fatalf(".gitignore = %q, want %q", got, want)
+	}
+	if err := ensureGitIgnoreEntry(path, "/skills/", "skills/"); err != nil {
+		t.Fatal(err)
+	}
+	contents, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(contents), "generated/\n/skills/\n"; got != want {
+		t.Fatalf(".gitignore = %q, want repeat run to stay idempotent with %q", got, want)
 	}
 }
 

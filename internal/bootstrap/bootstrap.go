@@ -52,7 +52,10 @@ func (m Manager) Initialize(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 	if filepath.Base(repositoryRoot) == ".agents" && filepath.Base(layout.Root) == "resources" {
-		if err := ensureGitIgnoreEntry(filepath.Join(repositoryRoot, ".gitignore"), "skills/"); err != nil {
+		// Anchor the derived-projection ignore to the repository root: the
+		// unanchored "skills/" this tool used to write also ignored
+		// resources/skills/, which blocks every vendor submodule add.
+		if err := ensureGitIgnoreEntry(filepath.Join(repositoryRoot, ".gitignore"), "/skills/", "skills/"); err != nil {
 			return Result{}, err
 		}
 	}
@@ -160,15 +163,45 @@ func writeFileIfAbsent(path, content string) error {
 	return nil
 }
 
-func ensureGitIgnoreEntry(path, entry string) error {
+// ensureGitIgnoreEntry guarantees path contains an exact entry line. A line
+// matching one of legacyEntries — an earlier spelling this tool wrote — is
+// rewritten to entry in place instead of accumulating alongside it.
+func ensureGitIgnoreEntry(path, entry string, legacyEntries ...string) error {
 	contents, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read Git ignore file %s: %w", path, err)
 	}
-	for _, line := range strings.Split(string(contents), "\n") {
-		if strings.TrimSpace(line) == entry {
-			return nil
+	legacy := make(map[string]bool, len(legacyEntries))
+	for _, spelling := range legacyEntries {
+		legacy[spelling] = true
+	}
+	lines := strings.Split(string(contents), "\n")
+	kept := make([]string, 0, len(lines))
+	found := false
+	migrated := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if legacy[trimmed] || (trimmed == entry && found) {
+			migrated = true
+			if !found {
+				kept = append(kept, entry)
+				found = true
+			}
+			continue
 		}
+		if trimmed == entry {
+			found = true
+		}
+		kept = append(kept, line)
+	}
+	if migrated {
+		if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0o644); err != nil {
+			return fmt.Errorf("write Git ignore file %s: %w", path, err)
+		}
+		return nil
+	}
+	if found {
+		return nil
 	}
 	prefix := ""
 	if len(contents) > 0 && contents[len(contents)-1] != '\n' {
