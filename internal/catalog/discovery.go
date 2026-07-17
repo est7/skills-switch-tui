@@ -80,6 +80,19 @@ type marketplaceSource struct {
 	Path   string `json:"path"`
 }
 
+// unusableManifestError classifies a manifest that exists but whose content
+// this strategy cannot interpret — unparseable JSON, an unsupported source
+// type (for example a Codex marketplace "url" source), or a declared path
+// that does not resolve. Strategy loops treat it as "matched but unusable"
+// and fall through to the next configured strategy; only when no strategy
+// yields a usable match does the recorded error surface, so a repository
+// whose sole manifest is broken still fails loudly instead of root-walking.
+// Manifest read I/O failures stay hard errors.
+type unusableManifestError struct{ err error }
+
+func (e *unusableManifestError) Error() string { return e.err.Error() }
+func (e *unusableManifestError) Unwrap() error { return e.err }
+
 type DiscoveryPlan struct {
 	Strategy    DiscoveryStrategy
 	SparsePaths []string
@@ -131,10 +144,19 @@ func PlanVendorDiscovery(root string, configuredPriority []DiscoveryStrategy, sk
 	if err := ValidateDiscoveryPriority(priority); err != nil {
 		return DiscoveryPlan{}, err
 	}
+	var unusable error
 	for _, strategy := range priority {
 		roots, matched, err := discoveryRoots(root, strategy)
 		if err != nil {
-			return DiscoveryPlan{}, fmt.Errorf("plan discovery with %s: %w", strategy, err)
+			wrapped := fmt.Errorf("plan discovery with %s: %w", strategy, err)
+			var contentErr *unusableManifestError
+			if errors.As(err, &contentErr) {
+				if unusable == nil {
+					unusable = wrapped
+				}
+				continue
+			}
+			return DiscoveryPlan{}, wrapped
 		}
 		if !matched {
 			continue
@@ -144,6 +166,9 @@ func PlanVendorDiscovery(root string, configuredPriority []DiscoveryStrategy, sk
 			return DiscoveryPlan{}, fmt.Errorf("plan sparse checkout for %s: %w", strategy, err)
 		}
 		return DiscoveryPlan{Strategy: strategy, SparsePaths: paths}, nil
+	}
+	if unusable != nil {
+		return DiscoveryPlan{}, unusable
 	}
 	return DiscoveryPlan{}, nil
 }
@@ -201,10 +226,19 @@ func discoverManagedSource(
 	if err := ValidateDiscoveryPriority(priority); err != nil {
 		return Source{}, fmt.Errorf("discover source %s: %w", id, err)
 	}
+	var unusable error
 	for _, strategy := range priority {
 		roots, matched, err := discoveryRoots(root, strategy)
 		if err != nil {
-			return Source{}, fmt.Errorf("discover source %s with %s: %w", id, strategy, err)
+			wrapped := fmt.Errorf("discover source %s with %s: %w", id, strategy, err)
+			var contentErr *unusableManifestError
+			if errors.As(err, &contentErr) {
+				if unusable == nil {
+					unusable = wrapped
+				}
+				continue
+			}
+			return Source{}, wrapped
 		}
 		if !matched {
 			continue
@@ -223,6 +257,9 @@ func discoverManagedSource(
 		source.DiscoveryStrategy = strategy
 		source.DiscoveryPriority = priority
 		return source, nil
+	}
+	if unusable != nil {
+		return Source{}, unusable
 	}
 	// No manifest matched: walk the root and collect every SKILL.md.
 	source, err := discoverSourceRoots(id, root, []string{root}, defaults, overrides, clients, false)
@@ -320,7 +357,7 @@ func marketplaceRoots(sourceRoot, manifestPath, pluginManifestRelativePath strin
 	}
 	var manifest marketplaceManifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, true, fmt.Errorf("parse %s: %w", manifestPath, err)
+		return nil, true, &unusableManifestError{fmt.Errorf("parse %s: %w", manifestPath, err)}
 	}
 
 	roots := make([]string, 0)
@@ -328,11 +365,11 @@ func marketplaceRoots(sourceRoot, manifestPath, pluginManifestRelativePath strin
 	for _, plugin := range manifest.Plugins {
 		sourcePath, err := decodeMarketplaceSource(plugin.Source)
 		if err != nil {
-			return nil, true, fmt.Errorf("plugin %q source: %w", plugin.Name, err)
+			return nil, true, &unusableManifestError{fmt.Errorf("plugin %q source: %w", plugin.Name, err)}
 		}
 		pluginRoot, err := resolveDeclaredPath(sourceRoot, sourceRoot, sourcePath)
 		if err != nil {
-			return nil, true, fmt.Errorf("plugin %q source path %q: %w", plugin.Name, sourcePath, err)
+			return nil, true, &unusableManifestError{fmt.Errorf("plugin %q source path %q: %w", plugin.Name, sourcePath, err)}
 		}
 		pluginRoots, manifestFound, err := pluginManifestRoots(
 			sourceRoot,
@@ -392,7 +429,7 @@ func pluginManifestRoots(sourceRoot, pluginRoot, manifestPath string) ([]string,
 	}
 	var manifest pluginManifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, true, fmt.Errorf("parse %s: %w", manifestPath, err)
+		return nil, true, &unusableManifestError{fmt.Errorf("parse %s: %w", manifestPath, err)}
 	}
 	if !manifest.Skills.present {
 		skillsRoot := filepath.Join(pluginRoot, "skills")
@@ -412,7 +449,7 @@ func pluginManifestRoots(sourceRoot, pluginRoot, manifestPath string) ([]string,
 	for _, declared := range manifest.Skills.paths {
 		resolved, err := resolveDeclaredPath(sourceRoot, pluginRoot, declared)
 		if err != nil {
-			return nil, true, fmt.Errorf("skill path %q: %w", declared, err)
+			return nil, true, &unusableManifestError{fmt.Errorf("skill path %q: %w", declared, err)}
 		}
 		roots = append(roots, resolved)
 	}

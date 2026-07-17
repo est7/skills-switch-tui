@@ -749,6 +749,110 @@ sources:
 	}
 }
 
+func TestLoadFallsBackPastUnusableAgentsMarketplaceManifest(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	vendorRoot := filepath.Join(sourcesRoot, "vendor", "shared", "ponytail")
+	writeSkill(t, filepath.Join(vendorRoot, "skills", "ponytail"), `---
+name: ponytail
+description: Reachable through the Claude marketplace manifest.
+---
+`)
+	// A Codex-style marketplace whose plugin source is a git URL (as published
+	// by e.g. DietrichGebert/ponytail); this strategy cannot interpret it.
+	writeJSON(t, filepath.Join(vendorRoot, ".agents", "plugins", "marketplace.json"), `{
+  "name": "ponytail",
+  "plugins": [{
+    "name": "ponytail",
+    "source": {"source": "url", "url": "https://example.com/ponytail.git", "ref": "main"}
+  }]
+}`)
+	writeJSON(t, filepath.Join(vendorRoot, ".claude-plugin", "marketplace.json"), `{
+  "name": "ponytail",
+  "plugins": [{"name": "ponytail", "source": "./"}]
+}`)
+	writeJSON(t, filepath.Join(vendorRoot, ".claude-plugin", "plugin.json"), `{
+  "name": "ponytail"
+}`)
+	config := `version: 1
+sources:
+  vendor-shared/ponytail:
+    branch: main
+`
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if _, ok := loaded.Skill("vendor-shared/ponytail/skills/ponytail"); !ok {
+		t.Fatal("skill behind the fallback strategy was not discovered")
+	}
+	source, ok := loaded.Source("vendor-shared/ponytail")
+	if !ok {
+		t.Fatal("ponytail source was not discovered")
+	}
+	if got, want := source.DiscoveryStrategy, DiscoveryClaudeMarketplace; got != want {
+		t.Fatalf("discovery strategy = %q, want %q", got, want)
+	}
+
+	plan, err := PlanVendorDiscovery(vendorRoot, source.DiscoveryPriority, nil)
+	if err != nil {
+		t.Fatalf("PlanVendorDiscovery() error = %v", err)
+	}
+	if got, want := plan.Strategy, DiscoveryClaudeMarketplace; got != want {
+		t.Fatalf("plan strategy = %q, want %q", got, want)
+	}
+}
+
+func TestLoadSurfacesUnusableManifestWhenNoStrategyMatches(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	vendorRoot := filepath.Join(sourcesRoot, "vendor", "shared", "broken")
+	// A loose skill that a silent skip would incorrectly surface via root-walk.
+	writeSkill(t, filepath.Join(vendorRoot, "extras", "loose"), `---
+name: loose
+description: Must stay undiscovered while the sole manifest is unusable.
+---
+`)
+	writeJSON(t, filepath.Join(vendorRoot, ".agents", "plugins", "marketplace.json"), `{
+  "name": "broken",
+  "plugins": [{
+    "name": "broken",
+    "source": {"source": "url", "url": "https://example.com/broken.git"}
+  }]
+}`)
+	config := `version: 1
+sources:
+  vendor-shared/broken:
+    branch: main
+`
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err == nil || !strings.Contains(err.Error(), `unsupported source type "url"`) {
+		t.Fatalf("Load() error = %v, want unsupported source type", err)
+	}
+}
+
+func TestPlanVendorDiscoverySurfacesUnusableManifestWhenNoStrategyMatches(t *testing.T) {
+	vendorRoot := t.TempDir()
+	writeJSON(t, filepath.Join(vendorRoot, ".agents", "plugins", "marketplace.json"), `{
+  "name": "broken",
+  "plugins": [{
+    "name": "broken",
+    "source": {"source": "url", "url": "https://example.com/broken.git"}
+  }]
+}`)
+
+	_, err := PlanVendorDiscovery(vendorRoot, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), `unsupported source type "url"`) {
+		t.Fatalf("PlanVendorDiscovery() error = %v, want unsupported source type", err)
+	}
+}
+
 func TestPlanVendorDiscoveryReturnsOnlyRequiredSparsePaths(t *testing.T) {
 	vendorRoot := t.TempDir()
 	writeSkill(t, filepath.Join(vendorRoot, "skills", "registered"), `---
