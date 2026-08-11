@@ -243,6 +243,8 @@ After changed sources are rediscovered, the command removes dangling catalog-man
 
 A vendor source is named for its remote's `owner/repo` and lives at `vendor/<scope>/<owner>/<repo>`. Checkouts registered before that owner level existed keep a bare `vendor/<scope>/<repo>` path and stay discoverable, so migration is never urgent — but two repositories that share a repository name cannot both use the bare form.
 
+Migration is a one-way step for the catalog: a `skills-switch` older than v0.13.0 rejects an owner-qualified source ID as an invalid vendor source id and refuses to load the catalog at all. Before migrating, confirm every machine that shares this resource root runs v0.13.0 or newer.
+
 Always preview first; `--dry-run` touches nothing:
 
 ```bash

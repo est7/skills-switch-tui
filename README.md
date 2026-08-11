@@ -181,6 +181,8 @@ skills-switch source migrate --dry-run
 skills-switch source migrate
 ```
 
+Migration is a one-way step for the catalog: an owner-qualified source ID is not readable by a `skills-switch` older than v0.13.0, which rejects it as an invalid vendor source id. Upgrade every machine that shares this catalog before migrating it.
+
 JSON output carries a `status` per source: `planned` (dry run), `moved`, `skipped` with the preflight `reason`, `failed` and `rolled_back` (both leave the checkout where it started), and `rollback_failed` — the one state that needs manual repair before any further source operation. Pass `--project` so the migration repoints that project's projections; without it the project is resolved from the working directory.
 
 A repository with no manifest and no top-level `skills/` (a curated repo laid out by category, e.g. `github.com/android/skills`) is discovered by root-walking every `SKILL.md`; you then enable the ones you want.
