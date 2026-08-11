@@ -340,7 +340,7 @@ func TestUpdateAllContinuesCleanSourcesAndReportsResetFailure(t *testing.T) {
 	sourcesRoot := filepath.Join(repositoryRoot, "resources", "skills")
 	projectRoot := t.TempDir()
 	for _, name := range []string{"broken", "clean"} {
-		writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", name, "skills", name), name)
+		writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "owner", name, "skills", name), name)
 	}
 	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
 	if err != nil {
@@ -353,7 +353,7 @@ func TestUpdateAllContinuesCleanSourcesAndReportsResetFailure(t *testing.T) {
 		clean.Path + "|clean -ffdx":                                                         "",
 		clean.Path + "|rev-parse HEAD":                                                      "aaaaaaaa\n",
 		clean.Path + "|ls-remote origin refs/heads/main":                                    "bbbbbbbb\trefs/heads/main\n",
-		repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/clean": "",
+		repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/owner/clean": "",
 		clean.Path + "|fetch --no-tags origin refs/heads/main":                              "",
 		clean.Path + "|reset --hard bbbbbbbb":                                               "",
 		clean.Path + "|rev-parse --verify HEAD":                                             "bbbbbbbb\n",
@@ -380,7 +380,7 @@ func TestUpdateAllContinuesCleanSourcesAndReportsResetFailure(t *testing.T) {
 	if !strings.Contains(model.status, "Updated 1 source(s)") {
 		t.Fatalf("partial update status = %q err=%v calls=%v", model.status, model.err, git.calls)
 	}
-	if !git.called(repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/clean") {
+	if !git.called(repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/owner/clean") {
 		t.Fatalf("clean source was not updated; calls = %v", git.calls)
 	}
 }

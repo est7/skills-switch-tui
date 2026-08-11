@@ -178,6 +178,16 @@ const (
 	DiscoveryHeader             Key = "discovery_header"
 	ClientHeader                Key = "client_header"
 	StateHeader                 Key = "state_header"
+	TargetHeader                Key = "target_header"
+	MigrateShort                Key = "migrate_short"
+	MigrateDryRunFlag           Key = "migrate_dry_run_flag"
+	MigrateNothingToDo          Key = "migrate_nothing_to_do"
+	MigrateSkipped              Key = "migrate_skipped"
+	MigrateMoved                Key = "migrate_moved"
+	MigrateFailed               Key = "migrate_failed"
+	MigrateRolledBack           Key = "migrate_rolled_back"
+	MigrateRollbackFailed       Key = "migrate_rollback_failed"
+	MigrateRelinkNotice         Key = "migrate_relink_notice"
 	EnabledHeader               Key = "enabled_header"
 	DisabledHeader              Key = "disabled_header"
 	IssuesHeader                Key = "issues_header"
@@ -426,6 +436,16 @@ var messages = map[Language]map[Key]string{
 		DiscoveryHeader:             "DISCOVERY",
 		ClientHeader:                "CLIENT",
 		StateHeader:                 "STATE",
+		TargetHeader:                "TARGET",
+		MigrateShort:                "Move vendor checkouts registered under a bare repository name under their owner",
+		MigrateDryRunFlag:           "report the planned moves without changing anything",
+		MigrateNothingToDo:          "every vendor source is already owner-qualified\n",
+		MigrateSkipped:              "skipped",
+		MigrateMoved:                "moved",
+		MigrateFailed:               "failed, left in place",
+		MigrateRolledBack:           "moved back",
+		MigrateRollbackFailed:       "LEFT MID-MOVE, restore failed",
+		MigrateRelinkNotice:         "projections in other projects still point at the old paths; re-enable those skills there\n",
 		EnabledHeader:               "ENABLED",
 		DisabledHeader:              "DISABLED",
 		IssuesHeader:                "ISSUES",
@@ -668,6 +688,16 @@ var messages = map[Language]map[Key]string{
 		DiscoveryHeader:             "发现策略",
 		ClientHeader:                "客户端",
 		StateHeader:                 "状态",
+		TargetHeader:                "目标",
+		MigrateShort:                "把以裸仓库名注册的 vendor 检出迁移到 owner 目录下",
+		MigrateDryRunFlag:           "只报告将要执行的迁移，不做任何改动",
+		MigrateNothingToDo:          "所有 vendor 来源都已带 owner 前缀\n",
+		MigrateSkipped:              "已跳过",
+		MigrateMoved:                "已迁移",
+		MigrateFailed:               "失败，未改动",
+		MigrateRolledBack:           "已回滚",
+		MigrateRollbackFailed:       "停在迁移中途，回滚失败",
+		MigrateRelinkNotice:         "其它项目里的投影仍指向旧路径，需要在那些项目里重新启用对应 Skill\n",
 		EnabledHeader:               "已启用",
 		DisabledHeader:              "已停用",
 		IssuesHeader:                "问题",

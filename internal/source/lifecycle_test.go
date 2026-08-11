@@ -240,14 +240,14 @@ func TestLifecycleRemoveRetiresProjectAndGlobalProjections(t *testing.T) {
 func TestLifecycleRemoveRestoresProjectionWhenSourceRemovalFails(t *testing.T) {
 	repositoryRoot := t.TempDir()
 	skillsRoot := filepath.Join(repositoryRoot, "resources", "skills")
-	sourcePath := filepath.Join(skillsRoot, "vendor", "shared", "repo")
+	sourcePath := filepath.Join(skillsRoot, "vendor", "shared", "owner", "repo")
 	skillPath := filepath.Join(sourcePath, "skills", "one")
 	writeSourceSkill(t, skillPath)
 	loaded, err := catalog.Load(skillsRoot, client.DefaultRegistry())
 	if err != nil {
 		t.Fatal(err)
 	}
-	selected, ok := loaded.Source("vendor-shared/repo")
+	selected, ok := loaded.Source("vendor-shared/owner/repo")
 	if !ok {
 		t.Fatal("source not discovered")
 	}

@@ -385,7 +385,7 @@ description: Coding discipline.
 
 func TestLoadDiscoversClientScopedVendorSource(t *testing.T) {
 	sourcesRoot := t.TempDir()
-	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "pi", "pi-tools", "skills", "pi-tool"), `---
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "pi", "pi-labs", "pi-tools", "skills", "pi-tool"), `---
 name: pi-tool
 description: Uses Pi-native APIs.
 ---
@@ -401,14 +401,14 @@ description: Uses Pi-native APIs.
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	skill, ok := loaded.Skill("vendor-pi-only/pi-tools/skills/pi-tool")
+	skill, ok := loaded.Skill("vendor-pi-only/pi-labs/pi-tools/skills/pi-tool")
 	if !ok {
 		t.Fatal("Pi-only vendor skill was not discovered")
 	}
 	if !skill.Supports(Client("pi")) || skill.Supports(ClientCodex) || skill.Supports(ClientClaude) || skill.Supports(ClientGemini) {
 		t.Fatalf("pi-tool targets = %v, want pi only", skill.Targets)
 	}
-	source, ok := loaded.Source("vendor-pi-only/pi-tools")
+	source, ok := loaded.Source("vendor-pi-only/pi-labs/pi-tools")
 	if !ok || source.Kind != SourceVendor || source.Scope != "pi" {
 		t.Fatalf("Pi vendor source = %#v", source)
 	}
@@ -1085,5 +1085,267 @@ func writeJSON(t *testing.T, path, contents string) {
 	}
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestLoadDiscoversOwnerQualifiedAndLegacyVendorSources covers both vendor
+// layouts at once: repositories added under an owner level are distinct sources
+// even when they share a repository name, while a checkout registered before the
+// owner level existed keeps its bare name.
+func TestLoadDiscoversOwnerQualifiedAndLegacyVendorSources(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "lencx", "skills", "skills", "lencx-tool"),
+		"---\nname: lencx-tool\ndescription: x.\n---\n")
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "markdown-viewer", "skills", "skills", "markdown-tool"),
+		"---\nname: markdown-tool\ndescription: x.\n---\n")
+	// A pre-owner-level checkout: registered under its bare repository name and
+	// holding a subdirectory that must not be read as a repository.
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "worktrunk-skills", "skills", "worktrunk"),
+		"---\nname: worktrunk\ndescription: x.\n---\n")
+	config := "version: 1\nsources:\n  vendor-shared/worktrunk-skills:\n    branch: main\n"
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	for id, skillID := range map[string]string{
+		"vendor-shared/lencx/skills":           "vendor-shared/lencx/skills/skills/lencx-tool",
+		"vendor-shared/markdown-viewer/skills": "vendor-shared/markdown-viewer/skills/skills/markdown-tool",
+		"vendor-shared/worktrunk-skills":       "vendor-shared/worktrunk-skills/skills/worktrunk",
+	} {
+		source, ok := loaded.Source(id)
+		if !ok {
+			t.Fatalf("vendor source %q was not discovered", id)
+		}
+		if source.Kind != SourceVendor || source.Scope != "shared" {
+			t.Fatalf("source %q = %#v, want a shared vendor source", id, source)
+		}
+		if _, ok := loaded.Skill(skillID); !ok {
+			t.Fatalf("skill %q was not discovered", skillID)
+		}
+	}
+	// The owner level is a namespace, never a source of its own.
+	if _, ok := loaded.Source("vendor-shared/lencx"); ok {
+		t.Fatal("owner directory was discovered as a source")
+	}
+}
+
+// TestLoadTreatsUninitializedVendorCheckoutAsARepository proves an empty
+// directory — an uninitialized submodule — is reported as its own missing source
+// rather than mistaken for an owner that holds no repositories.
+func TestLoadTreatsUninitializedVendorCheckoutAsARepository(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sourcesRoot, "vendor", "shared", "owner", "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	source, ok := loaded.Source("vendor-shared/owner/repo")
+	if !ok {
+		t.Fatal("uninitialized vendor checkout was not discovered")
+	}
+	if len(source.Skills) != 0 {
+		t.Fatalf("uninitialized checkout skills = %#v, want none", source.Skills)
+	}
+	// The owner level must not also surface as a source of its own.
+	if len(loaded.Sources) != 1 {
+		t.Fatalf("sources = %#v, want exactly the nested checkout", loaded.Sources)
+	}
+}
+
+// TestRenameSourceRewritesNestedOverridesExactlyOnce covers the case where the
+// new source ID nests under the old one — a source named after what turns out to
+// be its own owner. Every override key must move exactly once, and unrelated
+// overrides must not move at all.
+func TestRenameSourceRewritesNestedOverridesExactlyOnce(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	config := `version: 1
+sources:
+  vendor-shared/lencx:
+    branch: main
+  vendor-shared/other:
+    branch: main
+overrides:
+  vendor-shared/lencx/skills/one:
+    targets: [claude]
+    reason: a
+  vendor-shared/lencx/skills/two:
+    targets: [codex]
+    reason: b
+  vendor-shared/other/skills/three:
+    targets: [gemini]
+    reason: c
+`
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameSource(sourcesRoot, "vendor-shared/lencx", "vendor-shared/lencx/skills"); err != nil {
+		t.Fatalf("RenameSource(): %v", err)
+	}
+
+	updated, err := loadConfig(filepath.Join(sourcesRoot, "catalog.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, moved := updated.Sources["vendor-shared/lencx/skills"]; !moved {
+		t.Fatalf("source registration did not move: %#v", updated.Sources)
+	}
+	if _, stale := updated.Sources["vendor-shared/lencx"]; stale {
+		t.Fatalf("old source registration survived: %#v", updated.Sources)
+	}
+	want := map[string]string{
+		"vendor-shared/lencx/skills/skills/one": "a",
+		"vendor-shared/lencx/skills/skills/two": "b",
+		"vendor-shared/other/skills/three":      "c",
+	}
+	if len(updated.Overrides) != len(want) {
+		t.Fatalf("overrides = %#v, want %d entries", updated.Overrides, len(want))
+	}
+	for id, reason := range want {
+		override, ok := updated.Overrides[id]
+		if !ok {
+			t.Fatalf("override %q is missing: %#v", id, updated.Overrides)
+		}
+		if override.Reason != reason {
+			t.Fatalf("override %q reason = %q, want %q", id, override.Reason, reason)
+		}
+	}
+}
+
+// TestRenameSourceRefusesToOverwriteADormantTargetOverride guards user data:
+// unregistering a source leaves its overrides behind, so the destination ID can
+// hold an override with no registration to guard it. Renaming onto it would be
+// silent loss. An override this same rename is moving away is not such a
+// collision.
+func TestRenameSourceRefusesToOverwriteADormantTargetOverride(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	config := `version: 1
+sources:
+  vendor-shared/lencx:
+    branch: main
+overrides:
+  vendor-shared/lencx/skills/one:
+    targets: [claude]
+    reason: incoming
+  vendor-shared/lencx/skills/skills/one:
+    targets: [codex]
+    reason: dormant
+`
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Both keys belong to the source being renamed, so both move and neither is
+	// a collision, even though one's destination is the other's old key.
+	if err := RenameSource(sourcesRoot, "vendor-shared/lencx", "vendor-shared/lencx/skills"); err != nil {
+		t.Fatalf("RenameSource(): %v", err)
+	}
+	updated, err := loadConfig(filepath.Join(sourcesRoot, "catalog.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"vendor-shared/lencx/skills/skills/one":        "incoming",
+		"vendor-shared/lencx/skills/skills/skills/one": "dormant",
+	}
+	if len(updated.Overrides) != len(want) {
+		t.Fatalf("overrides = %#v, want %d entries", updated.Overrides, len(want))
+	}
+	for id, reason := range want {
+		if updated.Overrides[id].Reason != reason {
+			t.Fatalf("override %q = %#v, want reason %q", id, updated.Overrides[id], reason)
+		}
+	}
+
+	// An override under a source that is not moving is a real collision.
+	blocked := t.TempDir()
+	blockedConfig := `version: 1
+sources:
+  vendor-shared/lencx:
+    branch: main
+overrides:
+  vendor-shared/lencx/skills/one:
+    targets: [claude]
+    reason: incoming
+  vendor-shared/owner/repo/skills/one:
+    targets: [codex]
+    reason: dormant
+`
+	if err := os.WriteFile(filepath.Join(blocked, "catalog.yaml"), []byte(blockedConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = RenameSource(blocked, "vendor-shared/lencx", "vendor-shared/owner/repo")
+	if err == nil {
+		t.Fatal("renaming onto a dormant override must fail")
+	}
+	if !strings.Contains(err.Error(), "vendor-shared/owner/repo/skills/one") {
+		t.Fatalf("error = %v, want the colliding override id", err)
+	}
+	survived, err := loadConfig(filepath.Join(blocked, "catalog.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if survived.Overrides["vendor-shared/owner/repo/skills/one"].Reason != "dormant" {
+		t.Fatalf("dormant override was disturbed: %#v", survived.Overrides)
+	}
+	if _, ok := survived.Sources["vendor-shared/lencx"]; !ok {
+		t.Fatalf("refused rename still moved the registration: %#v", survived.Sources)
+	}
+}
+
+// TestRenameSourceTreatsOverrideTargetsAsASet keeps an equivalent override from
+// reading as a conflicting one. Targets become a set at runtime, so neither
+// order nor a repeated client changes what the override expresses.
+func TestRenameSourceTreatsOverrideTargetsAsASet(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	config := `version: 1
+sources:
+  vendor-shared/lencx:
+    branch: main
+overrides:
+  vendor-shared/lencx/skills/one:
+    targets: [claude, codex, claude]
+    reason: same
+  vendor-shared/owner/repo/skills/one:
+    targets: [codex, claude]
+    reason: same
+`
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameSource(sourcesRoot, "vendor-shared/lencx", "vendor-shared/owner/repo"); err != nil {
+		t.Fatalf("RenameSource(): %v", err)
+	}
+}
+
+// TestLoadIgnoresStagingDirectories keeps a relocation interrupted mid-move from
+// leaving a phantom source behind: the staging checkout carries a .git and would
+// otherwise be discovered as a source of its own.
+func TestLoadIgnoresStagingDirectories(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "owner", "repo", "skills", "tool"),
+		"---\nname: tool\ndescription: x.\n---\n")
+	staged := filepath.Join(sourcesRoot, "vendor", "shared", StagingPrefix+"repo-0")
+	writeSkill(t, filepath.Join(staged, "skills", "tool"), "---\nname: tool\ndescription: x.\n---\n")
+	if err := os.WriteFile(filepath.Join(staged, ".git"), []byte("gitdir: ../../../../.git/modules/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A staging directory can also be left at the owner level.
+	ownerStaged := filepath.Join(sourcesRoot, "vendor", "shared", "owner", StagingPrefix+"repo-0")
+	writeSkill(t, filepath.Join(ownerStaged, "skills", "tool"), "---\nname: tool\ndescription: x.\n---\n")
+
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(loaded.Sources) != 1 {
+		t.Fatalf("sources = %#v, want only the real checkout", loaded.Sources)
+	}
+	if loaded.Sources[0].ID != "vendor-shared/owner/repo" {
+		t.Fatalf("source = %q, want vendor-shared/owner/repo", loaded.Sources[0].ID)
 	}
 }

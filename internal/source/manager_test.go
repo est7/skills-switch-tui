@@ -589,3 +589,51 @@ func writeSourceFile(t *testing.T, path, contents string) {
 		t.Fatal(err)
 	}
 }
+
+func TestCanonicalRemoteIdentity(t *testing.T) {
+	// Same repository across scheme, credentials, and .git suffix.
+	same := [][2]string{
+		{"https://github.com/owner/repo.git", "https://github.com/owner/repo"},
+		{"https://GitHub.com/owner/repo.git", "https://github.com/owner/repo.git"},
+		{"git@github.com:owner/repo.git", "https://github.com/owner/repo"},
+		{"github.com:owner/repo.git", "https://github.com/owner/repo"},
+		{"ssh://git@github.com:22/owner/repo.git", "https://github.com/owner/repo"},
+		{"https://token@github.com/owner/repo.git", "https://github.com/owner/repo"},
+		{"file:///tmp/mirrors/owner/repo.git", "/tmp/mirrors/owner/repo.git"},
+		// Git ignores a file URL's authority and clones the local path, so an
+		// authority cannot make two identities out of one repository.
+		{"file://server-a/tmp/mirrors/owner/repo.git", "/tmp/mirrors/owner/repo.git"},
+		{"file://server-a/tmp/mirrors/owner/repo.git", "file://server-b/tmp/mirrors/owner/repo.git"},
+		{"ssh://git@[2001:db8::1]:22/o/r.git", "git@[2001:db8::1]:o/r.git"},
+	}
+	for _, pair := range same {
+		left, right := canonicalRemote(pair[0]), canonicalRemote(pair[1])
+		if left == "" || left != right {
+			t.Errorf("canonicalRemote(%q) = %q, canonicalRemote(%q) = %q; want one identity", pair[0], left, pair[1], right)
+		}
+	}
+	// Distinct repositories that must never be collapsed into one identity.
+	distinct := [][2]string{
+		{"ssh://git@host:2222/o/r.git", "ssh://git@host:2200/o/r.git"},
+		{"https://github.com/owner/Repo.git", "https://github.com/owner/repo.git"},
+		{"https://github.com/owner/repo.git", "https://gitlab.com/owner/repo.git"},
+		{"https://github.com/owner/one.git", "https://github.com/owner/two.git"},
+		// A local path keeps .git: two directories, not one repository written
+		// two ways.
+		{"/tmp/mirrors/repo.git", "/tmp/mirrors/repo"},
+		// An IPv6 literal must keep its brackets, or a host/port pair and a
+		// longer address read as the same server.
+		{"ssh://git@[2001:db8::1]:2222/o/r.git", "ssh://git@[2001:db8::1:2222]:22/o/r.git"},
+	}
+	for _, pair := range distinct {
+		left, right := canonicalRemote(pair[0]), canonicalRemote(pair[1])
+		if left == right {
+			t.Errorf("canonicalRemote(%q) and canonicalRemote(%q) both = %q; want distinct identities", pair[0], pair[1], left)
+		}
+	}
+	for _, empty := range []string{"", "   ", "https://github.com/"} {
+		if identity := canonicalRemote(empty); identity != "" {
+			t.Errorf("canonicalRemote(%q) = %q, want no identity", empty, identity)
+		}
+	}
+}

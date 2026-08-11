@@ -777,6 +777,12 @@ func localizeSourceCommands(command *cobra.Command, translator i18n.Translator) 
 			if flag := child.Flags().Lookup("dry-run"); flag != nil {
 				flag.Usage = translator.Text(i18n.DryRunFlag)
 			}
+		case "migrate":
+			child.Short = translator.Text(i18n.MigrateShort)
+			localizeOutputFlags(child, translator)
+			if flag := child.Flags().Lookup("dry-run"); flag != nil {
+				flag.Usage = translator.Text(i18n.MigrateDryRunFlag)
+			}
 		case "remove":
 			child.Short = translator.Text(i18n.SourceRemoveShort)
 		}

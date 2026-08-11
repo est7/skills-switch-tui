@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -134,6 +135,16 @@ type skillFrontmatter struct {
 
 var skillNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
+// StagingPrefix marks a directory a source relocation is moving a checkout
+// through. It is reserved: discovery skips it, and no source name can start with
+// it, so a run interrupted mid-move never leaves a phantom source behind.
+const StagingPrefix = ".migrating-"
+
+// vendorSourceNamePattern accepts the scope-relative path a vendor checkout
+// occupies: owner/repo, or a bare repository name for a remote with no owner
+// segment and for sources registered before the owner level existed.
+var vendorSourceNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$`)
+
 type SourcePolicy struct {
 	Branch            string
 	SkillPaths        []string
@@ -152,6 +163,26 @@ func registerSourceLocked(root, id string, policy SourcePolicy) error {
 	if err := validateVendorSourceID(id); err != nil {
 		return err
 	}
+	return mutateConfigLocked(root, func(config *configFile) error {
+		if config.Sources == nil {
+			config.Sources = make(map[string]sourceConfig)
+		}
+		if _, exists := config.Sources[id]; exists {
+			return fmt.Errorf("source policy already exists: %s", id)
+		}
+		config.Sources[id] = sourceConfig{
+			Branch:            policy.Branch,
+			SkillPaths:        append([]string(nil), policy.SkillPaths...),
+			SparsePaths:       append([]string(nil), policy.SparsePaths...),
+			DiscoveryPriority: append([]DiscoveryStrategy(nil), policy.DiscoveryPriority...),
+		}
+		return nil
+	})
+}
+
+// mutateConfigLocked applies a mutation to catalog.yaml and replaces the file
+// atomically, preserving its permissions. Callers hold the configuration lock.
+func mutateConfigLocked(root string, mutate func(*configFile) error) error {
 	configPath := filepath.Join(root, "catalog.yaml")
 	mode, err := configPermissions(configPath)
 	if err != nil {
@@ -164,17 +195,8 @@ func registerSourceLocked(root, id string, policy SourcePolicy) error {
 	if config.Version == 0 {
 		config.Version = 1
 	}
-	if config.Sources == nil {
-		config.Sources = make(map[string]sourceConfig)
-	}
-	if _, exists := config.Sources[id]; exists {
-		return fmt.Errorf("source policy already exists: %s", id)
-	}
-	config.Sources[id] = sourceConfig{
-		Branch:            policy.Branch,
-		SkillPaths:        append([]string(nil), policy.SkillPaths...),
-		SparsePaths:       append([]string(nil), policy.SparsePaths...),
-		DiscoveryPriority: append([]DiscoveryStrategy(nil), policy.DiscoveryPriority...),
+	if err := mutate(&config); err != nil {
+		return err
 	}
 	data, err := yaml.Marshal(config)
 	if err != nil {
@@ -197,11 +219,12 @@ func registerSourceLocked(root, id string, policy SourcePolicy) error {
 		temporary.Close()
 		return fmt.Errorf("set catalog permissions: %w", err)
 	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return fmt.Errorf("sync catalog temporary file: %w", err)
+	}
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close catalog temporary file: %w", err)
-	}
-	if err := syncFile(temporaryPath); err != nil {
-		return fmt.Errorf("sync catalog temporary file: %w", err)
 	}
 	if err := os.Rename(temporaryPath, configPath); err != nil {
 		return fmt.Errorf("replace catalog config: %w", err)
@@ -234,48 +257,106 @@ func unregisterSourceLocked(root, id string) error {
 	if err := validateVendorSourceID(id); err != nil {
 		return err
 	}
+	return mutateConfigLocked(root, func(config *configFile) error {
+		if _, exists := config.Sources[id]; !exists {
+			return fmt.Errorf("source policy does not exist: %s", id)
+		}
+		delete(config.Sources, id)
+		return nil
+	})
+}
+
+// RenameSource moves a vendor source's registration to a new ID, carrying the
+// per-Skill overrides that are keyed by the old source ID with it. Skill IDs are
+// the source ID plus the Skill's path inside the checkout, so a source that
+// moves would otherwise silently drop every compatibility override its Skills
+// carry.
+func RenameSource(root, oldID, newID string) error {
 	configPath := filepath.Join(root, "catalog.yaml")
-	mode, err := configPermissions(configPath)
-	if err != nil {
+	return filelock.WithExclusive(configPath, func() error {
+		return renameSourceLocked(root, oldID, newID)
+	})
+}
+
+func renameSourceLocked(root, oldID, newID string) error {
+	if err := validateVendorSourceID(oldID); err != nil {
 		return err
 	}
-	config, err := loadConfig(configPath)
-	if err != nil {
+	if err := validateVendorSourceID(newID); err != nil {
 		return err
 	}
-	if _, exists := config.Sources[id]; !exists {
-		return fmt.Errorf("source policy does not exist: %s", id)
+	if oldID == newID {
+		return fmt.Errorf("source policy rename needs a different id: %s", oldID)
 	}
-	delete(config.Sources, id)
-	data, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("encode catalog config: %w", err)
+	return mutateConfigLocked(root, func(config *configFile) error {
+		policy, exists := config.Sources[oldID]
+		if !exists {
+			return fmt.Errorf("source policy does not exist: %s", oldID)
+		}
+		if _, taken := config.Sources[newID]; taken {
+			return fmt.Errorf("source policy already exists: %s", newID)
+		}
+		delete(config.Sources, oldID)
+		config.Sources[newID] = policy
+		// Collect before mutating: a new ID can nest under the old one — a source
+		// named after what turns out to be its own owner — and a key rewritten
+		// into that nest may be visited again by the same range and rewritten
+		// twice.
+		type renamedOverride struct {
+			from, to string
+			config   overrideConfig
+		}
+		renamed := make([]renamedOverride, 0)
+		for skillID, override := range config.Overrides {
+			suffix, scoped := strings.CutPrefix(skillID, oldID+"/")
+			if !scoped {
+				continue
+			}
+			renamed = append(renamed, renamedOverride{from: skillID, to: newID + "/" + suffix, config: override})
+		}
+		// Unregistering a source leaves its overrides behind, so the destination
+		// can hold overrides with no registration to guard them. Refuse rather
+		// than overwrite: both sides are user decisions about compatibility.
+		// A key this same rename is moving away is not such a collision — with a
+		// new ID nested under the old one, one override's destination is another
+		// override's old key, and both move in this transaction.
+		moving := make(map[string]bool, len(renamed))
+		for _, override := range renamed {
+			moving[override.from] = true
+		}
+		for _, override := range renamed {
+			existing, taken := config.Overrides[override.to]
+			if !taken || moving[override.to] || sameOverride(existing, override.config) {
+				continue
+			}
+			return fmt.Errorf("override already exists for %s: remove it before renaming %s", override.to, oldID)
+		}
+		for _, override := range renamed {
+			delete(config.Overrides, override.from)
+		}
+		for _, override := range renamed {
+			config.Overrides[override.to] = override.config
+		}
+		return nil
+	})
+}
+
+// sameOverride compares two overrides by meaning. Targets become a set at
+// runtime, so neither ordering nor a repeated client changes the decision an
+// override expresses.
+func sameOverride(left, right overrideConfig) bool {
+	if left.Reason != right.Reason {
+		return false
 	}
-	temporary, err := os.CreateTemp(root, ".catalog-*.yaml")
-	if err != nil {
-		return fmt.Errorf("create catalog temporary file: %w", err)
+	return maps.Equal(clientSet(left.Targets), clientSet(right.Targets))
+}
+
+func clientSet(targets []Client) map[Client]bool {
+	set := make(map[Client]bool, len(targets))
+	for _, target := range targets {
+		set[target] = true
 	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if _, err := temporary.Write(data); err != nil {
-		temporary.Close()
-		return fmt.Errorf("write catalog temporary file: %w", err)
-	}
-	if err := temporary.Chmod(mode); err != nil {
-		temporary.Close()
-		return fmt.Errorf("set catalog permissions: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		temporary.Close()
-		return fmt.Errorf("sync catalog temporary file: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close catalog temporary file: %w", err)
-	}
-	if err := os.Rename(temporaryPath, configPath); err != nil {
-		return fmt.Errorf("replace catalog config: %w", err)
-	}
-	return nil
+	return set
 }
 
 func configPermissions(path string) (os.FileMode, error) {
@@ -289,14 +370,6 @@ func configPermissions(path string) (os.FileMode, error) {
 	return info.Mode().Perm(), nil
 }
 
-func syncFile(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	return file.Sync()
-}
 
 // RemoveLocalResource deletes a local group or Skill directory rooted under
 // <root>/local. It refuses any target outside the local tree and refuses to
@@ -384,7 +457,7 @@ func validateVendorSourceID(id string) error {
 
 func parseVendorSourceID(id string) (string, string, error) {
 	namespace, name, found := strings.Cut(id, "/")
-	if !found || !skillNamePattern.MatchString(name) {
+	if !found || !vendorSourceNamePattern.MatchString(name) {
 		return "", "", fmt.Errorf("invalid vendor source id: %s", id)
 	}
 	if namespace == "vendor-shared" {
@@ -508,14 +581,14 @@ func discoverVendorSources(root string, defaults map[Client]bool, config configF
 			return nil, fmt.Errorf("vendor scope: %w", err)
 		}
 		scopeRoot := filepath.Join(vendorRoot, scope)
-		repositories, err := readDirectories(scopeRoot, "vendor repositories")
+		repositories, err := vendorRepositoryNames(scopeRoot, scope, config.Sources)
 		if err != nil {
 			return nil, err
 		}
 		for _, repository := range repositories {
-			id := ScopedSourceID(SourceVendor, scope, repository.Name())
+			id := ScopedSourceID(SourceVendor, scope, repository)
 			discovered[id] = true
-			path := filepath.Join(scopeRoot, repository.Name())
+			path := filepath.Join(scopeRoot, filepath.FromSlash(repository))
 			policy := config.Sources[id]
 			source, discoverErr := discoverManagedSource(id, path, policy.DiscoveryPriority, policy.SkillPaths, targets, config.Overrides, clients, fallbackWhenNoManifest)
 			if discoverErr != nil {
@@ -558,7 +631,7 @@ func discoverVendorSources(root string, defaults map[Client]bool, config configF
 			ID:                id,
 			Kind:              SourceVendor,
 			Scope:             scope,
-			Path:              filepath.Join(vendorRoot, scope, name),
+			Path:              filepath.Join(vendorRoot, scope, filepath.FromSlash(name)),
 			Branch:            branch,
 			SkillPaths:        append([]string(nil), policy.SkillPaths...),
 			SparsePaths:       append([]string(nil), policy.SparsePaths...),
@@ -567,6 +640,73 @@ func discoverVendorSources(root string, defaults map[Client]bool, config configF
 		})
 	}
 	return sources, nil
+}
+
+// vendorRepositoryNames lists the checkouts under a vendor scope root as
+// scope-relative, slash-separated names. Sources are laid out as
+// <scope>/<owner>/<repo> so two repositories that share a repository name stay
+// distinct, while a checkout registered before the owner level existed keeps its
+// bare <scope>/<repo> path.
+//
+// A directory directly under the scope root is a checkout rather than an owner
+// when it is registered under its own name, holds a Git worktree, or has no
+// subdirectory to descend into — an uninitialized submodule is an empty
+// directory and must never be mistaken for an owner holding no repositories.
+func vendorRepositoryNames(scopeRoot, scope string, registered map[string]sourceConfig) ([]string, error) {
+	entries, err := readDirectories(scopeRoot, "vendor repositories")
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if reservedVendorDirectory(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(scopeRoot, entry.Name())
+		checkout, err := isVendorCheckout(path)
+		if err != nil {
+			return nil, err
+		}
+		if _, flat := registered[ScopedSourceID(SourceVendor, scope, entry.Name())]; flat || checkout {
+			names = append(names, entry.Name())
+			continue
+		}
+		children, err := readDirectories(path, "vendor repositories")
+		if err != nil {
+			return nil, err
+		}
+		if len(children) == 0 {
+			names = append(names, entry.Name())
+			continue
+		}
+		for _, child := range children {
+			if reservedVendorDirectory(child.Name()) {
+				continue
+			}
+			names = append(names, entry.Name()+"/"+child.Name())
+		}
+	}
+	return names, nil
+}
+
+// reservedVendorDirectory reports whether a directory under a vendor scope is
+// bookkeeping rather than a source. A source name must start with an
+// alphanumeric character, so no dot-prefixed directory can ever be one.
+func reservedVendorDirectory(name string) bool {
+	return strings.HasPrefix(name, ".")
+}
+
+// isVendorCheckout reports whether a directory holds a Git worktree, the marker
+// every vendor submodule carries and no owner directory does.
+func isVendorCheckout(path string) (bool, error) {
+	_, err := os.Lstat(filepath.Join(path, ".git"))
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("inspect vendor checkout %s: %w", path, err)
 }
 
 func discoverArchivedSources(root string, defaults map[Client]bool, overrides map[string]overrideConfig, clients client.Registry) ([]Source, error) {

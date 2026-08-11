@@ -12,6 +12,10 @@ import (
 // tree/blob link or an owner/repo/subpath shorthand) a subfolder to scope the
 // source to. The subfolder is handed to discovery as a container --skill-path,
 // so it may name a plugin directory, a skills/ tree, or a single skill.
+//
+// Name is the source's scope-relative path, "owner/repo", so two repositories
+// that share a repository name stay distinct. A remote whose path holds a single
+// segment has no owner to qualify it with and keeps the bare repository name.
 type SourceRef struct {
 	CloneURL string
 	Name     string
@@ -29,11 +33,11 @@ type SourceRef struct {
 //   - git@host:owner/repo(.git)                    scp-style SSH remote
 //   - owner/repo, owner/repo/sub/path              GitHub shorthand
 //
-// Name defaults to the repository's last path segment; Branch defaults to main
-// unless a tree/blob link names one; Subpath is the subfolder with any ".."
-// segment rejected. It errors when no repository name can be derived. Local
-// filesystem paths are intentionally not accepted here — author local skills
-// with `skills create`.
+// Name defaults to the remote's last two path segments, owner/repo; Branch
+// defaults to main unless a tree/blob link names one; Subpath is the subfolder
+// with any ".." segment rejected. It errors when no repository name can be
+// derived. Local filesystem paths are intentionally not accepted here — author
+// local skills with `skills create`.
 func ParseSourceRef(input string) (SourceRef, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
@@ -56,9 +60,13 @@ func ParseSourceRef(input string) (SourceRef, error) {
 	return SourceRef{}, fmt.Errorf("unrecognized source reference %q: use owner/repo, a URL, or a git remote", input)
 }
 
-// isSCPRemote reports whether input is an scp-style git remote (git@host:path).
+// isSCPRemote reports whether input is an scp-style git remote. The userinfo is
+// optional — `host:owner/repo` is as valid a remote as `git@host:owner/repo` —
+// so this shares one definition with remote identity rather than keeping a
+// second, stricter rule that would make a valid remote unrecognizable here.
 func isSCPRemote(input string) bool {
-	return !strings.Contains(input, "://") && strings.Contains(input, "@") && strings.Contains(input, ":")
+	_, _, ok := cutSCPRemote(input)
+	return ok
 }
 
 // isShorthand reports whether input is an owner/repo[/subpath] GitHub shorthand.
@@ -87,14 +95,16 @@ func parseShorthand(host, rest string) (SourceRef, error) {
 	}
 	return SourceRef{
 		CloneURL: "https://" + host + "/" + owner + "/" + repo + ".git",
-		Name:     repo,
+		Name:     owner + "/" + repo,
 		Branch:   "main",
 		Subpath:  subpath,
 	}, nil
 }
 
 func parseSCPRemote(input string) (SourceRef, error) {
-	name := repoName(input[strings.Index(input, ":")+1:])
+	_, path, _ := cutSCPRemote(input)
+	segments := splitPathSegments(strings.TrimSuffix(path, ".git"))
+	name := qualifiedName(segments)
 	if name == "" {
 		return SourceRef{}, fmt.Errorf("cannot derive repository name from %q", input)
 	}
@@ -142,7 +152,7 @@ func parseSourceURL(input string) (SourceRef, error) {
 		return SourceRef{}, fmt.Errorf("repository URL %q is missing owner/repo", input)
 	}
 	repoSegments[len(repoSegments)-1] = strings.TrimSuffix(repoSegments[len(repoSegments)-1], ".git")
-	name := repoSegments[len(repoSegments)-1]
+	name := qualifiedName(repoSegments)
 	if name == "" {
 		return SourceRef{}, fmt.Errorf("cannot derive repository name from %q", input)
 	}
@@ -186,10 +196,20 @@ func splitPathSegments(raw string) []string {
 	return segments
 }
 
-func repoName(path string) string {
-	path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
-	if index := strings.LastIndex(path, "/"); index >= 0 {
-		return path[index+1:]
+// qualifiedName joins a remote's owner and repository segments into the
+// scope-relative source name. A single-segment path has no owner to qualify the
+// repository with and keeps the bare name; an empty repository segment yields ""
+// so the caller can reject the reference.
+func qualifiedName(segments []string) string {
+	if len(segments) == 0 {
+		return ""
 	}
-	return path
+	repo := segments[len(segments)-1]
+	if repo == "" {
+		return ""
+	}
+	if len(segments) == 1 || segments[len(segments)-2] == "" {
+		return repo
+	}
+	return segments[len(segments)-2] + "/" + repo
 }

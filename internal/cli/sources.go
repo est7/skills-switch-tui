@@ -25,6 +25,107 @@ func newSourceCommand(options *rootOptions) *cobra.Command {
 	command.AddCommand(newSourceAddCommand(options))
 	command.AddCommand(newUpdateCommand(options))
 	command.AddCommand(newSourceRemoveCommand(options))
+	command.AddCommand(newSourceMigrateCommand(options))
+	return command
+}
+
+type migrationView struct {
+	Source     string                 `json:"source"`
+	Target     string                 `json:"target,omitempty"`
+	Path       string                 `json:"path"`
+	TargetPath string                 `json:"targetPath,omitempty"`
+	Status     source.MigrationStatus `json:"status"`
+	Reason     string                 `json:"reason,omitempty"`
+}
+
+// migrationStateKey maps an outcome to its message. The four post-move states
+// are distinct on purpose: a source left alone, one that moved, one an error
+// moved back, and one left mid-move need different follow-up from a user.
+func migrationStateKey(status source.MigrationStatus) i18n.Key {
+	switch status {
+	case source.MigrationMoved:
+		return i18n.MigrateMoved
+	case source.MigrationFailed:
+		return i18n.MigrateFailed
+	case source.MigrationRolledBack:
+		return i18n.MigrateRolledBack
+	case source.MigrationRollbackFailed:
+		return i18n.MigrateRollbackFailed
+	default:
+		return i18n.MigrateSkipped
+	}
+}
+
+func newSourceMigrateCommand(options *rootOptions) *cobra.Command {
+	var dryRun bool
+	var outputJSON bool
+	command := &cobra.Command{
+		Use:   "migrate",
+		Short: "Move vendor checkouts registered under a bare repository name under their owner",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			runtime, err := loadCatalogRuntime(options)
+			if err != nil {
+				return err
+			}
+			lifecycle, err := sourceLifecycle(options, runtime)
+			if err != nil {
+				return err
+			}
+			outcome, migrateErr := lifecycle.Migrate(command.Context(), runtime.catalog.Sources, dryRun)
+			views := make([]migrationView, 0, len(outcome.Migrations))
+			for _, migration := range outcome.Migrations {
+				views = append(views, migrationView{
+					Source:     migration.SourceID,
+					Target:     migration.TargetID,
+					Path:       migration.Path,
+					TargetPath: migration.TargetPath,
+					Status:     migration.Status,
+					Reason:     migration.Reason,
+				})
+			}
+			if outputJSON {
+				return errors.Join(migrateErr, writeJSON(command, views))
+			}
+			// Only an empty plan means there is nothing to do; a plan that could
+			// not be built at all must not read as a clean catalog.
+			if len(views) == 0 {
+				if migrateErr == nil {
+					fmt.Fprint(command.OutOrStdout(), runtime.translator.Text(i18n.MigrateNothingToDo))
+				}
+				return migrateErr
+			}
+			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
+			fmt.Fprintf(writer, "%s\t%s\t%s\n",
+				runtime.translator.Text(i18n.SourceHeader),
+				runtime.translator.Text(i18n.TargetHeader),
+				runtime.translator.Text(i18n.StateHeader),
+			)
+			relinked := false
+			for _, view := range views {
+				state := ""
+				if !dryRun || view.Status == source.MigrationSkipped {
+					state = runtime.translator.Text(migrationStateKey(view.Status))
+					if view.Reason != "" {
+						state += ": " + view.Reason
+					}
+				}
+				if view.Status == source.MigrationMoved {
+					relinked = true
+				}
+				fmt.Fprintf(writer, "%s\t%s\t%s\n", view.Source, view.Target, state)
+			}
+			if err := writer.Flush(); err != nil {
+				return errors.Join(migrateErr, err)
+			}
+			if relinked {
+				fmt.Fprint(command.OutOrStdout(), runtime.translator.Text(i18n.MigrateRelinkNotice))
+			}
+			return migrateErr
+		},
+	}
+	command.Flags().BoolVar(&dryRun, "dry-run", false, "report the planned moves without changing anything")
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
 	return command
 }
 
@@ -219,7 +320,7 @@ func newSourceAddCommand(options *rootOptions) *cobra.Command {
 			return nil
 		},
 	}
-	command.Flags().StringVar(&name, "name", "", "source name")
+	command.Flags().StringVar(&name, "name", "", "source name as owner/repo (derived from the remote when omitted)")
 	command.Flags().StringVar(&branch, "branch", "main", "tracked branch")
 	command.Flags().StringVar(&clientScope, "client", "", "restrict the entire source to one registered client")
 	command.Flags().StringSliceVar(&skillPaths, "skill-path", nil, "authoritative Skill directory path (repeatable)")

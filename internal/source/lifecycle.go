@@ -89,6 +89,91 @@ func (l Lifecycle) reconcileUpdated(results []UpdateResult) (UpdateOutcome, erro
 	return outcome, pruneErr
 }
 
+type MigrateOutcome struct {
+	Migrations []Migration
+	Catalog    catalog.Catalog
+}
+
+// Migrate moves every vendor checkout registered under a bare repository name
+// under its owner, so two repositories that share a repository name stay
+// distinct. Each source moves on its own: the checkout is relocated, its
+// registration follows, and the projections pointing into it are repointed at
+// the new path so what a user enabled stays enabled. A source whose projections
+// cannot be repointed is moved back, and the run reports the failure rather than
+// leaving dangling links behind.
+//
+// Projections in projects other than the current one are out of reach and keep
+// pointing at the old path; they surface as broken there and are repaired by
+// re-enabling the Skill.
+func (l Lifecycle) Migrate(ctx context.Context, sources []catalog.Source, dryRun bool) (MigrateOutcome, error) {
+	migrations, err := l.Manager.PlanOwnerMigration(ctx, sources)
+	if err != nil {
+		return MigrateOutcome{}, err
+	}
+	outcome := MigrateOutcome{Migrations: migrations}
+	if dryRun {
+		return outcome, nil
+	}
+	scopes := make([]projection.Scope, 0, 2)
+	if l.ProjectRoot != "" {
+		scopes = append(scopes, projection.ScopeProject)
+	}
+	if l.UserHome != "" {
+		scopes = append(scopes, projection.ScopeGlobal)
+	}
+	discovered := make(map[string]catalog.Source, len(sources))
+	for _, source := range sources {
+		discovered[source.ID] = source
+	}
+	failures := make([]error, 0)
+	moved := false
+	for index, migration := range migrations {
+		if !migration.Actionable() {
+			continue
+		}
+		if err := l.Manager.MigrateSource(ctx, migration); err != nil {
+			failures = append(failures, err)
+			// The move reports what it left on disk; anything less would tell a
+			// user "failed" for a checkout that is actually stranded mid-move.
+			migrations[index].Status = MigrationStatusOf(err)
+			migrations[index].Reason = err.Error()
+			continue
+		}
+		manager := projection.NewWithUserHome(l.ProjectRoot, l.UserHome, catalog.Catalog{Clients: l.Manager.Clients})
+		_, retargetErr := manager.RetargetSource(discovered[migration.SourceID], migration.TargetPath, scopes...)
+		if retargetErr == nil {
+			migrations[index].Status = MigrationMoved
+			moved = true
+			continue
+		}
+		retargetErr = fmt.Errorf("repoint %s projections: %w", migration.SourceID, retargetErr)
+		restoreErr := l.Manager.MigrateSource(ctx, Migration{
+			SourceID:   migration.TargetID,
+			TargetID:   migration.SourceID,
+			Path:       migration.TargetPath,
+			TargetPath: migration.Path,
+			URL:        migration.URL,
+			Status:     MigrationPlanned,
+		})
+		migrations[index].Status = MigrationRolledBack
+		migrations[index].Reason = retargetErr.Error()
+		if restoreErr != nil {
+			migrations[index].Status = MigrationRollbackFailed
+			migrations[index].Reason = errors.Join(retargetErr, restoreErr).Error()
+		}
+		failures = append(failures, errors.Join(retargetErr, restoreErr))
+	}
+	if !moved {
+		return outcome, errors.Join(failures...)
+	}
+	loaded, reloadErr := catalog.Load(l.Manager.SkillsRoot, l.Manager.Clients)
+	if reloadErr != nil {
+		failures = append(failures, fmt.Errorf("reload catalog after migration: %w", reloadErr))
+	}
+	outcome.Catalog = loaded
+	return outcome, errors.Join(failures...)
+}
+
 func (l Lifecycle) Remove(ctx context.Context, source catalog.Source) error {
 	manager := projection.NewWithUserHome(l.ProjectRoot, l.UserHome, catalog.Catalog{
 		Clients: l.Manager.Clients,

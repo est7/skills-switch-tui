@@ -283,6 +283,89 @@ func (m Manager) RetireSource(source catalog.Source, scopes ...Scope) (Retiremen
 	return Retirement{applied: applied}, nil
 }
 
+// RetargetSource repoints a source's own projections after its checkout moves on
+// disk, for the requested scopes. It exists for source lifecycle operations that
+// relocate a checkout: the links a user enabled stay enabled instead of dangling.
+//
+// Pass the source as discovered before the move — its Skills carry the names and
+// old paths that identify which links are this source's projections. A link
+// whose name or target does not match one of them belongs to someone else, even
+// when it happens to point inside the old checkout, and is left alone. Call this
+// after the checkout has moved, so the new target is the one validated on apply.
+func (m Manager) RetargetSource(source catalog.Source, newRoot string, scopes ...Scope) (Retirement, error) {
+	changes := make([]change, 0)
+	for _, scope := range scopes {
+		for _, clientID := range m.clients.IDs() {
+			if !m.SupportsScope(clientID, scope) {
+				continue
+			}
+			var targetDir string
+			var err error
+			if scope == ScopeGlobal {
+				targetDir, err = m.clients.UserSkillsTargetDir(m.userHome, clientID)
+			} else {
+				targetDir, err = m.clients.TargetDir(m.projectRoot, clientID)
+			}
+			if err != nil {
+				return Retirement{}, err
+			}
+			planned, err := planRetargetSource(source, targetDir, newRoot)
+			if err != nil {
+				return Retirement{}, err
+			}
+			changes = append(changes, planned...)
+		}
+	}
+	applied, err := m.executeChanges(changes)
+	if err != nil {
+		return Retirement{}, err
+	}
+	return Retirement{applied: applied}, nil
+}
+
+func planRetargetSource(source catalog.Source, targetDir, newRoot string) ([]change, error) {
+	sourceRoot := filepath.Clean(source.Path)
+	changes := make([]change, 0)
+	for _, skill := range source.Skills {
+		skillPath := filepath.Clean(skill.Path)
+		relative, err := filepath.Rel(sourceRoot, skillPath)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("resolve skill %s against source root %s", skill.ID, sourceRoot)
+		}
+		linkPath := filepath.Join(targetDir, skill.Name)
+		info, err := os.Lstat(linkPath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect projection %s: %w", linkPath, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			// A user-owned file or directory is never this source's projection.
+			continue
+		}
+		original, err := os.Readlink(linkPath)
+		if err != nil {
+			return nil, fmt.Errorf("read projection %s: %w", linkPath, err)
+		}
+		resolved := original
+		if !filepath.IsAbs(resolved) {
+			resolved = filepath.Join(targetDir, resolved)
+		}
+		if filepath.Clean(resolved) != skillPath {
+			// The link carries this Skill's name but projects something else.
+			continue
+		}
+		changes = append(changes, change{
+			action:         replaceLink,
+			path:           linkPath,
+			target:         filepath.Join(newRoot, relative),
+			originalTarget: original,
+		})
+	}
+	return changes, nil
+}
+
 func (m Manager) SetEnabled(skills []catalog.Skill, client catalog.Client, enabled bool) error {
 	return m.SetEnabledAt(skills, client, enabled, ScopeProject)
 }

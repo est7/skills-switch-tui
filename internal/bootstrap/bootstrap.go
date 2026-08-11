@@ -17,8 +17,16 @@ import (
 
 const (
 	DefaultRepositoryURL = "https://github.com/est7/skills-switch-tui.git"
-	BundledSourceID      = "vendor-shared/skills-switch-tui"
+	BundledSourceName    = "est7/skills-switch-tui"
+	BundledSourceID      = "vendor-shared/" + BundledSourceName
 	BundledSkillID       = BundledSourceID + "/skills/skills-switch"
+
+	// legacyBundledSourceID is where init registered this repository before
+	// vendor checkouts gained their owner level. A catalog keeps that
+	// registration until `source migrate` moves it, and init must recognize it
+	// rather than add the same remote a second time.
+	legacyBundledSourceID = "vendor-shared/skills-switch-tui"
+	legacyBundledSkillID  = legacyBundledSourceID + "/skills/skills-switch"
 )
 
 type Manager struct {
@@ -73,10 +81,18 @@ func (m Manager) Initialize(ctx context.Context) (Result, error) {
 		SourceID:      BundledSourceID,
 		SkillID:       BundledSkillID,
 	}
-	if _, exists := loaded.Source(BundledSourceID); exists {
-		if _, skillExists := loaded.Skill(BundledSkillID); !skillExists {
-			return Result{}, fmt.Errorf("bundled source %s exists but Skill %s is not discoverable", BundledSourceID, BundledSkillID)
+	for _, registered := range []struct{ sourceID, skillID string }{
+		{BundledSourceID, BundledSkillID},
+		{legacyBundledSourceID, legacyBundledSkillID},
+	} {
+		if _, exists := loaded.Source(registered.sourceID); !exists {
+			continue
 		}
+		if _, skillExists := loaded.Skill(registered.skillID); !skillExists {
+			return Result{}, fmt.Errorf("bundled source %s exists but Skill %s is not discoverable", registered.sourceID, registered.skillID)
+		}
+		result.SourceID = registered.sourceID
+		result.SkillID = registered.skillID
 		return result, nil
 	}
 
@@ -91,7 +107,7 @@ func (m Manager) Initialize(ctx context.Context) (Result, error) {
 		Clients:        clients,
 	}
 	if err := sourceManager.Add(ctx, source.AddRequest{
-		Name:   "skills-switch-tui",
+		Name:   BundledSourceName,
 		URL:    repositoryURL,
 		Branch: "main",
 		Scope:  "shared",
