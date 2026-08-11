@@ -51,8 +51,8 @@ Inside `resources/skills`, the physical layout remains a strict `kind / client-s
 | `local/shared` | `local-shared` |
 | `local/pi` | `local-pi-only` |
 | `archived/pi/<name>` | `archived-pi-only/<name>` |
-| `vendor/shared/<repo>` | `vendor-shared/<repo>` |
-| `vendor/pi/<repo>` | `vendor-pi-only/<repo>` |
+| `vendor/shared/<owner>/<repo>` | `vendor-shared/<owner>/<repo>` |
+| `vendor/pi/<owner>/<repo>` | `vendor-pi-only/<owner>/<repo>` |
 
 The built-in client registry owns both project-local and user-global client adapters:
 
@@ -85,7 +85,7 @@ Skill discovery policy remains separate in `resources/skills/catalog.yaml`:
 ```yaml
 version: 1
 sources:
-  vendor-shared/worktrunk:
+  vendor-shared/max-sixty/worktrunk:
     branch: main
     discoveryPriority:
       - agents-marketplace
@@ -106,7 +106,7 @@ brew install est7/tap/skills-switch
 skills-switch init
 ```
 
-`skills-switch init` is an idempotent bootstrap. It creates the default `~/.agents/resources` skeleton, initializes `~/.agents` as the catalog Git repository when needed, and registers this repository as `vendor-shared/skills-switch-tui`. Its bundled `skills/skills-switch` operator Skill then becomes discoverable without copying it into user-owned `local/shared`. Re-running `init` preserves existing catalogs and configuration.
+`skills-switch init` is an idempotent bootstrap. It creates the default `~/.agents/resources` skeleton, initializes `~/.agents` as the catalog Git repository when needed, and registers this repository as `vendor-shared/est7/skills-switch-tui`. Its bundled `skills/skills-switch` operator Skill then becomes discoverable without copying it into user-owned `local/shared`. Re-running `init` preserves existing catalogs and configuration.
 
 For local development, Go 1.25 or newer is required:
 
@@ -171,6 +171,17 @@ Add an upstream repository as a submodule tracking `main`. `source add <ref>` ac
 skills-switch source add DannyMac180/skills                                   # owner/repo shorthand
 skills-switch source add https://github.com/DannyMac180/skills/tree/main/codex-dynamic-workflows
 ```
+
+A source is named for its remote's `owner/repo` and occupies `vendor/<scope>/<owner>/<repo>`, so two repositories that share a repository name — `lencx/skills` and `markdown-viewer/skills` — are separate sources instead of a path collision. The derived source ID is therefore `vendor-shared/lencx/skills`. Re-adding a remote that is already tracked fails and names where it is registered, whatever name you give it.
+
+Checkouts registered before the owner level existed keep their bare `vendor/<scope>/<repo>` path and keep working. `source migrate` moves them under the owner their remote names, carrying the catalog registration and per-Skill overrides with them and repointing the projections in the current project and user-global scopes; `--dry-run` reports the plan without touching anything. Projections in other projects still point at the old paths and are repaired by re-enabling those Skills there.
+
+```sh
+skills-switch source migrate --dry-run
+skills-switch source migrate
+```
+
+JSON output carries a `status` per source: `planned` (dry run), `moved`, `skipped` with the preflight `reason`, `failed` and `rolled_back` (both leave the checkout where it started), and `rollback_failed` — the one state that needs manual repair before any further source operation. Pass `--project` so the migration repoints that project's projections; without it the project is resolved from the working directory.
 
 A repository with no manifest and no top-level `skills/` (a curated repo laid out by category, e.g. `github.com/android/skills`) is discovered by root-walking every `SKILL.md`; you then enable the ones you want.
 
@@ -250,8 +261,8 @@ Inspect and explicitly update vendor sources:
 skills-switch source list
 skills-switch source update --dry-run
 skills-switch source update
-skills-switch source update vendor-shared/worktrunk
-skills-switch source remove vendor-shared/worktrunk
+skills-switch source update vendor-shared/max-sixty/worktrunk
+skills-switch source remove vendor-shared/max-sixty/worktrunk
 ```
 
 Launching the TUI never updates submodules automatically. Press `u` for the selected vendor source, `U` for every vendor source, or use `source update` without a source ID. Vendor submodules are read-only mirrors: before remote inspection, a real update runs `git reset --hard HEAD` and `git clean -ffdx` in each selected checkout, discarding tracked, untracked, and ignored local changes. It then reads the exact configured branch tip, fetches that ref, resets to the advertised SHA, and verifies the resulting `HEAD`. A missing registered checkout is initialized by a real update. `--dry-run` remains non-mutating.
@@ -274,10 +285,10 @@ Common non-interactive commands:
 
 ```sh
 skills-switch skills list
-skills-switch skills show vendor-shared/worktrunk/plugins/worktrunk/skills/worktrunk
+skills-switch skills show vendor-shared/max-sixty/worktrunk/plugins/worktrunk/skills/worktrunk
 skills-switch skills create make-goal --description "Draft a goal."
 skills-switch status
-skills-switch skills enable --source vendor-shared/worktrunk --client codex --client claude
+skills-switch skills enable --source vendor-shared/max-sixty/worktrunk --client codex --client claude
 skills-switch skills disable local-shared/make-goal --client codex
 skills-switch skills prune            # list projections orphaned by upstream removals; add --yes to remove
 skills-switch mcp list

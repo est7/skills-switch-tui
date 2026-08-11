@@ -22,7 +22,7 @@ Use `skills-switch` as the only mutation boundary. Let it preserve unmanaged pro
    skills-switch init
    ```
 
-   This idempotently creates `~/.agents/resources` and registers this repository's bundled operator Skill as `vendor-shared/skills-switch-tui/skills/skills-switch`.
+   This idempotently creates `~/.agents/resources` and registers this repository's bundled operator Skill as `vendor-shared/est7/skills-switch-tui/skills/skills-switch`.
 
 2. For project operations, resolve the intended Git root and pass it explicitly:
 
@@ -88,9 +88,11 @@ Interpret “add/register this GitHub Skill” as catalog source registration. I
 - `owner/repo` and `owner/repo/sub/path` — GitHub shorthand
 - `github:owner/repo`, `gitlab:owner/repo` — host prefix
 - `https://github.com/<owner>/<repo>/tree/<branch>/<path>` (or `/blob/`), and the GitLab `/-/tree/` form
-- a plain repository URL, `<repo>.git`, or an scp-style `git@host:owner/repo`
+- a plain repository URL, `<repo>.git`, or an scp-style `git@host:owner/repo` (the `user@` part is optional)
 
-So `--name` is optional when it can be derived — a tree link or `owner/repo/plugins/<x>` registers `<repo>` with Skill subtree `<x>` on its own. Pass `--name`, `--branch`, or `--skill-path` only to override a derived value, and always pass `--name` for an input the parser cannot resolve (it fails with a clear "source name is required" error rather than guessing). Local filesystem paths are not accepted — author local Skills with `skills create`.
+The derived name is the remote's `owner/repo`, so the checkout lands at `vendor/<scope>/<owner>/<repo>` and two repositories sharing a repository name never collide. So `--name` is optional when it can be derived — a tree link or `owner/repo/plugins/<x>` registers `<owner>/<repo>` with Skill subtree `<x>` on its own. Pass `--name`, `--branch`, or `--skill-path` only to override a derived value, and always pass `--name` for an input the parser cannot resolve (it fails with a clear "source name is required" error rather than guessing). Local filesystem paths are not accepted — author local Skills with `skills create`.
+
+Adding a remote that is already tracked fails and names the source it is registered as, whatever `--name` you pass; a repository is identified by its remote, not by its path. Checkouts registered before the owner level existed keep their bare `vendor/<scope>/<repo>` path and keep working — run `skills-switch source migrate --dry-run` to see what moving them under their owner would do, then `skills-switch source migrate` to apply it. Migration carries the catalog registration and per-Skill overrides across and repoints the projections in the current project and user-global scopes; projections in other projects are repaired by re-enabling those Skills there.
 
 ### Prefer automatic discovery — do not hand-list paths
 
@@ -98,7 +100,7 @@ So `--name` is optional when it can be derived — a tree link or `owner/repo/pl
 
 ```bash
 skills-switch source add https://github.com/<owner>/<repo>.git \
-  --name <repo> --branch <branch>          # --branch defaults to "main"
+  --name <owner>/<repo> --branch <branch>  # --branch defaults to "main"
 ```
 
 Discovery tries these strategies in priority order and stops at the first that matches the repo root:
@@ -116,7 +118,7 @@ A `plugin.json` `skills` field may be an array of paths (checked out exactly) or
 Restrict or reorder the chain with `--discovery-priority` (repeatable strategy names from the table). For example, force the top-level `skills/` tree and ignore any manifest:
 
 ```bash
-skills-switch source add <url> --name <repo> --discovery-priority skills-dir
+skills-switch source add <url> --name <owner>/<repo> --discovery-priority skills-dir
 ```
 
 `--discovery-priority` and `--skill-path` are mutually exclusive; passing both is refused.
@@ -142,17 +144,17 @@ skills-switch source add <url> \
   --skill-path plugins/android-ui-tools
 ```
 
-One repository is one vendor source (a single git submodule), so plugins selected from the same repo share one source id; their Skill ids carry the `plugins/<name>/...` path that distinguishes them, and each Skill still enables/disables independently. `--name` defaults to the repository name; pass it to override.
+One repository is one vendor source (a single git submodule), so plugins selected from the same repo share one source id; their Skill ids carry the `plugins/<name>/...` path that distinguishes them, and each Skill still enables/disables independently. `--name` defaults to the remote's `owner/repo`; pass it to override.
 
 Restrict the whole source to a single client with `--client <client>`; on `source add` this flag is single-valued (one client per source), unlike the repeatable `--client` on `skills enable`/`skills disable`.
 
 ### Confirm and enable
 
-Re-run `source list --json` and `skills list --json`. Find the new source ID (normally `vendor-shared/<repo>`), confirm the recorded `discoveryStrategy`, and read its discovered Skill IDs. If immediate use was requested, enable the Skill or the entire source for every compatible registered client in one atomic command:
+Re-run `source list --json` and `skills list --json`. Find the new source ID (normally `vendor-shared/<owner>/<repo>`), confirm the recorded `discoveryStrategy`, and read its discovered Skill IDs. If immediate use was requested, enable the Skill or the entire source for every compatible registered client in one atomic command:
 
 ```bash
 skills-switch --project "$PROJECT" skills enable \
-  --source vendor-shared/<repo> \
+  --source vendor-shared/<owner>/<repo> \
   --client <client-1> --client <client-2>
 ```
 
@@ -231,11 +233,35 @@ skills-switch --project "$PROJECT" source update <source-id> --dry-run
 skills-switch --project "$PROJECT" source update <source-id>
 ```
 
-When a project is in scope, pass `--project "$PROJECT"` to `source update` and `source remove` so project reconciliation or projection retirement cannot attach to an unrelated working directory. Omit it only when the operation intentionally has no project scope.
+When a project is in scope, pass `--project "$PROJECT"` to `source update`, `source remove`, and `source migrate`. Without it they resolve a project from the current working directory, so reconciliation, projection retirement, and migration repointing can attach to an unrelated project or to none. Omit it only when the operation intentionally has no project scope.
 
 Update every vendor source by omitting the source ID. Each checkout is a read-only mirror: before remote inspection, a real update runs `git reset --hard HEAD` and `git clean -ffdx`, discarding tracked, untracked, and ignored local changes. It initializes a missing registered checkout, reads the exact configured branch tip, fetches that ref, resets to the advertised SHA, and verifies `HEAD`. `--dry-run` is non-mutating. Failures are isolated per source and identify the source, path, operation, and underlying Git error.
 
 After changed sources are rediscovered, the command removes dangling catalog-managed Skill links from the current project scope (when available) and user-global scope. Reconciliation failures are command failures, not warnings. JSON output contains `updates`, scope-bearing `pruned` links, and structured `failures`.
+
+### Move legacy checkouts under their owner
+
+A vendor source is named for its remote's `owner/repo` and lives at `vendor/<scope>/<owner>/<repo>`. Checkouts registered before that owner level existed keep a bare `vendor/<scope>/<repo>` path and stay discoverable, so migration is never urgent — but two repositories that share a repository name cannot both use the bare form.
+
+Always preview first; `--dry-run` touches nothing:
+
+```bash
+skills-switch --project "$PROJECT" source migrate --dry-run --json
+skills-switch --project "$PROJECT" source migrate
+```
+
+Each entry carries a `status`, and the four post-run values mean different things for the operator:
+
+| status | meaning | what to do |
+|---|---|---|
+| `planned` | dry-run only: this source would move | run without `--dry-run` |
+| `moved` | checkout, registration, overrides, and reachable projections all moved | nothing |
+| `skipped` | preflight refused it; `reason` says why (commonly a dirty checkout) | resolve the reason, re-run |
+| `failed` | the attempt failed and the checkout is back where it started | read `reason`; state is unchanged |
+| `rolled_back` | the move happened, a later step failed, and the checkout was restored | read `reason`; state is unchanged |
+| `rollback_failed` | the checkout could not be put back and is not at its registered path | stop and repair by hand before any other source operation |
+
+Migration carries the catalog registration and per-Skill overrides across, and repoints the projections it can reach: the `--project` scope and user-global. Project-scoped projections in *other* projects still point at the old path and are repaired by re-enabling those Skills there — report that instead of assuming the migration finished everywhere. A source whose remote has no owner segment, and one whose checkout is dirty, are reported as `skipped` rather than silently left out.
 
 Remove a vendor repository only when the user explicitly asks to delete the repository source, not merely disable a project Skill:
 

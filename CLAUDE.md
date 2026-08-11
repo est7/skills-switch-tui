@@ -38,7 +38,7 @@ Build the CLI path first, then wrap it in UI. A capability that exists only in t
 - Treat vendor checkouts as disposable read-only mirrors. A real update resets tracked changes, cleans untracked and ignored files, and checks out the exact configured remote branch SHA before discovery.
 - Treat registered clients as data from `resources/registry.yaml`, not a closed enum.
 - Treat file-resource kind metadata as data from `internal/userresource.Descriptor`, not duplicated CLI/TUI switches.
-- Keep `local`, `archived`, and `vendor` source ownership distinct. Vendor repositories remain Git submodules.
+- Keep `local`, `archived`, and `vendor` source ownership distinct. Vendor repositories remain Git submodules, checked out at `vendor/<scope>/<owner>/<repo>` and identified by their remote rather than by repository name. Checkouts registered under a bare repository name stay discoverable; `source migrate` moves them.
 - Do not copy the bundled `skills-switch` Skill into `local/shared`; `skills-switch init` registers this repository as a vendor source.
 - Keep English and Simplified Chinese CLI/TUI strings in sync.
 - High-frequency keyboard actions must render immediately without decorative animation.
@@ -174,13 +174,13 @@ Release only from a clean `main` that has been pushed to `origin`.
 
    ```bash
    skills-switch source list --json | \
-     jq '.[] | select(.id == "vendor-shared/skills-switch-tui")'
+     jq '.[] | select(.id == "vendor-shared/est7/skills-switch-tui")'
    skills-switch \
      --project /Users/est9/EstProjects/skills-switch-tui \
      skills list --json | \
-     jq '.skills[] | select(.id == "vendor-shared/skills-switch-tui/skills/skills-switch")'
+     jq '.skills[] | select(.id == "vendor-shared/est7/skills-switch-tui/skills/skills-switch")'
    ```
 
 ## Git Scope
 
-Before committing, inspect the worktree and stage only files owned by this task. Use English Conventional Commit messages. Do not include generated `dist/` artifacts. When the repository is updated after a release, update the registered vendor gitlink through `skills-switch source update vendor-shared/skills-switch-tui`; do not edit the submodule checkout directly.
+Before committing, inspect the worktree and stage only files owned by this task. Use English Conventional Commit messages. Do not include generated `dist/` artifacts. When the repository is updated after a release, update the registered vendor gitlink through `skills-switch source update vendor-shared/est7/skills-switch-tui`; do not edit the submodule checkout directly.
