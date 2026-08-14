@@ -13,10 +13,10 @@ func TestLayoutOwnsResourceTopology(t *testing.T) {
 	}
 
 	tests := map[string]string{
-		layout.RegistryFile():      filepath.Join(root, "registry.yaml"),
-		layout.SkillsRoot():        filepath.Join(root, "skills"),
-		layout.MCPCatalogFile():    filepath.Join(root, "mcp", "mcp.json"),
-		layout.SystemPromptsRoot(): filepath.Join(root, "system-prompts"),
+		layout.RegistryFile():               filepath.Join(root, "registry.yaml"),
+		layout.SkillsRoot():                 filepath.Join(root, "skills"),
+		layout.MCPCatalogFile():             filepath.Join(root, "mcp", "mcp.json"),
+		layout.SystemPromptsRoot():          filepath.Join(root, "system-prompts"),
 		layout.UserResourceRoot("commands"): filepath.Join(root, "commands"),
 	}
 	for got, want := range tests {

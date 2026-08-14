@@ -70,7 +70,7 @@ func codexDefinition(server Server) (map[string]any, error) {
 				continue
 			}
 			if strings.Contains(value, "${") {
-				return nil, fmt.Errorf("Codex cannot losslessly represent interpolated header %q", header)
+				return nil, fmt.Errorf("codex cannot losslessly represent interpolated header %q", header)
 			}
 			staticHeaders[header] = value
 		}
@@ -80,11 +80,11 @@ func codexDefinition(server Server) (map[string]any, error) {
 	}
 
 	if strings.Contains(server.Command, "${") || strings.Contains(server.CWD, "${") {
-		return nil, fmt.Errorf("Codex cannot losslessly expand variables in command or cwd")
+		return nil, fmt.Errorf("codex cannot losslessly expand variables in command or cwd")
 	}
 	for _, argument := range server.Args {
 		if strings.Contains(argument, "${") {
-			return nil, fmt.Errorf("Codex cannot losslessly expand variables in arguments")
+			return nil, fmt.Errorf("codex cannot losslessly expand variables in arguments")
 		}
 	}
 	result := map[string]any{"command": server.Command}
@@ -96,13 +96,13 @@ func codexDefinition(server Server) (map[string]any, error) {
 		value := server.Env[name]
 		if match := environmentReference.FindStringSubmatch(value); len(match) == 2 {
 			if match[1] != name {
-				return nil, fmt.Errorf("Codex cannot forward environment variable %s as %s", match[1], name)
+				return nil, fmt.Errorf("codex cannot forward environment variable %s as %s", match[1], name)
 			}
 			forwarded = append(forwarded, name)
 			continue
 		}
 		if strings.Contains(value, "${") {
-			return nil, fmt.Errorf("Codex cannot losslessly represent interpolated environment variable %q", name)
+			return nil, fmt.Errorf("codex cannot losslessly represent interpolated environment variable %q", name)
 		}
 		staticEnv[name] = value
 	}

@@ -370,7 +370,6 @@ func configPermissions(path string) (os.FileMode, error) {
 	return info.Mode().Perm(), nil
 }
 
-
 // RemoveLocalResource deletes a local group or Skill directory rooted under
 // <root>/local. It refuses any target outside the local tree and refuses to
 // remove a scope root (e.g. local/shared), which would drop an entire client

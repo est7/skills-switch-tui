@@ -791,7 +791,7 @@ func Resolve(configured string, environment map[string]string) (Translator, erro
 	if value == "" || value == "auto" {
 		value = detectedLocale(environment)
 	}
-	language := English
+	var language Language
 	switch {
 	case strings.HasPrefix(value, "zh"):
 		language = Chinese
