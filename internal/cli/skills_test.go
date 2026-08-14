@@ -1,11 +1,201 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestSkillsDiscoverReportsUnmanagedProjectAndGlobalSkillsInStableOrder(t *testing.T) {
+	resourceRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	if err := os.Mkdir(filepath.Join(resourceRoot, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	claudeProjectSkill := filepath.Join(projectRoot, ".claude", "skills", "beta")
+	codexProjectSkill := filepath.Join(projectRoot, ".agents", "skills", "zeta")
+	codexGlobalSkill := filepath.Join(userHome, ".agents", "skills", "global-tool")
+	writeCLISkill(t, claudeProjectSkill, "beta")
+	writeCLISkill(t, codexProjectSkill, "zeta")
+	writeCLISkill(t, codexGlobalSkill, "global-tool")
+
+	codexProjectTarget := filepath.Join(projectRoot, ".agents", "skills")
+	if err := os.MkdirAll(filepath.Join(codexProjectTarget, "not-a-skill"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	managedTarget := filepath.Join(t.TempDir(), "managed")
+	writeCLISkill(t, managedTarget, "managed")
+	if err := os.Symlink(managedTarget, filepath.Join(codexProjectTarget, "managed")); err != nil {
+		t.Fatal(err)
+	}
+
+	base := []string{"--resources", resourceRoot, "--project", projectRoot, "skills", "discover"}
+	output, err := execute(t, append(base, "--json")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type row struct {
+		Client string `json:"client"`
+		Scope  string `json:"scope"`
+		Name   string `json:"name"`
+		Path   string `json:"path"`
+	}
+	var got []row
+	if err := json.Unmarshal(output, &got); err != nil {
+		t.Fatalf("decode discover JSON: %v\n%s", err, output)
+	}
+	want := []row{
+		{Client: "claude", Scope: "project", Name: "beta", Path: claudeProjectSkill},
+		{Client: "codex", Scope: "global", Name: "global-tool", Path: codexGlobalSkill},
+		{Client: "codex", Scope: "project", Name: "zeta", Path: codexProjectSkill},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("skills discover = %#v, want %#v", got, want)
+	}
+
+	human, err := execute(t, append(base, "--scope", "project")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFields := []string{
+		"CLIENT", "SCOPE", "NAME", "PATH",
+		"claude", "project", "beta", claudeProjectSkill,
+		"codex", "project", "zeta", codexProjectSkill,
+	}
+	if fields := strings.Fields(string(human)); !reflect.DeepEqual(fields, wantFields) {
+		t.Fatalf("skills discover table fields = %#v, want %#v\n%s", fields, wantFields, human)
+	}
+}
+
+func TestSkillsDiscoverMissingTargetsReturnsEmptyJSON(t *testing.T) {
+	resourceRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	if err := os.Mkdir(filepath.Join(resourceRoot, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "skills", "discover", "--json")
+	if err != nil {
+		t.Fatalf("skills discover with missing targets: %v", err)
+	}
+	if got := strings.TrimSpace(string(output)); got != "[]" {
+		t.Fatalf("empty discovery JSON = %q, want []", got)
+	}
+}
+
+func TestSkillsDiscoverHelpIsLocalized(t *testing.T) {
+	help, err := execute(t, "--lang", "zh", "skills", "discover", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"发现客户端目标目录中未受管理的 Skills", "发现作用域：project、global 或 all", "输出 JSON"} {
+		if !strings.Contains(string(help), want) {
+			t.Fatalf("Chinese skills discover help omitted %q:\n%s", want, help)
+		}
+	}
+}
+
+func TestSkillsAdoptJSONMovesUnmanagedSkillAndReportsStableResult(t *testing.T) {
+	resourceRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Join(resourceRoot, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(projectRoot, ".agents", "skills", "portable")
+	writeCLISkill(t, original, "portable")
+
+	output, err := execute(t,
+		"--resources", resourceRoot,
+		"--project", projectRoot,
+		"skills", "adopt", original,
+		"--group", "tools",
+		"--json",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type row struct {
+		Path     string `json:"path"`
+		SkillID  string `json:"skillId"`
+		SSOTPath string `json:"ssotPath"`
+		Status   string `json:"status"`
+		Reason   string `json:"reason"`
+	}
+	var got []row
+	if err := json.Unmarshal(output, &got); err != nil {
+		t.Fatalf("decode adopt JSON: %v\n%s", err, output)
+	}
+	ssot := filepath.Join(resourceRoot, "skills", "local", "shared", "tools", "portable")
+	want := []row{{Path: original, SkillID: "local-shared/tools/portable", SSOTPath: ssot, Status: "adopted"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("skills adopt = %#v, want %#v", got, want)
+	}
+	if target, err := os.Readlink(original); err != nil || target != ssot {
+		t.Fatalf("adopted projection = %q, %v", target, err)
+	}
+}
+
+func TestSkillsAdoptRendersEveryOutcomeBeforeReturningAggregateError(t *testing.T) {
+	resourceRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Join(resourceRoot, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	writeCLISkill(t, outside, "outside")
+	valid := filepath.Join(projectRoot, ".agents", "skills", "valid")
+	writeCLISkill(t, valid, "valid")
+
+	output, err := execute(t,
+		"--resources", resourceRoot,
+		"--project", projectRoot,
+		"skills", "adopt", outside, valid,
+		"--json",
+	)
+	if err == nil {
+		t.Fatal("mixed adopt outcomes must return an error")
+	}
+	var got []map[string]any
+	if decodeErr := json.Unmarshal(output, &got); decodeErr != nil {
+		t.Fatalf("decode mixed adopt JSON: %v\n%s", decodeErr, output)
+	}
+	if len(got) != 2 || got[0]["status"] != "refused" || got[1]["status"] != "adopted" {
+		t.Fatalf("mixed adopt results = %#v", got)
+	}
+}
+
+func TestSkillsAdoptHelpIsLocalized(t *testing.T) {
+	help, err := execute(t, "--lang", "zh", "skills", "adopt", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"将未受管理的 Skills 纳入本地目录", "本地作用域", "组目录", "输出 JSON"} {
+		if !strings.Contains(string(help), want) {
+			t.Fatalf("Chinese skills adopt help omitted %q:\n%s", want, help)
+		}
+	}
+}
 
 func TestSkillsDeleteRemovesLocalSkillOnlyWithConfirmation(t *testing.T) {
 	resourceRoot := t.TempDir()

@@ -637,6 +637,21 @@ func localizeSkillsCommands(command *cobra.Command, translator i18n.Translator) 
 		case "list":
 			child.Short = translator.Text(i18n.ListShort)
 			localizeOutputFlags(child, translator)
+		case "discover":
+			child.Short = translator.Text(i18n.SkillsDiscoverShort)
+			localizeOutputFlags(child, translator)
+			if flag := child.Flags().Lookup("scope"); flag != nil {
+				flag.Usage = translator.Text(i18n.SkillsDiscoverScopeFlag)
+			}
+		case "adopt":
+			child.Short = translator.Text(i18n.SkillsAdoptShort)
+			localizeOutputFlags(child, translator)
+			if flag := child.Flags().Lookup("scope"); flag != nil {
+				flag.Usage = translator.Text(i18n.SkillsAdoptScopeFlag)
+			}
+			if flag := child.Flags().Lookup("group"); flag != nil {
+				flag.Usage = translator.Text(i18n.SkillsAdoptGroupFlag)
+			}
 		case "show":
 			child.Short = translator.Text(i18n.ShowShort)
 			localizeOutputFlags(child, translator)

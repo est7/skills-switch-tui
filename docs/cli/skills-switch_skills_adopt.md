@@ -1,16 +1,18 @@
-## skills-switch skills show
+## skills-switch skills adopt
 
-Show one skill and its project projections
+Adopt unmanaged Skills into the local catalog
 
 ```
-skills-switch skills show <skill-id> [flags]
+skills-switch skills adopt <path>... [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for show
-      --json   emit JSON
+      --group string   group directory (default: a standalone group named after the Skill)
+  -h, --help           help for adopt
+      --json           emit JSON
+      --scope string   local scope: shared or a registered client id (default "shared")
 ```
 
 ### Options inherited from parent commands

@@ -1,16 +1,17 @@
-## skills-switch skills show
+## skills-switch skills discover
 
-Show one skill and its project projections
+Discover unmanaged Skills in registered client target directories
 
 ```
-skills-switch skills show <skill-id> [flags]
+skills-switch skills discover [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for show
-      --json   emit JSON
+  -h, --help           help for discover
+      --json           emit JSON
+      --scope string   discovery scope: project, global, or all (default "all")
 ```
 
 ### Options inherited from parent commands

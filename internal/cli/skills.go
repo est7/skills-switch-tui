@@ -3,6 +3,8 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"strings"
+	"text/tabwriter"
 
 	"github.com/est7/skills-switch-tui/internal/catalog"
 	"github.com/est7/skills-switch-tui/internal/client"
@@ -19,6 +21,8 @@ func newSkillsCommand(options *rootOptions) *cobra.Command {
 		Args:    cobra.NoArgs,
 	}
 	command.AddCommand(newListCommand(options))
+	command.AddCommand(newSkillDiscoverCommand(options))
+	command.AddCommand(newSkillAdoptCommand(options))
 	command.AddCommand(newShowCommand(options))
 	command.AddCommand(newEnableCommand(options, true))
 	command.AddCommand(newEnableCommand(options, false))
@@ -26,6 +30,149 @@ func newSkillsCommand(options *rootOptions) *cobra.Command {
 	command.AddCommand(newSkillDeleteCommand(options))
 	command.AddCommand(newSkillPruneCommand(options))
 	return command
+}
+
+type adoptedSkillOutput struct {
+	Path     string                    `json:"path"`
+	SkillID  string                    `json:"skillId"`
+	SSOTPath string                    `json:"ssotPath"`
+	Status   projection.AdoptionStatus `json:"status"`
+	Reason   string                    `json:"reason"`
+}
+
+func adoptionStatusKey(status projection.AdoptionStatus) i18n.Key {
+	switch status {
+	case projection.AdoptionAdopted:
+		return i18n.AdoptAdopted
+	case projection.AdoptionFailed:
+		return i18n.AdoptFailed
+	case projection.AdoptionStranded:
+		return i18n.AdoptStranded
+	default:
+		return i18n.AdoptRefused
+	}
+}
+
+func newSkillAdoptCommand(options *rootOptions) *cobra.Command {
+	var outputJSON bool
+	var scope, group string
+	command := &cobra.Command{
+		Use:   "adopt <path>...",
+		Short: "Adopt unmanaged Skills into the local catalog",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			runtime, err := loadRuntime(options)
+			if err != nil {
+				return err
+			}
+			adoptions, adoptErr := runtime.projection.AdoptSkills(args, scope, group)
+			result := make([]adoptedSkillOutput, 0, len(adoptions))
+			for _, adoption := range adoptions {
+				result = append(result, adoptedSkillOutput{
+					Path:     adoption.Path,
+					SkillID:  adoption.SkillID,
+					SSOTPath: adoption.SSOTPath,
+					Status:   adoption.Status,
+					Reason:   adoption.Reason,
+				})
+			}
+			if outputJSON {
+				return errors.Join(adoptErr, writeJSON(command, result))
+			}
+			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
+			fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n",
+				runtime.translator.Text(i18n.PathHeader),
+				runtime.translator.Text(i18n.SkillHeader),
+				runtime.translator.Text(i18n.TargetHeader),
+				runtime.translator.Text(i18n.StateHeader),
+				runtime.translator.Text(i18n.ReasonHeader),
+			)
+			for _, adoption := range result {
+				fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n",
+					adoption.Path,
+					adoption.SkillID,
+					adoption.SSOTPath,
+					runtime.translator.Text(adoptionStatusKey(adoption.Status)),
+					adoption.Reason,
+				)
+			}
+			return errors.Join(adoptErr, writer.Flush())
+		},
+	}
+	command.Flags().StringVar(&scope, "scope", "shared", "local scope: shared or a registered client id")
+	command.Flags().StringVar(&group, "group", "", "group directory (default: a standalone group named after the Skill)")
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
+	return command
+}
+
+type discoveredSkillOutput struct {
+	Client string `json:"client"`
+	Scope  string `json:"scope"`
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+}
+
+func newSkillDiscoverCommand(options *rootOptions) *cobra.Command {
+	var outputJSON bool
+	var rawScope string
+	command := &cobra.Command{
+		Use:   "discover",
+		Short: "Discover unmanaged Skills in registered client target directories",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			scopes, err := parseSkillDiscoveryScopes(rawScope)
+			if err != nil {
+				return err
+			}
+			runtime, err := loadRuntime(options)
+			if err != nil {
+				return err
+			}
+			discovered, err := runtime.projection.DiscoverUnmanagedSkills(scopes...)
+			if err != nil {
+				return err
+			}
+			result := make([]discoveredSkillOutput, 0, len(discovered))
+			for _, skill := range discovered {
+				result = append(result, discoveredSkillOutput{
+					Client: string(skill.Client),
+					Scope:  string(skill.Scope),
+					Name:   skill.Name,
+					Path:   skill.Path,
+				})
+			}
+			if outputJSON {
+				return writeJSON(command, result)
+			}
+			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
+			fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n",
+				runtime.translator.Text(i18n.ClientHeader),
+				runtime.translator.Text(i18n.ScopeHeader),
+				runtime.translator.Text(i18n.NameHeader),
+				runtime.translator.Text(i18n.PathHeader),
+			)
+			for _, skill := range result {
+				fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", skill.Client, skill.Scope, skill.Name, skill.Path)
+			}
+			return writer.Flush()
+		},
+	}
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
+	command.Flags().StringVar(&rawScope, "scope", "all", "discovery scope: project, global, or all")
+	return command
+}
+
+func parseSkillDiscoveryScopes(raw string) ([]projection.Scope, error) {
+	switch strings.TrimSpace(raw) {
+	case "all":
+		return []projection.Scope{projection.ScopeProject, projection.ScopeGlobal}, nil
+	case string(projection.ScopeProject):
+		return []projection.Scope{projection.ScopeProject}, nil
+	case string(projection.ScopeGlobal):
+		return []projection.Scope{projection.ScopeGlobal}, nil
+	default:
+		return nil, fmt.Errorf("unknown discovery scope %q: expected project, global, or all", raw)
+	}
 }
 
 type pruneOutput struct {

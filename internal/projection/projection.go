@@ -15,8 +15,10 @@ import (
 type Manager struct {
 	projectRoot     string
 	userHome        string
+	skillsRoot      string
 	clients         client.Registry
 	providersByPath map[string]catalog.Skill
+	beforeAdoptLink func(path, backupPath, ssotPath string) error
 }
 
 func New(projectRoot string, loaded catalog.Catalog) Manager {
@@ -36,6 +38,7 @@ func NewWithUserHome(projectRoot, userHome string, loaded catalog.Catalog) Manag
 	return Manager{
 		projectRoot:     projectRoot,
 		userHome:        userHome,
+		skillsRoot:      loaded.Root,
 		clients:         loaded.Clients,
 		providersByPath: providersByPath,
 	}
@@ -181,6 +184,14 @@ func (m Manager) TargetPath(skill catalog.Skill, client catalog.Client) (string,
 }
 
 func (m Manager) TargetPathAt(skill catalog.Skill, client catalog.Client, scope Scope) (string, error) {
+	targetDir, err := m.targetDirAt(client, scope)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(targetDir, skill.Name), nil
+}
+
+func (m Manager) targetDirAt(client catalog.Client, scope Scope) (string, error) {
 	var targetDir string
 	var err error
 	if scope == ScopeGlobal {
@@ -194,7 +205,7 @@ func (m Manager) TargetPathAt(skill catalog.Skill, client catalog.Client, scope 
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(targetDir, skill.Name), nil
+	return targetDir, nil
 }
 
 type Conflict struct {

@@ -25,5 +25,5 @@ skills-switch skills delete <skill-or-group-id> [flags]
 
 ### SEE ALSO
 
-* [skills-switch skills](skills-switch_skills.md)	 - List, show, enable, disable, create, or delete catalog skills
+* [skills-switch skills](skills-switch_skills.md)	 - List, adopt, show, enable, disable, create, or delete catalog skills
 

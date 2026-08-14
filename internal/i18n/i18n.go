@@ -105,6 +105,7 @@ const (
 	ListShort                   Key = "list_short"
 	EmitJSONFlag                Key = "emit_json_flag"
 	SkillHeader                 Key = "skill_header"
+	NameHeader                  Key = "name_header"
 	SourceHeader                Key = "source_header"
 	EnableShort                 Key = "enable_short"
 	DisableShort                Key = "disable_short"
@@ -179,6 +180,7 @@ const (
 	ClientHeader                Key = "client_header"
 	StateHeader                 Key = "state_header"
 	TargetHeader                Key = "target_header"
+	ReasonHeader                Key = "reason_header"
 	MigrateShort                Key = "migrate_short"
 	MigrateDryRunFlag           Key = "migrate_dry_run_flag"
 	MigrateNothingToDo          Key = "migrate_nothing_to_do"
@@ -260,6 +262,15 @@ const (
 	SkillCreated                Key = "skill_created"
 	SkillsDeleteShort           Key = "skills_delete_short"
 	SkillsPruneShort            Key = "skills_prune_short"
+	SkillsDiscoverShort         Key = "skills_discover_short"
+	SkillsDiscoverScopeFlag     Key = "skills_discover_scope_flag"
+	SkillsAdoptShort            Key = "skills_adopt_short"
+	SkillsAdoptScopeFlag        Key = "skills_adopt_scope_flag"
+	SkillsAdoptGroupFlag        Key = "skills_adopt_group_flag"
+	AdoptAdopted                Key = "adopt_adopted"
+	AdoptRefused                Key = "adopt_refused"
+	AdoptFailed                 Key = "adopt_failed"
+	AdoptStranded               Key = "adopt_stranded"
 	MCPAddShort                 Key = "mcp_add_short"
 	MCPImportShort              Key = "mcp_import_short"
 	MCPImportFileFlag           Key = "mcp_import_file_flag"
@@ -363,6 +374,7 @@ var messages = map[Language]map[Key]string{
 		ListShort:                   "List catalog skills and projection state",
 		EmitJSONFlag:                "emit JSON",
 		SkillHeader:                 "SKILL",
+		NameHeader:                  "NAME",
 		SourceHeader:                "SOURCE",
 		EnableShort:                 "Enable a skill or source in one projection scope",
 		DisableShort:                "Disable a skill or source in one projection scope",
@@ -437,6 +449,7 @@ var messages = map[Language]map[Key]string{
 		ClientHeader:                "CLIENT",
 		StateHeader:                 "STATE",
 		TargetHeader:                "TARGET",
+		ReasonHeader:                "REASON",
 		MigrateShort:                "Move vendor checkouts registered under a bare repository name under their owner",
 		MigrateDryRunFlag:           "report the planned moves without changing anything",
 		MigrateNothingToDo:          "every vendor source is already owner-qualified\n",
@@ -513,11 +526,20 @@ var messages = map[Language]map[Key]string{
 		DeleteNeedsConfirmation:     "%s will be permanently deleted from disk; re-run with --yes to confirm",
 		DeleteUnknownTarget:         "unknown Skill or source: %s",
 		DeleteVendorViaSourceRemove: "%s is a vendor source; use `source remove` instead",
-		SkillsCommandShort:          "List, show, enable, disable, create, or delete catalog skills",
+		SkillsCommandShort:          "List, adopt, show, enable, disable, create, or delete catalog skills",
 		SkillsCreateShort:           "Scaffold a new local Skill skeleton",
 		SkillCreated:                "created local Skill at %s",
 		SkillsDeleteShort:           "Delete a local Skill or group directory from the resource SSOT",
 		SkillsPruneShort:            "Remove projections whose Skill left its source",
+		SkillsDiscoverShort:         "Discover unmanaged Skills in registered client target directories",
+		SkillsDiscoverScopeFlag:     "discovery scope: project, global, or all",
+		SkillsAdoptShort:            "Adopt unmanaged Skills into the local catalog",
+		SkillsAdoptScopeFlag:        "local scope: shared or a registered client id",
+		SkillsAdoptGroupFlag:        "group directory (default: a standalone group named after the Skill)",
+		AdoptAdopted:                "adopted",
+		AdoptRefused:                "refused",
+		AdoptFailed:                 "failed",
+		AdoptStranded:               "stranded",
 		MCPAddShort:                 "Register a new MCP server in the catalog",
 		MCPImportShort:              "Add MCP servers from a pasted JSON definition",
 		MCPImportFileFlag:           "read the JSON definition from a file",
@@ -615,6 +637,7 @@ var messages = map[Language]map[Key]string{
 		ListShort:                   "列出目录 Skills 及投影状态",
 		EmitJSONFlag:                "输出 JSON",
 		SkillHeader:                 "SKILL",
+		NameHeader:                  "名称",
 		SourceHeader:                "来源",
 		EnableShort:                 "在一个投影作用域启用 Skill 或来源",
 		DisableShort:                "在一个投影作用域停用 Skill 或来源",
@@ -689,6 +712,7 @@ var messages = map[Language]map[Key]string{
 		ClientHeader:                "客户端",
 		StateHeader:                 "状态",
 		TargetHeader:                "目标",
+		ReasonHeader:                "原因",
 		MigrateShort:                "把以裸仓库名注册的 vendor 检出迁移到 owner 目录下",
 		MigrateDryRunFlag:           "只报告将要执行的迁移，不做任何改动",
 		MigrateNothingToDo:          "所有 vendor 来源都已带 owner 前缀\n",
@@ -765,11 +789,20 @@ var messages = map[Language]map[Key]string{
 		DeleteNeedsConfirmation:     "%s 将从磁盘永久删除;请加 --yes 确认",
 		DeleteUnknownTarget:         "未知的技能或来源:%s",
 		DeleteVendorViaSourceRemove: "%s 是 vendor 来源,请改用 `source remove`",
-		SkillsCommandShort:          "列出、查看、启用、停用、创建或删除目录技能",
+		SkillsCommandShort:          "列出、纳管、查看、启用、停用、创建或删除目录技能",
 		SkillsCreateShort:           "生成一个新的本地 Skill 骨架",
 		SkillCreated:                "已在 %s 创建本地 Skill",
 		SkillsDeleteShort:           "从资源 SSOT 删除本地技能或组目录",
 		SkillsPruneShort:            "清理已从来源移除的 Skill 投影",
+		SkillsDiscoverShort:         "发现客户端目标目录中未受管理的 Skills",
+		SkillsDiscoverScopeFlag:     "发现作用域：project、global 或 all",
+		SkillsAdoptShort:            "将未受管理的 Skills 纳入本地目录",
+		SkillsAdoptScopeFlag:        "本地作用域：shared 或已注册客户端 ID",
+		SkillsAdoptGroupFlag:        "组目录（默认使用与 Skill 同名的独立组）",
+		AdoptAdopted:                "已纳管",
+		AdoptRefused:                "已拒绝",
+		AdoptFailed:                 "失败",
+		AdoptStranded:               "停在纳管中途",
 		MCPAddShort:                 "在目录中注册新的 MCP 服务器",
 		MCPImportShort:              "从粘贴的 JSON 定义添加 MCP 服务器",
 		MCPImportFileFlag:           "从文件读取 JSON 定义",

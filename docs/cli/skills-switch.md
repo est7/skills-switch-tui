@@ -25,7 +25,7 @@ skills-switch [flags]
 * [skills-switch mcp](skills-switch_mcp.md)	 - Manage project-level MCP servers
 * [skills-switch output-styles](skills-switch_output-styles.md)	 - Manage user-global output style files
 * [skills-switch prompt](skills-switch_prompt.md)	 - Manage user-global system prompt files
-* [skills-switch skills](skills-switch_skills.md)	 - List, show, enable, disable, create, or delete catalog skills
+* [skills-switch skills](skills-switch_skills.md)	 - List, adopt, show, enable, disable, create, or delete catalog skills
 * [skills-switch source](skills-switch_source.md)	 - Manage catalog source repositories
 * [skills-switch status](skills-switch_status.md)	 - Summarize project projection state by client
 * [skills-switch tui](skills-switch_tui.md)	 - Open the interactive terminal UI

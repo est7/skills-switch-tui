@@ -406,30 +406,52 @@ func RemoveLocalResource(root, target string) error {
 	return os.RemoveAll(absTarget)
 }
 
+type LocalSkillTarget struct {
+	ID   string
+	Path string
+}
+
+// ResolveLocalSkillTarget validates a local catalog location and returns the
+// canonical skill ID and directory. An empty group denotes the standalone
+// group named after the skill, matching ScaffoldLocalSkill.
+func ResolveLocalSkillTarget(skillsRoot, scope, group, name string) (LocalSkillTarget, error) {
+	if scope == "" {
+		scope = "shared"
+	}
+	if !skillNamePattern.MatchString(scope) {
+		return LocalSkillTarget{}, fmt.Errorf("invalid scope %q", scope)
+	}
+	if !skillNamePattern.MatchString(name) {
+		return LocalSkillTarget{}, fmt.Errorf("invalid skill name %q", name)
+	}
+	if group != "" && !skillNamePattern.MatchString(group) {
+		return LocalSkillTarget{}, fmt.Errorf("invalid group name %q", group)
+	}
+	segments := []string{skillsRoot, string(SourceLocal), scope}
+	groupName := group
+	if group != "" {
+		segments = append(segments, group)
+	} else {
+		groupName = name
+	}
+	segments = append(segments, name)
+	return LocalSkillTarget{
+		ID:   ScopedSourceID(SourceLocal, scope, groupName) + "/" + name,
+		Path: filepath.Join(segments...),
+	}, nil
+}
+
 // ScaffoldLocalSkill writes a minimal, discoverable SKILL.md skeleton for a new
 // local skill and returns its directory. With an empty group the skill becomes a
 // standalone group named after itself (skills/local/<scope>/<name>/SKILL.md);
 // with a group it is nested (skills/local/<scope>/<group>/<name>/SKILL.md). It
 // fails if a SKILL.md already exists at the target.
 func ScaffoldLocalSkill(skillsRoot, scope, group, name, description string) (string, error) {
-	if scope == "" {
-		scope = "shared"
+	target, err := ResolveLocalSkillTarget(skillsRoot, scope, group, name)
+	if err != nil {
+		return "", err
 	}
-	if !skillNamePattern.MatchString(scope) {
-		return "", fmt.Errorf("invalid scope %q", scope)
-	}
-	if !skillNamePattern.MatchString(name) {
-		return "", fmt.Errorf("invalid skill name %q", name)
-	}
-	if group != "" && !skillNamePattern.MatchString(group) {
-		return "", fmt.Errorf("invalid group name %q", group)
-	}
-	segments := []string{skillsRoot, string(SourceLocal), scope}
-	if group != "" {
-		segments = append(segments, group)
-	}
-	segments = append(segments, name)
-	skillDir := filepath.Join(segments...)
+	skillDir := target.Path
 	skillFile := filepath.Join(skillDir, "SKILL.md")
 	if _, err := os.Stat(skillFile); err == nil {
 		return "", fmt.Errorf("skill already exists: %s", skillFile)
