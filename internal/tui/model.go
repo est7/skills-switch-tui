@@ -120,6 +120,7 @@ type updateFinishedMsg struct {
 }
 
 type promptBuildFinishedMsg struct {
+	group  systemprompt.Group
 	result systemprompt.BuildResult
 	err    error
 }
@@ -161,6 +162,7 @@ type Model struct {
 	prompts          systemprompt.Catalog
 	promptMgr        systemprompt.Manager
 	userResourceSets map[userresource.Kind]UserResourceSet
+	stateCache       stateCache
 	updater          *source.Manager
 	tab              resourceTab
 	skillScope       projection.Scope
@@ -247,6 +249,7 @@ func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Man
 		}
 		model.userHome = resources[0].UserHome
 	}
+	model.rebuildStateCache()
 	model.syncContextKeys()
 	return model
 }
@@ -287,6 +290,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if reloadErr == nil {
 			m.catalog = reloaded
 			m.projection = projection.NewWithUserHome(m.project, m.userHome, reloaded)
+		}
+		m.rebuildStateCache()
+		if reloadErr == nil {
 			if clients := m.clientsForTab(); m.clientIndex >= len(clients) {
 				m.clientIndex = max(0, len(clients)-1)
 			}
@@ -319,6 +325,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case promptBuildFinishedMsg:
 		m.updating = false
+		m.refreshSystemPromptStates([]systemprompt.Group{message.group})
 		if message.err != nil {
 			m.err = message.err
 			m.status = m.translator.Text(i18n.PromptBuildFailed)
@@ -566,6 +573,7 @@ func (m Model) executeDelete() (tea.Model, tea.Cmd) {
 func (m *Model) reloadCatalog() error {
 	reloaded, err := catalog.Load(m.catalog.Root, m.catalog.Clients)
 	if err != nil {
+		m.rebuildStateCache()
 		return err
 	}
 	m.catalog = reloaded
@@ -573,11 +581,13 @@ func (m *Model) reloadCatalog() error {
 	if m.mcpCatalog.Path != "" {
 		mcpReloaded, err := mcp.LoadCatalog(m.mcpCatalog.Path)
 		if err != nil {
+			m.rebuildStateCache()
 			return err
 		}
 		m.mcpCatalog = mcpReloaded
 		m.mcpManager = mcp.NewManager(m.project, mcpReloaded, reloaded.Clients)
 	}
+	m.rebuildStateCache()
 	if clients := m.clientsForTab(); m.clientIndex >= len(clients) {
 		m.clientIndex = max(0, len(clients)-1)
 	}
@@ -698,10 +708,6 @@ func indexClient(clients []client.ID, target client.ID) int {
 	return 0
 }
 
-func (m Model) skillState(skill catalog.Skill, client catalog.Client) (projection.State, error) {
-	return m.projection.StateAt(skill, client, m.skillScope)
-}
-
 func (m *Model) moveCursor(delta int) {
 	rowCount := m.activeRowCount()
 	if rowCount == 0 {
@@ -820,7 +826,9 @@ func (m *Model) toggleSkillSelection() {
 		m.status = m.translator.Text(i18n.ArchiveCannotEnable)
 		return
 	}
-	if err := m.projection.SetEnabledAt(skills, client, enable, m.skillScope); err != nil {
+	err := m.projection.SetEnabledAt(skills, client, enable, m.skillScope)
+	m.refreshSkillStates(skills, []catalog.Client{client})
+	if err != nil {
 		m.err = err
 		m.status = m.translator.Text(i18n.NoChangesApplied)
 		return
@@ -923,7 +931,9 @@ func (m *Model) toggleAllClients() {
 			operations = append(operations, projection.Operation{Skills: toDisable, Client: clientID, Enabled: false, Scope: m.skillScope})
 		}
 	}
-	if err := m.projection.Apply(operations); err != nil {
+	err := m.projection.Apply(operations)
+	m.refreshSkillOperationStates(operations)
+	if err != nil {
 		m.err = err
 		m.status = m.translator.Text(i18n.NoChangesApplied)
 		return
@@ -953,7 +963,7 @@ func (m *Model) toggleMCPSelection() {
 	}
 	name := names[m.cursor]
 	clientID := m.currentClient()
-	state, err := m.mcpManager.State(name, clientID)
+	state, err := m.mcpState(name, clientID)
 	if err != nil {
 		m.err = err
 		m.status = m.translator.Text(i18n.InspectProjectFailed)
@@ -965,7 +975,10 @@ func (m *Model) toggleMCPSelection() {
 		return
 	}
 	enable := state != mcp.StateEnabled
-	if err := m.mcpManager.Apply([]mcp.Operation{{Server: name, Client: clientID, Enabled: enable}}); err != nil {
+	operations := []mcp.Operation{{Server: name, Client: clientID, Enabled: enable}}
+	err = m.mcpManager.Apply(operations)
+	m.refreshMCPOperationStates(operations)
+	if err != nil {
 		m.err = err
 		m.status = m.translator.Text(i18n.NoChangesApplied)
 		return
@@ -994,7 +1007,7 @@ func (m *Model) toggleAllClientsMCP() {
 	compatibleCount := 0
 	enable := false
 	for _, clientID := range clients {
-		state, err := m.mcpManager.State(name, clientID)
+		state, err := m.mcpState(name, clientID)
 		if err != nil {
 			m.err = err
 			m.status = m.translator.Text(i18n.InspectProjectFailed)
@@ -1028,7 +1041,9 @@ func (m *Model) toggleAllClientsMCP() {
 		}
 	}
 	if len(operations) > 0 {
-		if err := m.mcpManager.Apply(operations); err != nil {
+		err := m.mcpManager.Apply(operations)
+		m.refreshMCPOperationStates(operations)
+		if err != nil {
 			m.err = err
 			m.status = m.translator.Text(i18n.NoChangesApplied)
 			return
@@ -1051,7 +1066,7 @@ func (m *Model) toggleUserResourceSelection() {
 	resource := resources[m.cursor]
 	manager := m.userResourceManager()
 	clientID := m.currentClient()
-	state, err := manager.State(resource, clientID)
+	state, err := m.userResourceState(resource, clientID)
 	if err != nil {
 		m.err = err
 		m.status = m.translator.Text(i18n.InspectProjectFailed)
@@ -1063,7 +1078,10 @@ func (m *Model) toggleUserResourceSelection() {
 		return
 	}
 	enable := state != userresource.StateEnabled
-	if err := manager.Apply([]userresource.Operation{{Resource: resource, Client: clientID, Enabled: enable}}); err != nil {
+	operations := []userresource.Operation{{Resource: resource, Client: clientID, Enabled: enable}}
+	err = manager.Apply(operations)
+	m.refreshUserResourceOperationStates(operations)
+	if err != nil {
 		m.err = err
 		m.status = m.translator.Text(i18n.NoChangesApplied)
 		return
@@ -1089,7 +1107,7 @@ func (m *Model) toggleAllClientsUserResource() {
 	compatibleCount := 0
 	enable := false
 	for _, clientID := range clients {
-		state, err := manager.State(resource, clientID)
+		state, err := m.userResourceState(resource, clientID)
 		if err != nil {
 			m.err = err
 			m.status = m.translator.Text(i18n.InspectProjectFailed)
@@ -1118,7 +1136,9 @@ func (m *Model) toggleAllClientsUserResource() {
 			operations = append(operations, userresource.Operation{Resource: resource, Client: clientID, Enabled: enable})
 		}
 	}
-	if err := manager.Apply(operations); err != nil {
+	err := manager.Apply(operations)
+	m.refreshUserResourceOperationStates(operations)
+	if err != nil {
 		m.err = err
 		m.status = m.translator.Text(i18n.NoChangesApplied)
 		return
@@ -1144,14 +1164,16 @@ func (m *Model) togglePromptSelection() {
 		m.status = m.translator.Text(i18n.NoChangesApplied)
 		return
 	}
-	state, err := m.promptMgr.State(group)
+	state, err := m.systemPromptState(group)
 	if err != nil {
 		m.err = err
 		m.status = m.translator.Text(i18n.InspectProjectFailed)
 		return
 	}
 	enable := state != systemprompt.StateEnabled
-	if err := m.promptMgr.SetEnabled([]systemprompt.Group{group}, enable); err != nil {
+	err = m.promptMgr.SetEnabled([]systemprompt.Group{group}, enable)
+	m.refreshSystemPromptStates([]systemprompt.Group{group})
+	if err != nil {
 		m.err = err
 		m.status = m.translator.Text(i18n.NoChangesApplied)
 		return
@@ -1236,7 +1258,7 @@ func (m Model) startPromptBuild() (tea.Model, tea.Cmd) {
 	manager := m.promptMgr
 	return m, func() tea.Msg {
 		result, err := manager.Build(group)
-		return promptBuildFinishedMsg{result: result, err: err}
+		return promptBuildFinishedMsg{group: group, result: result, err: err}
 	}
 }
 
@@ -1296,7 +1318,6 @@ func (m Model) activeRowCount() int {
 func (m Model) userResources() []userresource.Resource {
 	set := m.userResourceSet()
 	catalog := set.Catalog
-	manager := set.Manager
 	query := strings.ToLower(strings.TrimSpace(m.search.Value()))
 	result := make([]userresource.Resource, 0, len(catalog.Resources))
 	for _, resource := range catalog.Resources {
@@ -1306,7 +1327,7 @@ func (m Model) userResources() []userresource.Resource {
 		if m.filter != filterAll {
 			matches := false
 			for _, clientID := range m.clientsForTab() {
-				state, err := manager.State(resource, clientID)
+				state, err := m.userResourceState(resource, clientID)
 				if err != nil {
 					matches = m.filter == filterIssues
 					break
@@ -1362,7 +1383,7 @@ func (m Model) mcpMatchesFilter(name string) bool {
 		return true
 	}
 	for _, clientID := range m.clientsForTab() {
-		state, err := m.mcpManager.State(name, clientID)
+		state, err := m.mcpState(name, clientID)
 		if err != nil {
 			return m.filter == filterIssues
 		}
@@ -1383,7 +1404,7 @@ func (m Model) promptGroups() []systemprompt.Group {
 		if query != "" && !containsFold(group.ID+" "+string(group.Client), query) {
 			continue
 		}
-		state, err := m.promptMgr.State(group)
+		state, err := m.systemPromptState(group)
 		if m.filter == filterEnabled && (err != nil || state != systemprompt.StateEnabled) {
 			continue
 		}

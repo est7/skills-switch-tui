@@ -47,6 +47,211 @@ func TestSourceRowToggleEnablesEveryCompatibleSkill(t *testing.T) {
 	}
 }
 
+func TestRenderedSkillStateUsesSnapshotUntilReload(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "cached"), "cached")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	skill := loaded.Sources[0].Skills[0]
+	manager := projection.New(projectRoot, loaded)
+	if err := manager.SetEnabled([]catalog.Skill{skill}, catalog.ClientCodex, true); err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, manager, nil, i18n.New(i18n.English))
+	if cell, _ := model.stateCell(skill, catalog.ClientCodex); cell != "●" {
+		t.Fatalf("initial cached cell = %q, want enabled", cell)
+	}
+
+	link, err := manager.TargetPath(skill, catalog.ClientCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Dir(link)); err != nil {
+		t.Fatal(err)
+	}
+	if cell, _ := model.stateCell(skill, catalog.ClientCodex); cell != "●" {
+		t.Fatalf("cell after external link removal = %q, want cached enabled state", cell)
+	}
+	model.filter = filterEnabled
+	if rows := model.rows(); len(rows) == 0 {
+		t.Fatal("enabled filter stopped matching the cached projection state")
+	}
+
+	if err := model.reloadCatalog(); err != nil {
+		t.Fatal(err)
+	}
+	if cell, _ := model.stateCell(skill, catalog.ClientCodex); cell != "○" {
+		t.Fatalf("cell after reload = %q, want disabled", cell)
+	}
+}
+
+func TestSkillToggleRefreshesStateSnapshot(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "cached"), "cached")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	skill := loaded.Sources[0].Skills[0]
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+	if cell, _ := model.stateCell(skill, catalog.ClientCodex); cell != "○" {
+		t.Fatalf("initial cached cell = %q, want disabled", cell)
+	}
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("toggle skill: %v", model.err)
+	}
+	if cell, _ := model.stateCell(skill, catalog.ClientCodex); cell != "●" {
+		t.Fatalf("cached cell after toggle = %q, want enabled", cell)
+	}
+}
+
+func TestSkillToggleRefreshesBothScopeSnapshots(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	userHome := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "scoped"), "scoped")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	skill := loaded.Sources[0].Skills[0]
+	manager := projection.NewWithUserHome(projectRoot, userHome, loaded)
+	if err := manager.SetEnabledAt([]catalog.Skill{skill}, catalog.ClientCodex, true, projection.ScopeProject); err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, manager, nil, i18n.New(i18n.English), Resources{UserHome: userHome})
+	model.skillScope = projection.ScopeGlobal
+	if cell, _ := model.stateCell(skill, catalog.ClientCodex); cell != "○" {
+		t.Fatalf("initial global cell = %q, want disabled", cell)
+	}
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("promote skill to global scope: %v", model.err)
+	}
+	if cell, _ := model.stateCell(skill, catalog.ClientCodex); cell != "●" {
+		t.Fatalf("global cell after toggle = %q, want enabled", cell)
+	}
+	model.skillScope = projection.ScopeProject
+	if cell, _ := model.stateCell(skill, catalog.ClientCodex); cell != "G" {
+		t.Fatalf("project cell after global promotion = %q, want global marker", cell)
+	}
+}
+
+func TestSkillToggleDoesNotRefreshUnrelatedStaleSnapshot(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "active"), "active")
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "stale"), "stale")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	active, ok := loaded.Skill("local-shared/active/active")
+	if !ok {
+		t.Fatal("active skill missing from catalog")
+	}
+	stale, ok := loaded.Skill("local-shared/stale/stale")
+	if !ok {
+		t.Fatal("stale skill missing from catalog")
+	}
+	manager := projection.New(projectRoot, loaded)
+	if err := manager.SetEnabled([]catalog.Skill{active, stale}, catalog.ClientCodex, true); err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, manager, nil, i18n.New(i18n.English))
+	selectedActive := false
+	for index, candidate := range model.rows() {
+		if model.catalog.Sources[candidate.sourceIndex].ID == active.SourceID {
+			model.cursor = index
+			selectedActive = true
+			break
+		}
+	}
+	if !selectedActive {
+		t.Fatal("active source row missing")
+	}
+
+	staleLink, err := manager.TargetPath(stale, catalog.ClientCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(staleLink); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("toggle active skill: %v", model.err)
+	}
+	if cell, _ := model.stateCell(active, catalog.ClientCodex); cell != "○" {
+		t.Fatalf("active cell after toggle = %q, want disabled", cell)
+	}
+	if cell, _ := model.stateCell(stale, catalog.ClientCodex); cell != "●" {
+		t.Fatalf("unrelated stale cell after active toggle = %q, want cached enabled", cell)
+	}
+}
+
+func TestSkillToggleRefreshesAlternativeProviderSnapshot(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "shared-name"), "shared-name")
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "upstream", "skills", "shared-name"), "shared-name")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	local, ok := loaded.Skill("local-shared/shared-name/shared-name")
+	if !ok {
+		t.Fatal("local provider missing from catalog")
+	}
+	vendor, ok := loaded.Skill("vendor-shared/upstream/skills/shared-name")
+	if !ok {
+		t.Fatal("vendor provider missing from catalog")
+	}
+	manager := projection.New(projectRoot, loaded)
+	if err := manager.SetEnabled([]catalog.Skill{local}, catalog.ClientCodex, true); err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, manager, nil, i18n.New(i18n.English))
+	selectedVendor := false
+	for index, candidate := range model.rows() {
+		if model.catalog.Sources[candidate.sourceIndex].ID == vendor.SourceID {
+			model.cursor = index
+			selectedVendor = true
+			break
+		}
+	}
+	if !selectedVendor {
+		t.Fatal("vendor source row missing")
+	}
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("switch provider: %v", model.err)
+	}
+	if cell, _ := model.stateCell(vendor, catalog.ClientCodex); cell != "●" {
+		t.Fatalf("vendor cell after switch = %q, want enabled", cell)
+	}
+	if cell, _ := model.stateCell(local, catalog.ClientCodex); cell != "○" {
+		t.Fatalf("local cell after switch = %q, want disabled", cell)
+	}
+}
+
 func TestSkillScopeKeyPromotesToGlobalAndLocksProjectToggle(t *testing.T) {
 	sourcesRoot := t.TempDir()
 	projectRoot := t.TempDir()
@@ -349,17 +554,17 @@ func TestUpdateAllContinuesCleanSourcesAndReportsResetFailure(t *testing.T) {
 	broken := loaded.Sources[0]
 	clean := loaded.Sources[1]
 	git := &tuiSourceGit{responses: map[string]string{
-		clean.Path + "|reset --hard HEAD":                                                   "HEAD is now at aaaaaaaa current\n",
-		clean.Path + "|clean -ffdx":                                                         "",
-		clean.Path + "|rev-parse HEAD":                                                      "aaaaaaaa\n",
-		clean.Path + "|ls-remote origin refs/heads/main":                                    "bbbbbbbb\trefs/heads/main\n",
+		clean.Path + "|reset --hard HEAD":                "HEAD is now at aaaaaaaa current\n",
+		clean.Path + "|clean -ffdx":                      "",
+		clean.Path + "|rev-parse HEAD":                   "aaaaaaaa\n",
+		clean.Path + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
 		repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/owner/clean": "",
-		clean.Path + "|fetch --no-tags origin refs/heads/main":                              "",
-		clean.Path + "|reset --hard bbbbbbbb":                                               "",
-		clean.Path + "|rev-parse --verify HEAD":                                             "bbbbbbbb\n",
-		clean.Path + "|sparse-checkout disable":                                             "",
-		clean.Path + "|sparse-checkout init --cone":                                         "",
-		clean.Path + "|sparse-checkout set skills":                                          "",
+		clean.Path + "|fetch --no-tags origin refs/heads/main":                                    "",
+		clean.Path + "|reset --hard bbbbbbbb":                                                     "",
+		clean.Path + "|rev-parse --verify HEAD":                                                   "bbbbbbbb\n",
+		clean.Path + "|sparse-checkout disable":                                                   "",
+		clean.Path + "|sparse-checkout init --cone":                                               "",
+		clean.Path + "|sparse-checkout set skills":                                                "",
 	}}
 	updater := source.Manager{RepositoryRoot: repositoryRoot, SkillsRoot: sourcesRoot, Git: git}
 	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), &updater, i18n.New(i18n.English))
@@ -721,6 +926,7 @@ func TestSourceToggleCleansProjectionThatBecameIncompatible(t *testing.T) {
 	}
 
 	model.catalog.Sources[0].Skills[0].Targets[catalog.ClientCodex] = false
+	model.rebuildStateCache()
 	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	model = updated.(Model)
 	if model.err != nil {

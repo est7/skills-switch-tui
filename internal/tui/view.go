@@ -175,9 +175,8 @@ func (m Model) renderUserResourceTable() string {
 		labels[index] = resource.ID
 		byID[resource.ID] = resource
 	}
-	manager := m.userResourceManager()
 	return m.renderResourceTable(labels, func(name string, clientID catalog.Client) (string, lipgloss.Style) {
-		state, err := manager.State(byID[name], clientID)
+		state, err := m.userResourceState(byID[name], clientID)
 		if err != nil {
 			return "!", m.styles.issue
 		}
@@ -223,7 +222,7 @@ func (m Model) renderSkillsTable() string {
 func (m Model) renderMCPTable() string {
 	names := m.mcpNames()
 	return m.renderResourceTable(names, func(name string, clientID catalog.Client) (string, lipgloss.Style) {
-		state, err := m.mcpManager.State(name, clientID)
+		state, err := m.mcpState(name, clientID)
 		if err != nil {
 			return "!", m.styles.issue
 		}
@@ -274,7 +273,7 @@ type systemPromptRow struct {
 }
 
 func (m Model) promptState(group systemprompt.Group) string {
-	state, err := m.promptMgr.State(group)
+	state, err := m.systemPromptState(group)
 	if err != nil {
 		return "error"
 	}
