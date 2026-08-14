@@ -11,7 +11,10 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -21,8 +24,51 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - name: Test
-        run: go test ./...
+        run: go test -race ./...
       - name: Vet
         run: go vet ./...
       - name: Build
         run: go build ./cmd/skills-switch
+      - name: Check generated CLI reference
+        if: runner.os == 'Linux'
+        run: |
+          rm -rf docs/cli
+          go run ./cmd/gendoc
+          git add --intent-to-add docs/cli
+          git diff --exit-code -- docs/cli
+
+  # The full suite exercises symlink projections, which Windows runners cannot
+  # create without elevated privileges; this job still compiles every package
+  # (including the Windows-only filelock implementation) and runs the tests
+  # that are symlink-free.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Vet
+        run: go vet ./...
+      - name: Build
+        run: go build ./cmd/skills-switch
+      - name: Test file locking
+        run: go test -race ./internal/filelock/...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.6.2

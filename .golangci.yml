@@ -1,0 +1,35 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - depguard
+  settings:
+    depguard:
+      rules:
+        # Presentation layers drive the core managers (catalog, projection,
+        # mcp, source, userresource, systemprompt); the low-level transaction
+        # and locking primitives stay core-internal so every mutation keeps
+        # its preflight and rollback discipline.
+        presentation-uses-core-managers:
+          files:
+            - "**/internal/cli/**"
+            - "**/internal/tui/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/est7/skills-switch-tui/internal/linktransaction
+              desc: drive mutations through the core managers, not the raw link transaction engine
+            - pkg: github.com/est7/skills-switch-tui/internal/linkprojection
+              desc: drive mutations through the core managers, not the raw file projection adapter
+            - pkg: github.com/est7/skills-switch-tui/internal/filelock
+              desc: locking belongs to core catalog mutations, not to presentation
+  exclusions:
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
