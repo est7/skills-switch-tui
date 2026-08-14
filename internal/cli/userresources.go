@@ -77,8 +77,16 @@ func newUserResourceListCommand(options *rootOptions, descriptor userresource.De
 	return command
 }
 
+type userResourceToggleOutput struct {
+	Action  string   `json:"action"`
+	Kind    string   `json:"kind"`
+	ID      string   `json:"id"`
+	Clients []string `json:"clients"`
+}
+
 func newUserResourceToggleCommand(options *rootOptions, descriptor userresource.Descriptor, enabled bool) *cobra.Command {
 	var clients []string
+	var outputJSON bool
 	verb := "enable"
 	short := "Enable a user-global resource for selected clients"
 	if descriptor.TargetScope == userresource.TargetProject {
@@ -118,18 +126,22 @@ func newUserResourceToggleCommand(options *rootOptions, descriptor userresource.
 			if err := runtime.manager.Apply(operations); err != nil {
 				return err
 			}
-			key := i18n.EnabledResource
-			if !enabled {
-				key = i18n.DisabledResource
-			}
 			clientNames := make([]string, len(selected))
 			for index, clientID := range selected {
 				clientNames[index] = string(clientID)
+			}
+			if outputJSON {
+				return writeJSON(command, userResourceToggleOutput{Action: verb, Kind: string(descriptor.Kind), ID: resource.ID, Clients: clientNames})
+			}
+			key := i18n.EnabledResource
+			if !enabled {
+				key = i18n.DisabledResource
 			}
 			fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(key, resource.ID, strings.Join(clientNames, ",")))
 			return nil
 		},
 	}
 	command.Flags().StringSliceVar(&clients, "client", nil, "registered target client (repeatable)")
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
 	return command
 }

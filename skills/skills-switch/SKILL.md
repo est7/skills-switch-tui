@@ -46,6 +46,8 @@ Use `skills-switch` as the only mutation boundary. Let it preserve unmanaged pro
    skills-switch prompt list --json
    ```
 
+6. Mutating commands (`enable`, `disable`, `add`, `import`, `remove`, `delete`) also accept `--json` and report the applied change as structured data; prefer it over parsing localized human output.
+
 ## Keep Multi-client Changes Atomic
 
 Pass every target client to one command with repeated `--client` flags. Do not loop over separate mutation commands. A single command preflights every projection before changing any of them.

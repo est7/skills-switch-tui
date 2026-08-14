@@ -177,6 +177,7 @@ func newEnableCommand(options *rootOptions, enabled bool) *cobra.Command {
 	var clients []string
 	var sourceID string
 	var rawScope string
+	var outputJSON bool
 	command := &cobra.Command{
 		Use:   verb + " [skill-id]",
 		Short: short,
@@ -223,6 +224,9 @@ func newEnableCommand(options *rootOptions, enabled bool) *cobra.Command {
 			if err := runtime.projection.Apply(operations); err != nil {
 				return err
 			}
+			if outputJSON {
+				return writeJSON(command, buildSkillToggleOutput(verb, scope, operations))
+			}
 			resultKey := i18n.EnabledResult
 			if !enabled {
 				resultKey = i18n.DisabledResult
@@ -238,7 +242,34 @@ func newEnableCommand(options *rootOptions, enabled bool) *cobra.Command {
 	command.Flags().StringSliceVar(&clients, "client", nil, "registered target client (repeatable)")
 	command.Flags().StringVar(&sourceID, "source", "", "operate on every compatible skill in a source")
 	command.Flags().StringVar(&rawScope, "scope", string(projection.ScopeProject), "projection scope: project or global")
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
 	return command
+}
+
+type skillToggleOutput struct {
+	Action  string              `json:"action"`
+	Scope   string              `json:"scope"`
+	Applied []skillToggleClient `json:"applied"`
+}
+
+type skillToggleClient struct {
+	Client string   `json:"client"`
+	Skills []string `json:"skills"`
+}
+
+// buildSkillToggleOutput reports exactly the operations that were applied: with
+// --source the skill set differs per client (only compatible skills are
+// projected), so the JSON lists skills per client rather than one flat set.
+func buildSkillToggleOutput(action string, scope projection.Scope, operations []projection.Operation) skillToggleOutput {
+	result := skillToggleOutput{Action: action, Scope: string(scope), Applied: make([]skillToggleClient, 0, len(operations))}
+	for _, operation := range operations {
+		ids := make([]string, 0, len(operation.Skills))
+		for _, skill := range operation.Skills {
+			ids = append(ids, skill.ID)
+		}
+		result.Applied = append(result.Applied, skillToggleClient{Client: string(operation.Client), Skills: ids})
+	}
+	return result
 }
 
 func parseSkillScope(raw string) (projection.Scope, error) {
@@ -612,14 +643,17 @@ func localizeSkillsCommands(command *cobra.Command, translator i18n.Translator) 
 		case "enable":
 			child.Short = translator.Text(i18n.EnableShort)
 			localizeToggleFlags(child, translator)
+			localizeOutputFlags(child, translator)
 		case "disable":
 			child.Short = translator.Text(i18n.DisableShort)
 			localizeToggleFlags(child, translator)
+			localizeOutputFlags(child, translator)
 		case "create":
 			child.Short = translator.Text(i18n.SkillsCreateShort)
 			localizeOutputFlags(child, translator)
 		case "delete":
 			child.Short = translator.Text(i18n.SkillsDeleteShort)
+			localizeOutputFlags(child, translator)
 			if flag := child.Flags().Lookup("client"); flag != nil {
 				flag.Usage = translator.Text(i18n.ClientFlag)
 			}
@@ -753,6 +787,7 @@ func localizeSourceCommands(command *cobra.Command, translator i18n.Translator) 
 			localizeOutputFlags(child, translator)
 		case "add":
 			child.Short = translator.Text(i18n.SourceAddShort)
+			localizeOutputFlags(child, translator)
 			if flag := child.Flags().Lookup("name"); flag != nil {
 				flag.Usage = translator.Text(i18n.NameFlag)
 			}
@@ -785,6 +820,7 @@ func localizeSourceCommands(command *cobra.Command, translator i18n.Translator) 
 			}
 		case "remove":
 			child.Short = translator.Text(i18n.SourceRemoveShort)
+			localizeOutputFlags(child, translator)
 		}
 	}
 }

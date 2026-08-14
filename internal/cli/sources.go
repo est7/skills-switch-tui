@@ -129,8 +129,13 @@ func newSourceMigrateCommand(options *rootOptions) *cobra.Command {
 	return command
 }
 
+type sourceRemoveOutput struct {
+	ID string `json:"id"`
+}
+
 func newSourceRemoveCommand(options *rootOptions) *cobra.Command {
-	return &cobra.Command{
+	var outputJSON bool
+	command := &cobra.Command{
 		Use:     "remove <source-id>",
 		Aliases: []string{"delete", "del", "rm"},
 		Short:   "Remove a clean vendor submodule and its catalog policy",
@@ -151,10 +156,15 @@ func newSourceRemoveCommand(options *rootOptions) *cobra.Command {
 			if err := lifecycle.Remove(command.Context(), selected[0]); err != nil {
 				return err
 			}
+			if outputJSON {
+				return writeJSON(command, sourceRemoveOutput{ID: selected[0].ID})
+			}
 			fmt.Fprint(command.OutOrStdout(), runtime.translator.Text(i18n.SourceRemoved, selected[0].ID))
 			return nil
 		},
 	}
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
+	return command
 }
 
 type sourceView struct {
@@ -243,6 +253,13 @@ func sourceAvailability(source catalog.Source) string {
 	return "available"
 }
 
+type sourceAddOutput struct {
+	ID     string `json:"id"`
+	URL    string `json:"url"`
+	Branch string `json:"branch"`
+	Scope  string `json:"scope"`
+}
+
 func newSourceAddCommand(options *rootOptions) *cobra.Command {
 	var name string
 	var branch string
@@ -250,6 +267,7 @@ func newSourceAddCommand(options *rootOptions) *cobra.Command {
 	var skillPaths []string
 	var sparsePaths []string
 	var discoveryPriority []string
+	var outputJSON bool
 	command := &cobra.Command{
 		Use:     "add <git-url>",
 		Aliases: []string{"create"},
@@ -316,10 +334,14 @@ func newSourceAddCommand(options *rootOptions) *cobra.Command {
 				return err
 			}
 			sourceID := catalog.ScopedSourceID(catalog.SourceVendor, scope, name)
+			if outputJSON {
+				return writeJSON(command, sourceAddOutput{ID: sourceID, URL: repositoryURL, Branch: branch, Scope: scope})
+			}
 			fmt.Fprint(command.OutOrStdout(), runtime.translator.Text(i18n.SourceAdded, sourceID))
 			return nil
 		},
 	}
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
 	command.Flags().StringVar(&name, "name", "", "source name as owner/repo (derived from the remote when omitted)")
 	command.Flags().StringVar(&branch, "branch", "main", "tracked branch")
 	command.Flags().StringVar(&clientScope, "client", "", "restrict the entire source to one registered client")

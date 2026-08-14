@@ -165,8 +165,15 @@ func resolveLocalDeletion(loaded catalog.Catalog, id string, translator i18n.Tra
 	return localDeletion{}, errors.New(translator.Text(i18n.DeleteUnknownTarget, id))
 }
 
+type skillDeleteOutput struct {
+	ID    string `json:"id"`
+	Group bool   `json:"group"`
+	Path  string `json:"path"`
+}
+
 func newSkillDeleteCommand(options *rootOptions) *cobra.Command {
 	var assumeYes bool
+	var outputJSON bool
 	var clients []string
 	command := &cobra.Command{
 		Use:     "delete <skill-or-group-id>",
@@ -203,6 +210,9 @@ func newSkillDeleteCommand(options *rootOptions) *cobra.Command {
 			if err := catalog.RemoveLocalResource(runtime.catalog.Root, plan.path); err != nil {
 				return err
 			}
+			if outputJSON {
+				return writeJSON(command, skillDeleteOutput{ID: id, Group: plan.isGroup, Path: plan.path})
+			}
 			resultKey := i18n.DeletedSkill
 			if plan.isGroup {
 				resultKey = i18n.DeletedSource
@@ -212,6 +222,7 @@ func newSkillDeleteCommand(options *rootOptions) *cobra.Command {
 		},
 	}
 	command.Flags().BoolVar(&assumeYes, "yes", false, "confirm deletion without an interactive prompt")
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
 	command.Flags().StringSliceVar(&clients, "client", nil, "limit projection cleanup to these clients (default all)")
 	return command
 }

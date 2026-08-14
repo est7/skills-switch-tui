@@ -30,8 +30,23 @@ func newMCPCommand(options *rootOptions) *cobra.Command {
 	return command
 }
 
+type mcpAddOutput struct {
+	Added []string `json:"added"`
+}
+
+type mcpRemoveOutput struct {
+	Removed string `json:"removed"`
+}
+
+type resourceToggleOutput struct {
+	Action  string   `json:"action"`
+	ID      string   `json:"id"`
+	Clients []string `json:"clients"`
+}
+
 func newMCPImportCommand(options *rootOptions) *cobra.Command {
 	var file, name string
+	var outputJSON bool
 	command := &cobra.Command{
 		Use:   "import [json]",
 		Short: "Add MCP servers from a pasted JSON definition",
@@ -66,6 +81,13 @@ func newMCPImportCommand(options *rootOptions) *cobra.Command {
 			if err := mcp.AddServers(runtime.mcpCatalog.Path, servers); err != nil {
 				return err
 			}
+			if outputJSON {
+				added := make([]string, 0, len(servers))
+				for _, server := range servers {
+					added = append(added, server.Name)
+				}
+				return writeJSON(command, mcpAddOutput{Added: added})
+			}
 			for _, server := range servers {
 				fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.MCPServerAdded, server.Name))
 			}
@@ -74,6 +96,7 @@ func newMCPImportCommand(options *rootOptions) *cobra.Command {
 	}
 	command.Flags().StringVar(&file, "file", "", "read the JSON definition from a file")
 	command.Flags().StringVar(&name, "name", "", "server name for a bare (unkeyed) object")
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
 	return command
 }
 
@@ -100,6 +123,7 @@ func readImportJSON(command *cobra.Command, args []string, file string) ([]byte,
 func newMCPAddCommand(options *rootOptions) *cobra.Command {
 	var commandLine, url, cwd, transport string
 	var commandArgs, env, headers []string
+	var outputJSON bool
 	command := &cobra.Command{
 		Use:   "add <name>",
 		Short: "Register a new MCP server in the catalog",
@@ -140,10 +164,14 @@ func newMCPAddCommand(options *rootOptions) *cobra.Command {
 			if err := mcp.AddServer(runtime.mcpCatalog.Path, server); err != nil {
 				return err
 			}
+			if outputJSON {
+				return writeJSON(command, mcpAddOutput{Added: []string{args[0]}})
+			}
 			fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.MCPServerAdded, args[0]))
 			return nil
 		},
 	}
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
 	command.Flags().StringVar(&commandLine, "command", "", "stdio command executable")
 	command.Flags().StringSliceVar(&commandArgs, "arg", nil, "stdio command argument (repeatable)")
 	command.Flags().StringSliceVar(&env, "env", nil, "stdio environment KEY=VALUE (repeatable)")
@@ -155,7 +183,8 @@ func newMCPAddCommand(options *rootOptions) *cobra.Command {
 }
 
 func newMCPRemoveCommand(options *rootOptions) *cobra.Command {
-	return &cobra.Command{
+	var outputJSON bool
+	command := &cobra.Command{
 		Use:     "remove <name>",
 		Aliases: []string{"delete", "del", "rm"},
 		Short:   "Remove an MCP server from the catalog",
@@ -172,10 +201,15 @@ func newMCPRemoveCommand(options *rootOptions) *cobra.Command {
 			if err := mcp.RemoveWithProjections(runtime.mcpManager, runtime.mcpCatalog.Path, name, runtime.catalog.Clients.IDsFor(client.CapabilityMCP)); err != nil {
 				return err
 			}
+			if outputJSON {
+				return writeJSON(command, mcpRemoveOutput{Removed: name})
+			}
 			fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(i18n.DeletedMCPServer, name))
 			return nil
 		},
 	}
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
+	return command
 }
 
 func parseKeyValues(values []string) (map[string]string, error) {
@@ -253,6 +287,7 @@ func newMCPToggleCommand(options *rootOptions, enabled bool) *cobra.Command {
 		short = "Disable an MCP server for project clients"
 	}
 	var clients []string
+	var outputJSON bool
 	command := &cobra.Command{
 		Use:   verb + " <server>",
 		Short: short,
@@ -276,19 +311,23 @@ func newMCPToggleCommand(options *rootOptions, enabled bool) *cobra.Command {
 			if err := runtime.mcpManager.Apply(operations); err != nil {
 				return err
 			}
-			key := i18n.EnabledResource
-			if !enabled {
-				key = i18n.DisabledResource
-			}
 			clientNames := make([]string, len(parsed))
 			for index, clientID := range parsed {
 				clientNames[index] = string(clientID)
+			}
+			if outputJSON {
+				return writeJSON(command, resourceToggleOutput{Action: verb, ID: args[0], Clients: clientNames})
+			}
+			key := i18n.EnabledResource
+			if !enabled {
+				key = i18n.DisabledResource
 			}
 			fmt.Fprintln(command.OutOrStdout(), runtime.translator.Text(key, args[0], strings.Join(clientNames, ",")))
 			return nil
 		},
 	}
 	command.Flags().StringSliceVar(&clients, "client", nil, "registered target client (repeatable)")
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
 	return command
 }
 
@@ -391,7 +430,8 @@ func newPromptToggleCommand(options *rootOptions, enabled bool) *cobra.Command {
 		verb = "disable"
 		short = "Disable a system prompt group for its user-global client"
 	}
-	return &cobra.Command{
+	var outputJSON bool
+	command := &cobra.Command{
 		Use:   verb + " <group>",
 		Short: short,
 		Args:  cobra.ExactArgs(1),
@@ -407,6 +447,9 @@ func newPromptToggleCommand(options *rootOptions, enabled bool) *cobra.Command {
 			if err := runtime.promptMgr.SetEnabled([]systemprompt.Group{group}, enabled); err != nil {
 				return err
 			}
+			if outputJSON {
+				return writeJSON(command, resourceToggleOutput{Action: verb, ID: group.ID, Clients: []string{string(group.Client)}})
+			}
 			key := i18n.EnabledResource
 			if !enabled {
 				key = i18n.DisabledResource
@@ -415,4 +458,6 @@ func newPromptToggleCommand(options *rootOptions, enabled bool) *cobra.Command {
 			return nil
 		},
 	}
+	command.Flags().BoolVar(&outputJSON, "json", false, "emit JSON")
+	return command
 }
