@@ -129,7 +129,17 @@ Release only from a clean `main` that has been pushed to `origin`.
      release --snapshot --clean
    ```
 
-3. Create and push the chosen tag:
+3. Regenerate and publish the changelog:
+
+   ```bash
+   VERSION=v0.4.0
+   npx -y git-cliff --tag "$VERSION" -o CHANGELOG.md
+   git add CHANGELOG.md
+   git commit -m "docs(changelog): 📝 update for $VERSION"
+   git push origin main
+   ```
+
+4. Create and push the chosen tag:
 
    ```bash
    VERSION=v0.4.0
@@ -137,7 +147,7 @@ Release only from a clean `main` that has been pushed to `origin`.
    git push origin "$VERSION"
    ```
 
-4. Watch the release workflow and verify the published assets:
+5. Watch the release workflow and verify the published assets:
 
    ```bash
    gh run list --workflow release.yml --limit 3
@@ -147,7 +157,7 @@ Release only from a clean `main` that has been pushed to `origin`.
 
    A complete release contains `checksums.txt` plus macOS, Linux, and Windows archives for both `amd64` and `arm64`.
 
-5. Update the third-party Homebrew tap immediately instead of waiting for its hourly schedule:
+6. Update the third-party Homebrew tap immediately instead of waiting for its hourly schedule:
 
    ```bash
    gh workflow run update-skills-switch.yml \
@@ -160,7 +170,7 @@ Release only from a clean `main` that has been pushed to `origin`.
    gh run watch <tap-run-id> -R est7/homebrew-tap --exit-status
    ```
 
-6. Refresh the local tap and verify the shipped binary:
+7. Refresh the local tap and verify the shipped binary:
 
    ```bash
    git -C /Users/est9/EstProjects/homebrew-tap pull --ff-only
@@ -170,7 +180,7 @@ Release only from a clean `main` that has been pushed to `origin`.
    skills-switch init --json
    ```
 
-7. Verify that the self-hosted operator Skill remains discoverable:
+8. Verify that the self-hosted operator Skill remains discoverable:
 
    ```bash
    skills-switch source list --json | \

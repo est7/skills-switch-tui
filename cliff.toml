@@ -1,0 +1,49 @@
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project will be documented in this file.
+"""
+body = """
+{% if version %}\
+## [{{ version }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [unreleased]
+{% endif %}
+{% for group, commits in commits | group_by(attribute="group") %}\
+### {{ group | striptags | trim }}
+
+{% for commit in commits %}\
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
+{% if commit.breaking %}**Breaking:** {% endif %}\
+{{ commit.message | upper_first }}
+{% endfor %}
+{% endfor %}\
+"""
+trim = false
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+split_commits = false
+commit_preprocessors = [
+    { pattern = '^([a-z]+(?:\([^)]*\))?!?):\s*[^\p{L}\p{N}\s]+\s*', replace = '${1}: ' },
+]
+protect_breaking_commits = true
+commit_parsers = [
+    { message = "^feat", group = "<!-- 0 -->Features" },
+    { message = "^fix", group = "<!-- 1 -->Bug Fixes" },
+    { message = "^docs?", group = "<!-- 2 -->Documentation" },
+    { message = "^style", group = "<!-- 3 -->Styling" },
+    { message = "^refactor", group = "<!-- 4 -->Refactoring" },
+    { message = "^perf", group = "<!-- 5 -->Performance" },
+    { message = "^test", group = "<!-- 6 -->Testing" },
+    { message = "^build", group = "<!-- 7 -->Build" },
+    { message = "^ci", group = "<!-- 8 -->Continuous Integration" },
+    { message = "^chore", group = "<!-- 9 -->Chores" },
+    { message = "^revert", group = "<!-- 10 -->Reverts" },
+    { message = ".*", group = "<!-- 11 -->Other" },
+]
+filter_commits = false
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+sort_commits = "oldest"
