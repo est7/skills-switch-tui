@@ -2,16 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
-## [unreleased]
+## [v0.14.0] - 2026-08-14
 
 ### Features
 
 - **cli:** Report mutating command results as JSON
 - **cli:** Cancel git work on SIGINT/SIGTERM
+- **skills:** Discover and adopt unmanaged skills
 
 ### Documentation
 
 - **cli:** Generate the command reference
+- **release:** Generate the changelog with git-cliff
 
 ### Styling
 
