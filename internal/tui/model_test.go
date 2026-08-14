@@ -3,15 +3,18 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image/color"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	huh "charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/est7/skills-switch-tui/internal/catalog"
 	"github.com/est7/skills-switch-tui/internal/client"
 	"github.com/est7/skills-switch-tui/internal/i18n"
@@ -528,7 +531,7 @@ func TestUpdateAllRefreshesEveryVendorSource(t *testing.T) {
 	if command == nil || !model.updating {
 		t.Fatal("update-all key did not start an update")
 	}
-	updated, _ = model.Update(command())
+	updated, _ = model.Update(runOperationCommand(t, command))
 	model = updated.(Model)
 	if model.err != nil {
 		t.Fatalf("update all vendors: %v", model.err)
@@ -571,7 +574,7 @@ func TestUpdateAllContinuesCleanSourcesAndReportsResetFailure(t *testing.T) {
 
 	updated, command := model.Update(tea.KeyPressMsg{Code: 'U', Text: "U"})
 	model = updated.(Model)
-	updated, _ = model.Update(command())
+	updated, _ = model.Update(runOperationCommand(t, command))
 	model = updated.(Model)
 
 	if model.err == nil {
@@ -1102,7 +1105,7 @@ func TestPromptTabBuildKeyBuildsCodexPromptWithoutEnablingIt(t *testing.T) {
 	if command == nil || !model.updating {
 		t.Fatal("prompt build key did not start a build")
 	}
-	updated, _ = model.Update(command())
+	updated, _ = model.Update(runOperationCommand(t, command))
 	model = updated.(Model)
 	if model.err != nil || model.updating {
 		t.Fatalf("prompt build failed: %v", model.err)
@@ -1128,7 +1131,7 @@ func TestPromptTabBuildKeyBuildsCodexPromptWithoutEnablingIt(t *testing.T) {
 	}
 	updated, command = model.Update(tea.KeyPressMsg{Code: 'b', Text: "b"})
 	model = updated.(Model)
-	updated, _ = model.Update(command())
+	updated, _ = model.Update(runOperationCommand(t, command))
 	model = updated.(Model)
 	if state, err := manager.State(group); err != nil || state != systemprompt.StateEnabled {
 		t.Fatalf("prompt state after b rebuild = %q, %v", state, err)
@@ -1196,7 +1199,7 @@ func TestDeleteLocalSkillClearsProjectionThenRemovesItAfterConfirmation(t *testi
 	if command == nil {
 		t.Fatal("expected a delete command on confirmation")
 	}
-	updated, _ = model.Update(command())
+	updated, _ = model.Update(runOperationCommand(t, command))
 	model = updated.(Model)
 	if model.err != nil {
 		t.Fatalf("delete failed: %v", model.err)
@@ -1230,7 +1233,7 @@ func TestDeleteLocalGroupRemovesTheWholeDirectory(t *testing.T) {
 	}
 	updated, command := model.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
 	model = updated.(Model)
-	updated, _ = model.Update(command())
+	updated, _ = model.Update(runOperationCommand(t, command))
 	model = updated.(Model)
 	if model.err != nil {
 		t.Fatalf("delete failed: %v", model.err)
@@ -1322,7 +1325,7 @@ func TestMCPDeleteRemovesServerAfterConfirmation(t *testing.T) {
 	}
 	updated, command := model.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
 	model = updated.(Model)
-	updated, _ = model.Update(command())
+	updated, _ = model.Update(runOperationCommand(t, command))
 	model = updated.(Model)
 	if model.err != nil {
 		t.Fatalf("delete failed: %v", model.err)
@@ -1561,6 +1564,229 @@ func TestSkillsTabAddMenuStartsRepoAdd(t *testing.T) {
 	}
 }
 
+func TestDiscoverViewListsOnlyUnmanagedSkillsAndShowsEmptyState(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "managed"), "managed")
+	writeSkill(t, filepath.Join(projectRoot, ".agents", "skills", "portable"), "portable")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := projection.New(projectRoot, loaded)
+	managed, _ := loaded.Skill("local-shared/managed/managed")
+	if err := manager.SetEnabled([]catalog.Skill{managed}, catalog.ClientClaude, true); err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, manager, nil, i18n.New(i18n.English))
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'o', Text: "o"})
+	model = updated.(Model)
+	if !model.discovering || len(model.discoveries) != 1 {
+		t.Fatalf("discover view state = open:%t items:%#v", model.discovering, model.discoveries)
+	}
+	view := ansi.Strip(model.View().Content)
+	for _, fragment := range []string{"Unmanaged Skills", "codex", "project", "portable"} {
+		if !strings.Contains(view, fragment) {
+			t.Fatalf("discover view missing %q:\n%s", fragment, view)
+		}
+	}
+	if strings.Contains(view, filepath.Join(projectRoot, ".claude", "skills", "managed")) {
+		t.Fatalf("managed symlink leaked into discover view:\n%s", view)
+	}
+
+	if err := os.RemoveAll(filepath.Join(projectRoot, ".agents", "skills", "portable")); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.refreshDiscoveries(); err != nil {
+		t.Fatal(err)
+	}
+	if got := ansi.Strip(model.renderDiscoverTable()); !strings.Contains(got, "No unmanaged Skills found.") {
+		t.Fatalf("empty discover view missing localized state:\n%s", got)
+	}
+}
+
+func TestDiscoverAdoptConfirmationReloadsCatalogAndProjectionState(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "managed"), "managed")
+	original := filepath.Join(projectRoot, ".agents", "skills", "portable")
+	writeSkill(t, original, "portable")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'o', Text: "o"})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = updated.(Model)
+	if model.pendingAdopt == nil || model.pendingAdopt.targetID != "local-shared/portable/portable" {
+		t.Fatalf("unexpected adopt plan: %#v", model.pendingAdopt)
+	}
+	confirm := ansi.Strip(model.View().Content)
+	for _, fragment := range []string{filepath.Join(".agents", "skills", "portable"), "shared/portable/portable", "Confirm adoption"} {
+		if !strings.Contains(confirm, fragment) {
+			t.Fatalf("adopt confirmation missing %q:\n%s", fragment, confirm)
+		}
+	}
+	updated, command := model.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	model = updated.(Model)
+	if command != nil {
+		t.Fatal("adopt unexpectedly introduced an asynchronous command")
+	}
+	if model.err != nil {
+		t.Fatalf("adopt failed: %v", model.err)
+	}
+	if target, err := os.Readlink(original); err != nil {
+		t.Fatalf("adopted client target is not a symlink: %v", err)
+	} else if !strings.Contains(target, filepath.Join("local", "shared", "portable")) {
+		t.Fatalf("adopted symlink target = %q", target)
+	}
+	adopted, ok := model.catalog.Skill("local-shared/portable/portable")
+	if !ok {
+		t.Fatal("adopted Skill is absent from the reloaded catalog")
+	}
+	if cell, _ := model.stateCell(adopted, catalog.ClientCodex); cell != "●" {
+		t.Fatalf("adopted Skill cell = %q, want enabled", cell)
+	}
+	if len(model.discoveries) != 0 {
+		t.Fatalf("discover list was not refreshed: %#v", model.discoveries)
+	}
+	if !strings.Contains(model.status, "Adopted local-shared/portable/portable") {
+		t.Fatalf("adopt status = %q", model.status)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'o', Text: "o"})
+	model = updated.(Model)
+	if model.discovering {
+		t.Fatal("o did not close the discover view")
+	}
+	if view := ansi.Strip(model.renderSkillsTable()); !strings.Contains(view, "portable") || !strings.Contains(view, "1/1") {
+		t.Fatalf("Skills table did not immediately show the adopted projection:\n%s", view)
+	}
+}
+
+func TestDiscoverAdoptRefusalShowsReasonAndKeepsCandidate(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "managed"), "managed")
+	original := filepath.Join(projectRoot, ".agents", "skills", "portable")
+	writeSkill(t, original, "portable")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'o', Text: "o"})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = updated.(Model)
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	model = updated.(Model)
+	if !strings.Contains(model.status, "Refused local-shared/portable/portable") || !strings.Contains(model.status, "destination already exists") {
+		t.Fatalf("refused adoption status = %q", model.status)
+	}
+	if model.err == nil || len(model.discoveries) != 1 {
+		t.Fatalf("refused adoption lost error or candidate: err=%v discoveries=%#v", model.err, model.discoveries)
+	}
+	if info, err := os.Lstat(original); err != nil || !info.IsDir() {
+		t.Fatalf("refused adoption changed original: info=%v err=%v", info, err)
+	}
+}
+
+func TestSpinnerDropsIdleTicksAndRendersLocalizedOperationLabel(t *testing.T) {
+	model := NewModel(catalog.Catalog{}, t.TempDir(), projection.Manager{}, nil, i18n.New(i18n.Chinese))
+	tick := model.spinner.Tick()
+	before := model.spinner.View()
+	updated, command := model.Update(tick)
+	model = updated.(Model)
+	if command != nil || model.spinner.View() != before {
+		t.Fatalf("idle spinner tick was not dropped: command=%v before=%q after=%q", command, before, model.spinner.View())
+	}
+
+	model.updating = true
+	model.status = model.translator.Text(i18n.UpdatingSource, "vendor-shared/demo")
+	footer := ansi.Strip(model.renderFooter())
+	if !strings.Contains(footer, "正在更新 vendor-shared/demo") || strings.Contains(footer, "◌") {
+		t.Fatalf("active operation footer lacks spinner label:\n%s", footer)
+	}
+	updated, command = model.Update(model.spinner.Tick())
+	model = updated.(Model)
+	if command == nil || model.spinner.View() == before {
+		t.Fatalf("active spinner did not advance: command=%v before=%q after=%q", command, before, model.spinner.View())
+	}
+}
+
+func TestErrorPanelSeparatesJoinedErrorsWhileFooterStaysOneLine(t *testing.T) {
+	model := NewModel(catalog.Catalog{}, t.TempDir(), projection.Manager{}, nil, i18n.New(i18n.English))
+	model.status = "Update failed"
+	model.err = errors.Join(errors.New("first repository failed"), errors.New("second catalog reload failed"))
+	statusLine := strings.SplitN(ansi.Strip(model.renderFooter()), "\n", 2)[0]
+	if !strings.Contains(statusLine, "first repository failed; second catalog reload failed") {
+		t.Fatalf("joined error summary is not one line: %q", statusLine)
+	}
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'e', Text: "e"})
+	model = updated.(Model)
+	if !model.showErrorPanel {
+		t.Fatal("e did not open the error panel")
+	}
+	panel := ansi.Strip(model.View().Content)
+	for _, fragment := range []string{"Error details", "1. first repository failed", "2. second catalog reload failed", "[e/esc] close"} {
+		if !strings.Contains(panel, fragment) {
+			t.Fatalf("error panel missing %q:\n%s", fragment, panel)
+		}
+	}
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	model = updated.(Model)
+	if model.showErrorPanel {
+		t.Fatal("esc did not close the error panel")
+	}
+}
+
+func TestErrorPanelKeepsOnlyMostRecentTenJoinedErrors(t *testing.T) {
+	joined := make([]error, 12)
+	for index := range joined {
+		joined[index] = fmt.Errorf("failure-%02d", index+1)
+	}
+	model := NewModel(catalog.Catalog{}, t.TempDir(), projection.Manager{}, nil, i18n.New(i18n.English))
+	model.err = errors.Join(joined...)
+	panel := ansi.Strip(model.renderErrorPanel())
+	for _, omitted := range []string{"failure-01", "failure-02"} {
+		if strings.Contains(panel, omitted) {
+			t.Fatalf("error panel retained old error %q:\n%s", omitted, panel)
+		}
+	}
+	for _, retained := range []string{"failure-03", "failure-12"} {
+		if !strings.Contains(panel, retained) {
+			t.Fatalf("error panel omitted recent error %q:\n%s", retained, panel)
+		}
+	}
+}
+
+func TestDiscoverAndErrorKeysAppearInEnglishAndChineseHelp(t *testing.T) {
+	for _, test := range []struct {
+		language i18n.Language
+		want     []string
+	}{
+		{language: i18n.English, want: []string{"o discover", "e error details"}},
+		{language: i18n.Chinese, want: []string{"o 发现未纳管项", "e 错误详情"}},
+	} {
+		model := NewModel(catalog.Catalog{}, t.TempDir(), projection.Manager{}, nil, i18n.New(test.language))
+		model.help.ShowAll = true
+		model.help.SetWidth(200)
+		help := ansi.Strip(model.help.View(model.keys))
+		for _, fragment := range test.want {
+			if !strings.Contains(help, fragment) {
+				t.Fatalf("%s help missing %q:\n%s", test.language, fragment, help)
+			}
+		}
+	}
+}
+
 func writeSkill(t *testing.T, dir, name string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1570,6 +1796,23 @@ func writeSkill(t *testing.T, dir, name string) {
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func runOperationCommand(t *testing.T, command tea.Cmd) tea.Msg {
+	t.Helper()
+	message := command()
+	batch, ok := message.(tea.BatchMsg)
+	if !ok {
+		return message
+	}
+	for _, item := range batch {
+		candidate := item()
+		if _, isTick := candidate.(spinner.TickMsg); !isTick {
+			return candidate
+		}
+	}
+	t.Fatal("operation batch contained only spinner ticks")
+	return nil
 }
 
 func selectFirstSkill(model Model) Model {

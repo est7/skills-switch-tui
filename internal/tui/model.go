@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	huh "charm.land/huh/v2"
@@ -147,6 +148,11 @@ type deletionPlan struct {
 	label  string
 }
 
+type adoptionPlan struct {
+	skill    projection.UnmanagedSkill
+	targetID string
+}
+
 type deleteFinishedMsg struct {
 	plan deletionPlan
 	err  error
@@ -176,11 +182,16 @@ type Model struct {
 	searching        bool
 	search           textinput.Model
 	help             help.Model
+	spinner          spinner.Model
 	keys             keyMap
 	showHelp         bool
+	showErrorPanel   bool
+	discovering      bool
+	discoveries      []projection.UnmanagedSkill
 	updating         bool
 	deleting         bool
 	pendingDelete    *deletionPlan
+	pendingAdopt     *adoptionPlan
 	active           *activeForm
 	isDark           bool
 	styles           styles
@@ -230,6 +241,7 @@ func NewModel(loaded catalog.Catalog, projectRoot string, manager projection.Man
 		expanded:         make(map[string]bool),
 		search:           search,
 		help:             helpModel,
+		spinner:          spinner.New(spinner.WithSpinner(spinner.MiniDot)),
 		keys:             defaultKeyMap(translator),
 		isDark:           true,
 		styles:           theme,
@@ -378,6 +390,13 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.status = m.translator.Text(i18n.SourceAddedStatus, message.label)
 		return m, nil
+	case spinner.TickMsg:
+		if !m.operationInFlight() {
+			return m, nil
+		}
+		var command tea.Cmd
+		m.spinner, command = m.spinner.Update(message)
+		return m, command
 	}
 
 	if key, isKey := message.(tea.KeyPressMsg); isKey && key.String() == "ctrl+c" {
@@ -398,6 +417,24 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.pendingDelete != nil {
 		return m.updateConfirm(key)
+	}
+	if m.pendingAdopt != nil {
+		return m.updateAdoptConfirm(key)
+	}
+	if m.showErrorPanel {
+		if key.String() == "e" || key.String() == "esc" {
+			m.showErrorPanel = false
+		}
+		return m, nil
+	}
+	if key.String() == "e" {
+		if m.err != nil {
+			m.showErrorPanel = true
+		}
+		return m, nil
+	}
+	if m.discovering {
+		return m.updateDiscover(key)
 	}
 	m.err = nil
 
@@ -443,10 +480,136 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.requestDelete()
 	case "n":
 		return m.startAdd()
+	case "o":
+		m.openDiscover()
 	case "L":
 		m.toggleLanguage()
 	}
 	return m, nil
+}
+
+func (m Model) operationInFlight() bool {
+	return m.updating || m.deleting
+}
+
+func (m Model) withSpinner(command tea.Cmd) tea.Cmd {
+	return tea.Batch(command, m.spinner.Tick)
+}
+
+func (m *Model) openDiscover() {
+	if m.tab != tabSkills || m.operationInFlight() {
+		return
+	}
+	m.discovering = true
+	m.cursor = 0
+	m.offset = 0
+	m.err = nil
+	if err := m.refreshDiscoveries(); err != nil {
+		m.err = err
+		m.status = m.translator.Text(i18n.DiscoverFailed)
+		return
+	}
+	m.status = m.translator.Text(i18n.DiscoverFound, len(m.discoveries))
+}
+
+func (m *Model) refreshDiscoveries() error {
+	discovered, err := m.projection.DiscoverUnmanagedSkills()
+	if err != nil {
+		m.discoveries = nil
+		m.clampCursor()
+		return err
+	}
+	m.discoveries = discovered
+	m.clampCursor()
+	return nil
+}
+
+func (m Model) updateDiscover(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "esc", "o":
+		m.discovering = false
+		m.discoveries = nil
+		m.cursor = 0
+		m.offset = 0
+		m.status = m.translator.Text(i18n.Ready)
+	case "up", "k":
+		m.moveCursor(-1)
+	case "down", "j":
+		m.moveCursor(1)
+	case "enter", "space":
+		m.requestAdopt()
+	case "e":
+		if m.err != nil {
+			m.showErrorPanel = true
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) requestAdopt() {
+	if len(m.discoveries) == 0 || m.cursor < 0 || m.cursor >= len(m.discoveries) {
+		m.status = m.translator.Text(i18n.NothingUnmanaged)
+		return
+	}
+	selected := m.discoveries[m.cursor]
+	target, err := catalog.ResolveLocalSkillTarget(m.catalog.Root, "shared", "", selected.Name)
+	if err != nil {
+		m.err = err
+		m.status = m.translator.Text(i18n.AdoptFailedStatus, selected.Name, err)
+		return
+	}
+	m.pendingAdopt = &adoptionPlan{skill: selected, targetID: target.ID}
+}
+
+func (m Model) updateAdoptConfirm(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if key.String() == "y" || key.String() == "Y" {
+		return m.executeAdopt()
+	}
+	m.pendingAdopt = nil
+	return m, nil
+}
+
+func (m Model) executeAdopt() (tea.Model, tea.Cmd) {
+	if m.pendingAdopt == nil {
+		return m, nil
+	}
+	plan := *m.pendingAdopt
+	m.pendingAdopt = nil
+	results, adoptErr := m.projection.AdoptSkills([]string{plan.skill.Path}, "shared", "")
+	reloadErr := m.reloadCatalog()
+	discoverErr := m.refreshDiscoveries()
+	m.err = errors.Join(adoptErr, reloadErr, discoverErr)
+
+	result := projection.Adoption{
+		Path:    plan.skill.Path,
+		SkillID: plan.targetID,
+		Status:  projection.AdoptionFailed,
+	}
+	if len(results) > 0 {
+		result = results[0]
+	}
+	if result.SkillID == "" {
+		result.SkillID = plan.targetID
+	}
+	m.status = m.adoptionStatus(result)
+	return m, nil
+}
+
+func (m Model) adoptionStatus(result projection.Adoption) string {
+	reason := strings.TrimSpace(result.Reason)
+	switch result.Status {
+	case projection.AdoptionAdopted:
+		return m.translator.Text(i18n.AdoptedStatus, result.SkillID)
+	case projection.AdoptionRefused:
+		return m.translator.Text(i18n.AdoptRefusedStatus, result.SkillID, reason)
+	case projection.AdoptionStranded:
+		return m.translator.Text(i18n.AdoptStrandedStatus, result.SkillID, reason)
+	default:
+		if reason == "" && m.err != nil {
+			reason = m.err.Error()
+		}
+		return m.translator.Text(i18n.AdoptFailedStatus, result.SkillID, reason)
+	}
 }
 
 func (m Model) updateConfirm(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -536,9 +699,10 @@ func (m Model) executeDelete() (tea.Model, tea.Cmd) {
 	if plan.kind == deleteMCPServer {
 		mcpManager := m.mcpManager
 		catalogPath := m.mcpCatalog.Path
-		return m, func() tea.Msg {
+		command := func() tea.Msg {
 			return deleteFinishedMsg{plan: plan, err: mcp.RemoveWithProjections(mcpManager, catalogPath, plan.server, clients)}
 		}
+		return m, m.withSpinner(command)
 	}
 
 	proj := m.projection
@@ -548,7 +712,7 @@ func (m Model) executeDelete() (tea.Model, tea.Cmd) {
 	projectRoot := m.project
 	userHome := m.userHome
 	registry := m.catalog.Clients
-	return m, func() tea.Msg {
+	command := func() tea.Msg {
 		if plan.kind == deleteVendorSource {
 			manager := *updater
 			manager.Clients = registry
@@ -568,6 +732,7 @@ func (m Model) executeDelete() (tea.Model, tea.Cmd) {
 		err := catalog.RemoveLocalResource(root, plan.path)
 		return deleteFinishedMsg{plan: plan, err: err}
 	}
+	return m, m.withSpinner(command)
 }
 
 func (m *Model) reloadCatalog() error {
@@ -681,6 +846,7 @@ func (m *Model) cycleResource(delta int) {
 func (m *Model) syncContextKeys() {
 	m.keys.Build.SetEnabled(m.tab == tabSystemPrompts)
 	m.keys.Scope.SetEnabled(m.tab == tabSkills)
+	m.keys.Discover.SetEnabled(m.tab == tabSkills)
 }
 
 func (m *Model) toggleSkillScope() {
@@ -1232,10 +1398,11 @@ func (m Model) startUpdate(all bool) (tea.Model, tea.Cmd) {
 	updater := *m.updater
 	updater.Clients = m.catalog.Clients
 	lifecycle := source.Lifecycle{Manager: updater, ProjectRoot: m.project, UserHome: m.userHome}
-	return m, func() tea.Msg {
+	command := func() tea.Msg {
 		outcome, err := lifecycle.Update(m.context, selectedSources, false)
 		return updateFinishedMsg{results: outcome.Results, catalog: outcome.Catalog, pruned: outcome.Pruned, err: err}
 	}
+	return m, m.withSpinner(command)
 }
 
 func (m Model) startPromptBuild() (tea.Model, tea.Cmd) {
@@ -1256,10 +1423,11 @@ func (m Model) startPromptBuild() (tea.Model, tea.Cmd) {
 	m.err = nil
 	m.status = m.translator.Text(i18n.BuildingPrompt, group.ID)
 	manager := m.promptMgr
-	return m, func() tea.Msg {
+	command := func() tea.Msg {
 		result, err := manager.Build(group)
 		return promptBuildFinishedMsg{group: group, result: result, err: err}
 	}
+	return m, m.withSpinner(command)
 }
 
 func (m Model) currentClient() catalog.Client {
@@ -1302,6 +1470,9 @@ func (m *Model) clampCursor() {
 }
 
 func (m Model) activeRowCount() int {
+	if m.discovering {
+		return len(m.discoveries)
+	}
 	if describeTab(m.tab).userResource {
 		return len(m.userResourcesForTab())
 	}

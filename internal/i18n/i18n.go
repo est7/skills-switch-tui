@@ -233,6 +233,26 @@ const (
 	DeleteConfirmMCP            Key = "delete_confirm_mcp"
 	DeletedMCPServer            Key = "deleted_mcp_server"
 	HelpAdd                     Key = "help_add"
+	HelpDiscover                Key = "help_discover"
+	HelpErrors                  Key = "help_errors"
+	DiscoverTitle               Key = "discover_title"
+	DiscoverClientHeader        Key = "discover_client_header"
+	DiscoverScopeHeader         Key = "discover_scope_header"
+	DiscoverNameHeader          Key = "discover_name_header"
+	DiscoverPathHeader          Key = "discover_path_header"
+	NothingUnmanaged            Key = "nothing_unmanaged"
+	DiscoverHint                Key = "discover_hint"
+	DiscoverFailed              Key = "discover_failed"
+	DiscoverFound               Key = "discover_found"
+	AdoptConfirmTitle           Key = "adopt_confirm_title"
+	AdoptConfirmPrompt          Key = "adopt_confirm_prompt"
+	AdoptConfirmHint            Key = "adopt_confirm_hint"
+	AdoptedStatus               Key = "adopted_status"
+	AdoptRefusedStatus          Key = "adopt_refused_status"
+	AdoptFailedStatus           Key = "adopt_failed_status"
+	AdoptStrandedStatus         Key = "adopt_stranded_status"
+	ErrorPanelTitle             Key = "error_panel_title"
+	ErrorPanelHint              Key = "error_panel_hint"
 	AddUnavailable              Key = "add_unavailable"
 	AddMenuTitle                Key = "add_menu_title"
 	AddMenuRepo                 Key = "add_menu_repo"
@@ -502,6 +522,26 @@ var messages = map[Language]map[Key]string{
 		DeleteConfirmMCP:            "Remove MCP server %s from the catalog. This cannot be undone.",
 		DeletedMCPServer:            "Removed MCP server %s",
 		HelpAdd:                     "new",
+		HelpDiscover:                "discover",
+		HelpErrors:                  "error details",
+		DiscoverTitle:               "Unmanaged Skills",
+		DiscoverClientHeader:        "CLIENT",
+		DiscoverScopeHeader:         "SCOPE",
+		DiscoverNameHeader:          "NAME",
+		DiscoverPathHeader:          "PATH",
+		NothingUnmanaged:            "No unmanaged Skills found.",
+		DiscoverHint:                "[enter/space] adopt   [esc/o] close",
+		DiscoverFailed:              "Could not discover unmanaged Skills",
+		DiscoverFound:               "Found %d unmanaged Skill(s)",
+		AdoptConfirmTitle:           "Confirm adoption",
+		AdoptConfirmPrompt:          "Adopt %s as %s?",
+		AdoptConfirmHint:            "[y] adopt   [n/esc] cancel",
+		AdoptedStatus:               "Adopted %s",
+		AdoptRefusedStatus:          "Refused %s: %s",
+		AdoptFailedStatus:           "Failed to adopt %s: %s",
+		AdoptStrandedStatus:         "Adoption stranded for %s: %s",
+		ErrorPanelTitle:             "Error details",
+		ErrorPanelHint:              "[e/esc] close",
 		AddMCPUnavailable:           "Adding servers is only available on the MCP tab",
 		AddUnavailable:              "adding is available on the Skills and MCP tabs",
 		AddMenuTitle:                "Add to the Skills catalog",
@@ -765,6 +805,26 @@ var messages = map[Language]map[Key]string{
 		DeleteConfirmMCP:            "将从目录删除 MCP 服务器 %s,不可撤销。",
 		DeletedMCPServer:            "已删除 MCP 服务器 %s",
 		HelpAdd:                     "新建",
+		HelpDiscover:                "发现未纳管项",
+		HelpErrors:                  "错误详情",
+		DiscoverTitle:               "未纳管 Skills",
+		DiscoverClientHeader:        "客户端",
+		DiscoverScopeHeader:         "作用域",
+		DiscoverNameHeader:          "名称",
+		DiscoverPathHeader:          "路径",
+		NothingUnmanaged:            "没有发现未纳管的 Skills。",
+		DiscoverHint:                "[enter/space] 纳管   [esc/o] 关闭",
+		DiscoverFailed:              "无法发现未纳管的 Skills",
+		DiscoverFound:               "发现 %d 个未纳管 Skill",
+		AdoptConfirmTitle:           "确认纳管",
+		AdoptConfirmPrompt:          "将 %s 纳管为 %s？",
+		AdoptConfirmHint:            "[y] 纳管   [n/esc] 取消",
+		AdoptedStatus:               "已纳管 %s",
+		AdoptRefusedStatus:          "拒绝纳管 %s：%s",
+		AdoptFailedStatus:           "纳管 %s 失败：%s",
+		AdoptStrandedStatus:         "%s 停在纳管中途：%s",
+		ErrorPanelTitle:             "错误详情",
+		ErrorPanelHint:              "[e/esc] 关闭",
 		AddMCPUnavailable:           "仅 MCP 标签页支持添加服务器",
 		AddUnavailable:              "新建仅在 Skills 和 MCP 标签页可用",
 		AddMenuTitle:                "添加到 Skills 目录",

@@ -278,9 +278,10 @@ func (m Model) commitRepo(raw string) (tea.Model, tea.Cmd) {
 	m.status = m.translator.Text(i18n.AddingRepo, ref.Name)
 	updater := *m.updater
 	ctx := m.context
-	return m, func() tea.Msg {
+	command := func() tea.Msg {
 		return addFinishedMsg{label: ref.Name, err: updater.Add(ctx, request)}
 	}
+	return m, m.withSpinner(command)
 }
 
 func (m Model) commitCreateSkill(name, description string) (tea.Model, tea.Cmd) {

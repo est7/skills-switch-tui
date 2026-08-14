@@ -29,6 +29,12 @@ func (m Model) View() tea.View {
 		body = m.renderModalRegion(m.renderFormCard())
 	case m.pendingDelete != nil:
 		body = m.renderModalRegion(m.renderConfirmCard())
+	case m.pendingAdopt != nil:
+		body = m.renderModalRegion(m.renderAdoptConfirmCard())
+	case m.showErrorPanel:
+		body = m.renderModalRegion(m.renderErrorPanel())
+	case m.discovering:
+		body = m.renderDiscoverTable() + "\n" + m.renderDiscoverDetail()
 	default:
 		body = m.renderTable() + "\n" + m.renderDetail()
 	}
@@ -217,6 +223,67 @@ func (m Model) renderSkillsTable() string {
 		lines = append(lines, m.renderScrollHint(start, end, len(rows), tableWidth))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderDiscoverTable() string {
+	tableWidth := m.tableWidth()
+	innerWidth := tableWidth - 2
+	clientWidth := min(10, max(7, innerWidth/5))
+	scopeWidth := min(9, max(7, innerWidth/5))
+	nameWidth := min(24, max(8, (innerWidth-clientWidth-scopeWidth)/3))
+	pathWidth := max(1, innerWidth-clientWidth-scopeWidth-nameWidth)
+	headerStyle := lipgloss.NewStyle().Background(m.styles.tableHeader.GetBackground()).Foreground(m.styles.tableHeader.GetForeground()).Bold(true)
+	header := "  " +
+		headerStyle.Width(clientWidth).Render(m.translator.Text(i18n.DiscoverClientHeader)) +
+		headerStyle.Width(scopeWidth).Render(m.translator.Text(i18n.DiscoverScopeHeader)) +
+		headerStyle.Width(nameWidth).Render(m.translator.Text(i18n.DiscoverNameHeader)) +
+		headerStyle.Width(pathWidth).Render(m.translator.Text(i18n.DiscoverPathHeader))
+	lines := []string{m.styles.accent.Render(m.translator.Text(i18n.DiscoverTitle)), header}
+	if len(m.discoveries) == 0 {
+		lines = append(lines, m.styles.subtle.Padding(1, 2).Render(m.translator.Text(i18n.NothingUnmanaged)))
+		return m.styles.panel.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
+	}
+	start := min(m.offset, len(m.discoveries)-1)
+	end := min(len(m.discoveries), start+m.visibleRowCount())
+	for index := start; index < end; index++ {
+		item := m.discoveries[index]
+		selected := index == m.cursor
+		rowBackground := m.styles.canvas
+		if selected {
+			rowBackground = m.styles.selected.GetBackground()
+		}
+		cursor := "  "
+		if selected {
+			cursor = m.styles.accent.Background(rowBackground).Render("▌ ")
+		}
+		cell := lipgloss.NewStyle().Background(rowBackground)
+		line := cursor +
+			cell.Width(clientWidth).Render(truncate(string(item.Client), clientWidth-1)) +
+			cell.Width(scopeWidth).Render(truncate(string(item.Scope), scopeWidth-1)) +
+			cell.Width(nameWidth).Render(truncate(item.Name, nameWidth-1)) +
+			m.styles.subtle.Background(rowBackground).Width(pathWidth).Render(truncate(item.Path, pathWidth-1))
+		if selected {
+			line = m.styles.selected.Width(tableWidth).Render(line)
+		}
+		lines = append(lines, line)
+	}
+	if start > 0 || end < len(m.discoveries) {
+		lines = append(lines, m.renderScrollHint(start, end, len(m.discoveries), tableWidth))
+	}
+	return m.styles.panel.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) renderDiscoverDetail() string {
+	if len(m.discoveries) == 0 || m.cursor < 0 || m.cursor >= len(m.discoveries) {
+		return m.styles.detail.Width(m.contentWidth()).Render(m.translator.Text(i18n.DiscoverHint))
+	}
+	item := m.discoveries[m.cursor]
+	lines := []string{
+		m.styles.accent.Render(item.Name) + "  " + m.styles.subtle.Render(string(item.Client)+" · "+string(item.Scope)),
+		m.styles.subtle.Render(truncate(item.Path, m.detailTextWidth())),
+		m.styles.subtle.Render(m.translator.Text(i18n.DiscoverHint)),
+	}
+	return m.styles.detail.Width(m.contentWidth()).Render(strings.Join(lines, "\n"))
 }
 
 func (m Model) renderMCPTable() string {
@@ -652,6 +719,47 @@ func (m Model) renderConfirmCard() string {
 	return m.modalCard(strings.Join(lines, "\n"))
 }
 
+func (m Model) renderAdoptConfirmCard() string {
+	plan := m.pendingAdopt
+	lines := []string{
+		m.styles.accent.Render(m.translator.Text(i18n.AdoptConfirmTitle)),
+		"",
+		ansi.Wrap(m.translator.Text(i18n.AdoptConfirmPrompt, plan.skill.Path, plan.targetID), max(12, m.modalInnerWidth()), ""),
+		m.styles.subtle.Render(m.translator.Text(i18n.AdoptConfirmHint)),
+	}
+	return m.modalCard(strings.Join(lines, "\n"))
+}
+
+func (m Model) renderErrorPanel() string {
+	items := joinedErrorItems(m.err)
+	if len(items) > 10 {
+		items = items[len(items)-10:]
+	}
+	width := max(12, m.modalInnerWidth())
+	lines := []string{m.styles.error.Render(m.translator.Text(i18n.ErrorPanelTitle)), ""}
+	for index, item := range items {
+		item = strings.ReplaceAll(item, "\n", "; ")
+		lines = append(lines, ansi.Wrap(fmt.Sprintf("%d. %s", index+1, item), width, ""))
+	}
+	lines = append(lines, "", m.styles.subtle.Render(m.translator.Text(i18n.ErrorPanelHint)))
+	return m.modalCard(strings.Join(lines, "\n"))
+}
+
+func joinedErrorItems(err error) []string {
+	if err == nil {
+		return nil
+	}
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return []string{err.Error()}
+	}
+	items := make([]string, 0, len(joined.Unwrap()))
+	for _, child := range joined.Unwrap() {
+		items = append(items, joinedErrorItems(child)...)
+	}
+	return items
+}
+
 func (m Model) renderFormCard() string {
 	return m.modalCard(m.active.form.View())
 }
@@ -724,7 +832,7 @@ func (m Model) renderFooter() string {
 		gap = lipgloss.NewStyle().Background(barBackground).Render("  ")
 	}
 	if m.updating || m.deleting {
-		icon = m.styles.accent.Background(barBackground).Render("◌")
+		icon = m.styles.accent.Background(barBackground).Render(m.spinner.View())
 	}
 	status = truncate(status, max(8, m.contentWidth()-6))
 	statusLine := barStyle.Width(m.contentWidth()).Render(icon + gap + statusStyle.Render(status))
