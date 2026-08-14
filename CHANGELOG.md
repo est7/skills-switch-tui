@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.15.0] - 2026-08-14
+
+### Features
+
+- **tui:** Surface discover/adopt, spinner, and errors
+
 ## [v0.14.0] - 2026-08-14
 
 ### Features
@@ -14,6 +20,7 @@ All notable changes to this project will be documented in this file.
 
 - **cli:** Generate the command reference
 - **release:** Generate the changelog with git-cliff
+- **changelog:** Update for v0.14.0
 
 ### Styling
 
