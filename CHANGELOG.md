@@ -2,11 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.15.1] - 2026-08-17
+
+### Bug Fixes
+
+- **projection:** Scope same-name conflicts to the same provider
+
 ## [v0.15.0] - 2026-08-14
 
 ### Features
 
 - **tui:** Surface discover/adopt, spinner, and errors
+
+### Documentation
+
+- **changelog:** Update for v0.15.0
 
 ## [v0.14.0] - 2026-08-14
 
