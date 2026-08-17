@@ -248,6 +248,78 @@ func TestManagedProvidersWithTheSameNameCanBeSwitched(t *testing.T) {
 	}
 }
 
+func TestSameNameProvidersCanLayerAcrossScopes(t *testing.T) {
+	projectRoot := t.TempDir()
+	userHome := t.TempDir()
+	local := newSkill(t, t.TempDir(), "shared-name")
+	local.ID = "local-shared/shared-name"
+	vendor := newSkill(t, t.TempDir(), "shared-name")
+	vendor.ID = "vendor-shared/upstream/skills/shared-name"
+	loaded := catalog.Catalog{Clients: client.DefaultRegistry(), Sources: []catalog.Source{{ID: "test", Skills: []catalog.Skill{local, vendor}}}}
+	manager := NewWithUserHome(projectRoot, userHome, loaded)
+	projectLink := filepath.Join(projectRoot, ".agents", "skills", "shared-name")
+	globalLink := filepath.Join(userHome, ".agents", "skills", "shared-name")
+
+	if err := manager.SetEnabledAt([]catalog.Skill{vendor}, catalog.ClientCodex, true, ScopeGlobal); err != nil {
+		t.Fatalf("enable vendor globally: %v", err)
+	}
+	if err := manager.SetEnabled([]catalog.Skill{local}, catalog.ClientCodex, true); err != nil {
+		t.Fatalf("project enable of a different provider must not be blocked by a same-name global projection: %v", err)
+	}
+	assertLinkTarget(t, projectLink, local.Path)
+	assertLinkTarget(t, globalLink, vendor.Path)
+	if state, err := manager.State(local, catalog.ClientCodex); err != nil || state != StateEnabled {
+		t.Fatalf("local project state = %q, %v; want enabled", state, err)
+	}
+	if state, err := manager.State(vendor, catalog.ClientCodex); err != nil || state != StateGlobal {
+		t.Fatalf("vendor project state = %q, %v; want global", state, err)
+	}
+	if state, err := manager.StateAt(local, catalog.ClientCodex, ScopeGlobal); err != nil || state != StateDisabled {
+		t.Fatalf("local global state = %q, %v; want disabled", state, err)
+	}
+
+	// The same provider in both scopes is still a duplicate.
+	if err := manager.SetEnabled([]catalog.Skill{vendor}, catalog.ClientCodex, true); err == nil || !strings.Contains(err.Error(), "globally configured") {
+		t.Fatalf("same-provider project enable error = %v, want globally configured conflict", err)
+	}
+	if err := manager.SetEnabled([]catalog.Skill{local}, catalog.ClientCodex, false); err != nil {
+		t.Fatalf("disable local project projection: %v", err)
+	}
+	assertMissing(t, projectLink)
+	assertLinkTarget(t, globalLink, vendor.Path)
+}
+
+func TestGlobalPromotionLeavesSameNameAlternativeProjectProjectionAlone(t *testing.T) {
+	projectRoot := t.TempDir()
+	userHome := t.TempDir()
+	local := newSkill(t, t.TempDir(), "shared-name")
+	local.ID = "local-shared/shared-name"
+	vendor := newSkill(t, t.TempDir(), "shared-name")
+	vendor.ID = "vendor-shared/upstream/skills/shared-name"
+	loaded := catalog.Catalog{Clients: client.DefaultRegistry(), Sources: []catalog.Source{{ID: "test", Skills: []catalog.Skill{local, vendor}}}}
+	manager := NewWithUserHome(projectRoot, userHome, loaded)
+	projectLink := filepath.Join(projectRoot, ".agents", "skills", "shared-name")
+	globalLink := filepath.Join(userHome, ".agents", "skills", "shared-name")
+
+	if err := manager.SetEnabled([]catalog.Skill{local}, catalog.ClientCodex, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetEnabledAt([]catalog.Skill{vendor}, catalog.ClientCodex, true, ScopeGlobal); err != nil {
+		t.Fatalf("global enable of a different provider: %v", err)
+	}
+	assertLinkTarget(t, projectLink, local.Path)
+	assertLinkTarget(t, globalLink, vendor.Path)
+	if state, err := manager.State(local, catalog.ClientCodex); err != nil || state != StateEnabled {
+		t.Fatalf("local project state = %q, %v; want enabled", state, err)
+	}
+	if state, err := manager.State(vendor, catalog.ClientCodex); err != nil || state != StateGlobal {
+		t.Fatalf("vendor project state = %q, %v; want global", state, err)
+	}
+	if state, err := manager.StateAt(vendor, catalog.ClientCodex, ScopeGlobal); err != nil || state != StateEnabled {
+		t.Fatalf("vendor global state = %q, %v; want enabled", state, err)
+	}
+}
+
 func TestManagedProviderSwitchIsPreflightedWithTheWholeGroup(t *testing.T) {
 	projectRoot := t.TempDir()
 	localRoot := t.TempDir()

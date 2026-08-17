@@ -87,13 +87,21 @@ func (m Manager) StateAt(skill catalog.Skill, client catalog.Client, scope Scope
 		if err != nil {
 			return "", err
 		}
-		if _, err := os.Lstat(globalPath); err == nil {
+		_, err = os.Lstat(globalPath)
+		if err == nil && m.resolvesToManagedAlternative(globalPath, skill) {
+			// Another provider holds the global name; this skill's project
+			// scope is independent of it.
+			return m.directState(skill, client, scope)
+		}
+		if err == nil {
 			projectPath, pathErr := m.TargetPathAt(skill, client, ScopeProject)
 			if pathErr != nil {
 				return "", pathErr
 			}
 			if _, projectErr := os.Lstat(projectPath); projectErr == nil {
-				return StateDuplicate, nil
+				if !m.resolvesToManagedAlternative(projectPath, skill) {
+					return StateDuplicate, nil
+				}
 			} else if !errors.Is(projectErr, os.ErrNotExist) {
 				return "", fmt.Errorf("inspect project projection %s: %w", projectPath, projectErr)
 			}
@@ -426,6 +434,9 @@ func (m Manager) Apply(operations []Operation) error {
 			for _, skill := range operation.Skills {
 				path := filepath.Join(globalDir, skill.Name)
 				if _, globalErr := os.Lstat(path); globalErr == nil {
+					if m.resolvesToManagedAlternative(path, skill) {
+						continue
+					}
 					conflicts = append(conflicts, Conflict{Path: path, Reason: "skill is globally configured; disable global scope first"})
 				} else if !errors.Is(globalErr, os.ErrNotExist) {
 					conflicts = append(conflicts, Conflict{Path: path, Reason: globalErr.Error()})
@@ -634,9 +645,33 @@ func (m Manager) planRetireProject(skills []catalog.Skill, targetDir string) ([]
 			conflicts = append(conflicts, Conflict{Path: path, Reason: "project skill blocks global promotion and is not catalog-managed"})
 			continue
 		}
+		if filepath.Clean(provider.Path) != filepath.Clean(skill.Path) {
+			// A different provider owns the project slot; it shadows the
+			// global projection in this project and stays untouched.
+			continue
+		}
 		changes = append(changes, change{action: removeLink, path: path, target: resolved, originalTarget: original})
 	}
 	return changes, conflicts
+}
+
+// resolvesToManagedAlternative reports whether path is a symlink to a
+// catalog-managed provider that shares selected's name but is a different
+// skill. Such a link occupies the name for another provider and must neither
+// count as selected's own projection nor block selected in the other scope.
+func (m Manager) resolvesToManagedAlternative(path string, selected catalog.Skill) bool {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		return false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(path), target)
+	}
+	return m.isManagedAlternative(target, selected)
 }
 
 func (m Manager) isManagedAlternative(target string, selected catalog.Skill) bool {
