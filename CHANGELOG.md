@@ -2,11 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.15.2] - 2026-09-10
+
+### Bug Fixes
+
+- **source:** Recover from a submodule add that fails after its clone
+
 ## [v0.15.1] - 2026-08-17
 
 ### Bug Fixes
 
 - **projection:** Scope same-name conflicts to the same provider
+
+### Documentation
+
+- **changelog:** Update for v0.15.1
 
 ## [v0.15.0] - 2026-08-14
 
