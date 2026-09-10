@@ -246,6 +246,19 @@ func ValidateSourceRegistration(root, id string) error {
 	return nil
 }
 
+// IsSourceRegistered reports whether catalog.yaml carries a policy for id.
+func IsSourceRegistered(root, id string) (bool, error) {
+	if err := validateVendorSourceID(id); err != nil {
+		return false, err
+	}
+	config, err := loadConfig(filepath.Join(root, "catalog.yaml"))
+	if err != nil {
+		return false, err
+	}
+	_, exists := config.Sources[id]
+	return exists, nil
+}
+
 func UnregisterSource(root, id string) error {
 	configPath := filepath.Join(root, "catalog.yaml")
 	return filelock.WithExclusive(configPath, func() error {

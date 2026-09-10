@@ -172,6 +172,8 @@ func parseSourceURL(input string) (SourceRef, error) {
 }
 
 // sanitizeSubpath cleans a slash-separated subpath and rejects any ".." segment.
+// A link that lands on a SKILL.md file names the skill it belongs to, so the
+// subpath is the file's directory: discovery scopes to directories, never files.
 func sanitizeSubpath(raw string) (string, error) {
 	raw = strings.Trim(strings.TrimSpace(raw), "/")
 	if raw == "" {
@@ -181,6 +183,12 @@ func sanitizeSubpath(raw string) (string, error) {
 	for _, segment := range strings.Split(cleaned, "/") {
 		if segment == ".." {
 			return "", fmt.Errorf("subpath %q must not contain %q", raw, "..")
+		}
+	}
+	if path.Base(cleaned) == "SKILL.md" {
+		cleaned = path.Dir(cleaned)
+		if cleaned == "." {
+			return "", nil
 		}
 	}
 	return cleaned, nil

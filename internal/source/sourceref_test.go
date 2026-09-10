@@ -57,6 +57,22 @@ func TestParseSourceRef(t *testing.T) {
 			subpath: "skills/a",
 		},
 		{
+			name:    "github blob link to a SKILL.md file scopes to its skill directory",
+			input:   "https://github.com/herdrdev/herdr/blob/master/skills/herdr/SKILL.md",
+			clone:   "https://github.com/herdrdev/herdr.git",
+			id:      "herdrdev/herdr",
+			branch:  "master",
+			subpath: "skills/herdr",
+		},
+		{
+			name:    "shorthand ending in SKILL.md scopes to its skill directory",
+			input:   "owner/repo/skills/one/SKILL.md",
+			clone:   "https://github.com/owner/repo.git",
+			id:      "owner/repo",
+			branch:  "main",
+			subpath: "skills/one",
+		},
+		{
 			name:   "plain github repo without .git",
 			input:  "https://github.com/owner/repo",
 			clone:  "https://github.com/owner/repo.git",

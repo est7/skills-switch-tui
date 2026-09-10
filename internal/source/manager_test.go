@@ -232,6 +232,7 @@ func TestRemoveRejectsDirtyVendorBeforeGitMutation(t *testing.T) {
 	agentsRoot := t.TempDir()
 	target := filepath.Join(agentsRoot, "resources", "skills", "vendor", "shared", "dirty")
 	git := &recordingGit{responses: map[string]string{
+		agentsRoot + "|ls-files --stage -- resources/skills/vendor/shared/dirty": "160000 0000000000000000000000000000000000000000 0\tresources/skills/vendor/shared/dirty\n",
 		target + "|status --porcelain": " M SKILL.md\n",
 	}}
 	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: filepath.Join(agentsRoot, "resources", "skills"), Git: git}
@@ -243,8 +244,13 @@ func TestRemoveRejectsDirtyVendorBeforeGitMutation(t *testing.T) {
 	if !errors.As(err, &dirty) {
 		t.Fatalf("Remove() error = %v, want DirtyError", err)
 	}
-	if len(git.calls) != 1 || git.calls[0] != "status --porcelain" {
-		t.Fatalf("dirty remove mutated git: %v", git.calls)
+	for _, call := range git.calls {
+		if strings.HasPrefix(call, "rm ") {
+			t.Fatalf("dirty remove mutated git: %v", git.calls)
+		}
+	}
+	if !git.called("status --porcelain") {
+		t.Fatalf("dirty remove skipped the status guard: %v", git.calls)
 	}
 }
 
@@ -260,6 +266,7 @@ func TestRemoveUsesGitRMAndUnregistersCatalogPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	git := &recordingGit{responses: map[string]string{
+		agentsRoot + "|ls-files --stage -- resources/skills/vendor/shared/clean":          "160000 0000000000000000000000000000000000000000 0\tresources/skills/vendor/shared/clean\n",
 		target + "|status --porcelain":                                                    "",
 		agentsRoot + "|rm -f -- resources/skills/vendor/shared/clean":                     "",
 		agentsRoot + "|rev-parse --git-path modules/resources/skills/vendor/shared/clean": ".git/modules/resources/skills/vendor/shared/clean",
@@ -272,7 +279,7 @@ func TestRemoveUsesGitRMAndUnregistersCatalogPolicy(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(git.calls) < 2 || git.calls[1] != "rm -f -- resources/skills/vendor/shared/clean" {
+	if !git.called("rm -f -- resources/skills/vendor/shared/clean") {
 		t.Fatalf("unexpected remove calls: %v", git.calls)
 	}
 	updated, err := os.ReadFile(filepath.Join(sourcesRoot, "catalog.yaml"))
@@ -484,6 +491,7 @@ func TestAddRollsBackSubmoduleWhenDiscoveryFails(t *testing.T) {
 	target := filepath.Join(sourcesRoot, "vendor", "shared", "empty")
 	git := &recordingGit{responses: map[string]string{
 		agentsRoot + "|submodule add -b main https://example.invalid/empty.git resources/skills/vendor/shared/empty": "",
+		agentsRoot + "|ls-files --stage -- resources/skills/vendor/shared/empty":                                     "160000 0000000000000000000000000000000000000000 0\tresources/skills/vendor/shared/empty\n",
 		agentsRoot + "|rm -f -- resources/skills/vendor/shared/empty":                                                "",
 		agentsRoot + "|rev-parse --git-path modules/resources/skills/vendor/shared/empty":                            ".git/modules/resources/skills/vendor/shared/empty",
 		agentsRoot + "|rev-parse --git-common-dir":                                                                   ".git",
@@ -503,7 +511,7 @@ func TestAddRollsBackSubmoduleWhenDiscoveryFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("empty source unexpectedly succeeded")
 	}
-	if len(git.calls) < 3 || git.calls[2] != "rm -f -- resources/skills/vendor/shared/empty" {
+	if !git.called("rm -f -- resources/skills/vendor/shared/empty") {
 		t.Fatalf("failed add did not roll back submodule: %v", git.calls)
 	}
 }

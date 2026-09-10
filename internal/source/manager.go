@@ -112,26 +112,25 @@ func (m Manager) Add(ctx context.Context, request AddRequest) (returnErr error) 
 	if err != nil || strings.HasPrefix(relativePath, "..") {
 		return fmt.Errorf("skills root must be inside repository root %s: %s", repositoryRoot, m.SkillsRoot)
 	}
-	if _, err := m.Git.Output(ctx, repositoryRoot,
-		"submodule", "add", "-b", request.Branch, request.URL, filepath.ToSlash(relativePath),
-	); err != nil {
-		return err
-	}
+	// The rollback is armed before `submodule add` runs: git clones into
+	// .git/modules first and only then checks the branch out, so a missing
+	// branch fails after the clone with nothing staged and a checkout holding
+	// nothing but a .git pointer. Both that strand and a fully added submodule
+	// are discarded the same way.
 	completed := false
 	defer func() {
 		if completed {
 			return
 		}
-		rollbackCtx := context.WithoutCancel(ctx)
-		if _, rollbackErr := m.Git.Output(rollbackCtx, repositoryRoot, "rm", "-f", "--", filepath.ToSlash(relativePath)); rollbackErr != nil {
+		if rollbackErr := m.discardCheckout(context.WithoutCancel(ctx), repositoryRoot, targetPath, relativePath); rollbackErr != nil {
 			returnErr = errors.Join(returnErr, fmt.Errorf("rollback added submodule: %w", rollbackErr))
 		}
-		// `git rm` leaves the cloned gitdir under .git/modules; remove it so a
-		// later add of the same path is not refused as an existing local repo.
-		if cleanupErr := m.removeSubmoduleGitdir(rollbackCtx, repositoryRoot, relativePath); cleanupErr != nil {
-			returnErr = errors.Join(returnErr, fmt.Errorf("rollback submodule gitdir: %w", cleanupErr))
-		}
 	}()
+	if _, err := m.Git.Output(ctx, repositoryRoot,
+		"submodule", "add", "-b", request.Branch, request.URL, filepath.ToSlash(relativePath),
+	); err != nil {
+		return err
+	}
 	discovery, err := catalog.PlanVendorDiscovery(targetPath, request.DiscoveryPriority, request.SkillPaths)
 	if err != nil {
 		return err
@@ -864,13 +863,6 @@ func (m Manager) Remove(ctx context.Context, source catalog.Source) error {
 	if m.Git == nil {
 		m.Git = GitCommander{}
 	}
-	status, err := m.Git.Output(ctx, source.Path, "status", "--porcelain")
-	if err != nil {
-		return fmt.Errorf("inspect %s: %w", source.ID, err)
-	}
-	if strings.TrimSpace(string(status)) != "" {
-		return newDirtyError([]DirtySource{{SourceID: source.ID, Path: source.Path, Status: string(status)}})
-	}
 	repositoryRoot, err := m.repositoryRoot(ctx)
 	if err != nil {
 		return err
@@ -878,6 +870,20 @@ func (m Manager) Remove(ctx context.Context, source catalog.Source) error {
 	relativePath, err := filepath.Rel(repositoryRoot, source.Path)
 	if err != nil || relativePath == "." || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("source path is outside repository root %s: %s", repositoryRoot, source.Path)
+	}
+	staged, err := m.isStagedGitlink(ctx, repositoryRoot, relativePath)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", source.ID, err)
+	}
+	if !staged {
+		return m.removeOrphanCheckout(ctx, repositoryRoot, source, relativePath)
+	}
+	status, err := m.Git.Output(ctx, source.Path, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", source.ID, err)
+	}
+	if strings.TrimSpace(string(status)) != "" {
+		return newDirtyError([]DirtySource{{SourceID: source.ID, Path: source.Path, Status: string(status)}})
 	}
 	if _, err := m.Git.Output(ctx, repositoryRoot, "rm", "-f", "--", filepath.ToSlash(relativePath)); err != nil {
 		return fmt.Errorf("remove %s submodule: %w", source.ID, err)
@@ -898,6 +904,95 @@ func (m Manager) Remove(ctx context.Context, source catalog.Source) error {
 		return fmt.Errorf("remove %s submodule gitdir: %w", source.ID, err)
 	}
 	m.pruneEmptyOwnerDirectory(source.Path)
+	return nil
+}
+
+// removeOrphanCheckout deletes a vendor checkout that discovery lists but the
+// parent index does not track: what a `submodule add` that failed after its
+// clone leaves behind. Such a checkout has no user work to protect — its status
+// reports every tracked file as a staged deletion because the worktree was never
+// populated — and nothing for `git rm` to remove, so the dirty guard and the git
+// path both stay out of it. A policy that survived in catalog.yaml goes with it.
+func (m Manager) removeOrphanCheckout(ctx context.Context, repositoryRoot string, source catalog.Source, relativePath string) error {
+	if err := removeStrandedCheckout(source.Path); err != nil {
+		return fmt.Errorf("remove %s orphan checkout: %w", source.ID, err)
+	}
+	if err := m.removeSubmoduleGitdir(ctx, repositoryRoot, relativePath); err != nil {
+		return fmt.Errorf("remove %s submodule gitdir: %w", source.ID, err)
+	}
+	registered, err := catalog.IsSourceRegistered(m.SkillsRoot, source.ID)
+	if err != nil {
+		return fmt.Errorf("inspect %s policy: %w", source.ID, err)
+	}
+	if registered {
+		if err := catalog.UnregisterSource(m.SkillsRoot, source.ID); err != nil {
+			return fmt.Errorf("unregister %s after removing orphan checkout: %w", source.ID, err)
+		}
+	}
+	m.pruneEmptyOwnerDirectory(source.Path)
+	return nil
+}
+
+// discardCheckout removes a vendor checkout in whichever state an add left it: a
+// staged gitlink is dropped through git so .gitmodules follows, and a checkout
+// that never reached the index is deleted directly. Both end with the
+// .git/modules gitdir gone, so a later add of the same path is not refused as
+// an existing local repository, and with an emptied owner directory pruned.
+func (m Manager) discardCheckout(ctx context.Context, repositoryRoot, targetPath, relativePath string) error {
+	staged, err := m.isStagedGitlink(ctx, repositoryRoot, relativePath)
+	if err != nil {
+		return err
+	}
+	if staged {
+		if _, err := m.Git.Output(ctx, repositoryRoot, "rm", "-f", "--", filepath.ToSlash(relativePath)); err != nil {
+			return err
+		}
+	} else if err := removeStrandedCheckout(targetPath); err != nil {
+		return err
+	}
+	if err := m.removeSubmoduleGitdir(ctx, repositoryRoot, relativePath); err != nil {
+		return fmt.Errorf("rollback submodule gitdir: %w", err)
+	}
+	m.pruneEmptyOwnerDirectory(targetPath)
+	return nil
+}
+
+// isStagedGitlink reports whether the parent index tracks relativePath as a
+// submodule (mode 160000). A path git has not staged — because `submodule add`
+// failed after its clone, or because it was never a submodule — is not.
+func (m Manager) isStagedGitlink(ctx context.Context, repositoryRoot, relativePath string) (bool, error) {
+	out, err := m.Git.Output(ctx, repositoryRoot, "ls-files", "--stage", "--", filepath.ToSlash(relativePath))
+	if err != nil {
+		return false, fmt.Errorf("inspect index entry for %s: %w", relativePath, err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.HasPrefix(line, "160000 ") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// removeStrandedCheckout deletes a checkout that is a submodule pointer into a
+// gitdir kept elsewhere. A path that is already gone needs nothing; a directory
+// holding its own .git is a standalone repository somebody placed by hand and is
+// refused rather than deleted.
+func removeStrandedCheckout(path string) error {
+	gitdir, err := submoduleGitdir(path)
+	if err != nil {
+		return err
+	}
+	if gitdir == "" {
+		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("inspect %s: %w", path, err)
+		}
+		return fmt.Errorf("refuse to delete %s: not a submodule checkout", path)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("delete stranded checkout %s: %w", path, err)
+	}
 	return nil
 }
 

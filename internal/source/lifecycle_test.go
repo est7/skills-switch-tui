@@ -221,6 +221,7 @@ func TestLifecycleRemoveRetiresProjectAndGlobalProjections(t *testing.T) {
 	}
 	relative := filepath.ToSlash(filepath.Join("resources", "skills", "vendor", "shared", "repo"))
 	git := &recordingGit{responses: map[string]string{
+		repositoryRoot + "|ls-files --stage -- " + relative:         "160000 0000000000000000000000000000000000000000 0\t" + relative + "\n",
 		sourcePath + "|status --porcelain":                           "",
 		repositoryRoot + "|rm -f -- " + relative:                     "",
 		repositoryRoot + "|rev-parse --git-path modules/" + relative: "",

@@ -900,3 +900,153 @@ func TestRelocateReportsRecoveryThatAnInnerStepCouldNotMake(t *testing.T) {
 		}
 	}
 }
+
+// TestAddMissingBranchLeavesNoStrandedCheckout pins the failure that stranded a
+// half-clone: `git submodule add -b <branch>` clones into .git/modules and only
+// then discovers the branch is missing, exiting before the gitlink is staged.
+// The checkout it leaves holds nothing but a .git pointer, is discovered as a
+// source, and blocks every later add of the same repository.
+func TestAddMissingBranchLeavesNoStrandedCheckout(t *testing.T) {
+	gitBinary, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
+	t.Setenv("GIT_CONFIG_VALUE_0", "always")
+	t.Setenv("GIT_TERMINAL_PROMPT", "0")
+
+	base := t.TempDir()
+	run := realGitRunner(t, gitBinary)
+	remote := filepath.Join(base, "remote")
+	writeSourceSkill(t, filepath.Join(remote, "skills", "tool"))
+	run(remote, "init", "-q", "-b", "master")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "init")
+
+	agentsRoot := filepath.Join(base, "parent")
+	sourcesRoot := filepath.Join(agentsRoot, "resources", "skills")
+	if err := os.MkdirAll(sourcesRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(agentsRoot, "init", "-q", "-b", "main")
+	run(agentsRoot, "commit", "-q", "--allow-empty", "-m", "init")
+
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: GitCommander{}}
+	err = manager.Add(context.Background(), AddRequest{Name: "owner/repo", URL: remote, Branch: "main"})
+	if err == nil {
+		t.Fatal("add of a missing branch unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "origin/main") {
+		t.Fatalf("add error does not name the missing branch: %v", err)
+	}
+	target := filepath.Join(sourcesRoot, "vendor", "shared", "owner", "repo")
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Fatalf("failed add left the checkout behind at %s: %v", target, err)
+	}
+	if _, err := os.Lstat(filepath.Dir(target)); !os.IsNotExist(err) {
+		t.Fatalf("failed add left the owner directory behind: %v", err)
+	}
+	relative := filepath.FromSlash("resources/skills/vendor/shared/owner/repo")
+	if _, err := os.Stat(filepath.Join(agentsRoot, ".git", "modules", relative)); !os.IsNotExist(err) {
+		t.Fatalf("failed add left the submodule gitdir behind: %v", err)
+	}
+
+	if err := manager.Add(context.Background(), AddRequest{Name: "owner/repo", URL: remote, Branch: "master"}); err != nil {
+		t.Fatalf("add with the real branch after the failed add: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "skills", "tool", "SKILL.md")); err != nil {
+		t.Fatalf("checkout after successful add: %v", err)
+	}
+}
+
+// TestRemoveCleansOrphanCheckoutLeftByFailedAdd covers the checkout an older
+// build stranded: a .git pointer into .git/modules with no gitlink in the parent
+// index and no catalog policy. Discovery still lists it, its status shows every
+// tracked file as a staged deletion, and `git rm` has nothing to remove. Remove
+// must recognise the orphan and delete it instead of guarding "local changes"
+// nobody made.
+func TestRemoveCleansOrphanCheckoutLeftByFailedAdd(t *testing.T) {
+	gitBinary, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
+	t.Setenv("GIT_CONFIG_VALUE_0", "always")
+	t.Setenv("GIT_TERMINAL_PROMPT", "0")
+
+	base := t.TempDir()
+	run := realGitRunner(t, gitBinary)
+	remote := filepath.Join(base, "remote")
+	writeSourceSkill(t, filepath.Join(remote, "skills", "tool"))
+	run(remote, "init", "-q", "-b", "master")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "init")
+
+	agentsRoot := filepath.Join(base, "parent")
+	sourcesRoot := filepath.Join(agentsRoot, "resources", "skills")
+	if err := os.MkdirAll(sourcesRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(agentsRoot, "init", "-q", "-b", "main")
+	run(agentsRoot, "commit", "-q", "--allow-empty", "-m", "init")
+
+	relative := "resources/skills/vendor/shared/owner/repo"
+	strand := exec.Command(gitBinary, "submodule", "add", "-b", "main", remote, relative)
+	strand.Dir = agentsRoot
+	if out, err := strand.CombinedOutput(); err == nil {
+		t.Fatalf("submodule add of a missing branch unexpectedly succeeded: %s", out)
+	}
+	target := filepath.Join(agentsRoot, filepath.FromSlash(relative))
+	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
+		t.Fatalf("fixture did not strand a checkout: %v", err)
+	}
+
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var orphan catalog.Source
+	for _, source := range loaded.Sources {
+		if source.ID == "vendor-shared/owner/repo" {
+			orphan = source
+		}
+	}
+	if orphan.ID == "" {
+		t.Fatalf("stranded checkout was not discovered; sources = %v", loaded.Sources)
+	}
+
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: GitCommander{}}
+	if err := manager.Remove(context.Background(), orphan); err != nil {
+		t.Fatalf("remove orphan checkout: %v", err)
+	}
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Fatalf("orphan checkout survived removal: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Dir(target)); !os.IsNotExist(err) {
+		t.Fatalf("owner directory survived removal: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(agentsRoot, ".git", "modules", filepath.FromSlash(relative))); !os.IsNotExist(err) {
+		t.Fatalf("orphan gitdir survived removal: %v", err)
+	}
+	if err := manager.Add(context.Background(), AddRequest{Name: "owner/repo", URL: remote, Branch: "master"}); err != nil {
+		t.Fatalf("re-add after orphan removal: %v", err)
+	}
+}
+
+func realGitRunner(t *testing.T, gitBinary string) func(dir string, args ...string) {
+	t.Helper()
+	return func(dir string, args ...string) {
+		t.Helper()
+		command := exec.Command(gitBinary, args...)
+		command.Dir = dir
+		command.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e",
+		)
+		if out, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+	}
+}
