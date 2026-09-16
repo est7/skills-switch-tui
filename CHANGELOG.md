@@ -2,11 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.16.0] - 2026-09-16
+
+### Bug Fixes
+
+- **catalog:** Isolate a source's discovery failure to that source
+
 ## [v0.15.2] - 2026-09-10
 
 ### Bug Fixes
 
 - **source:** Recover from a submodule add that fails after its clone
+
+### Documentation
+
+- **changelog:** Update for v0.15.2
 
 ## [v0.15.1] - 2026-08-17
 
