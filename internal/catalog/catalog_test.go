@@ -511,9 +511,13 @@ description: Must not control the projection path.
 ---
 `)
 
-		_, err := Load(sourcesRoot, client.DefaultRegistry())
-		if err == nil || !strings.Contains(err.Error(), `invalid skill name "../../escape"`) {
-			t.Fatalf("Load() error = %v, want unsafe name rejection", err)
+		loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+		if err != nil {
+			t.Fatalf("Load() error = %v, want the unsafe name isolated to its own source", err)
+		}
+		assertSourceIsolated(t, loaded, "vendor-shared/unsafe/skills", `invalid skill name "../../escape"`)
+		if _, ok := loaded.Skill("vendor-shared/unsafe/skills/escape"); ok {
+			t.Fatal("skill with an unsafe name entered the catalog and could reach a projection path")
 		}
 	})
 
@@ -831,10 +835,11 @@ sources:
 		t.Fatal(err)
 	}
 
-	_, err := Load(sourcesRoot, client.DefaultRegistry())
-	if err == nil || !strings.Contains(err.Error(), `unsupported source type "url"`) {
-		t.Fatalf("Load() error = %v, want unsupported source type", err)
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Load() error = %v, want the unusable manifest isolated to its own source", err)
 	}
+	assertSourceIsolated(t, loaded, "vendor-shared/broken", `unsupported source type "url"`)
 }
 
 func TestPlanVendorDiscoverySurfacesUnusableManifestWhenNoStrategyMatches(t *testing.T) {
@@ -949,10 +954,11 @@ sources:
 		t.Fatal(err)
 	}
 
-	_, err := Load(sourcesRoot, client.DefaultRegistry())
-	if err == nil || !strings.Contains(err.Error(), "symlink target escapes source root") {
-		t.Fatalf("Load() error = %v, want source-boundary rejection", err)
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Load() error = %v, want the boundary violation isolated to its own source", err)
 	}
+	assertSourceIsolated(t, loaded, "vendor-shared/unsafe", "symlink target escapes source root")
 }
 
 func TestLoadMarksArchivedSourcesAndLoadsVendorUpdatePolicy(t *testing.T) {
@@ -1066,6 +1072,29 @@ func TestLoadRejectsMultipleSkillCatalogDocuments(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "multiple YAML documents") {
 		t.Fatalf("Load() error = %v, want multiple-document rejection", err)
 	}
+}
+
+// assertSourceIsolated checks that a source failed its scan without taking the
+// catalog down with it: it stays listable and removable, says why, and exposes
+// no skills, so nothing that failed validation can reach a projection path.
+func assertSourceIsolated(t *testing.T, loaded Catalog, id, wantDetail string) {
+	t.Helper()
+	for _, source := range loaded.Sources {
+		if source.ID != id {
+			continue
+		}
+		if source.Availability != SourceDiscoveryFailed {
+			t.Fatalf("source %s availability = %q, want %q", id, source.Availability, SourceDiscoveryFailed)
+		}
+		if !strings.Contains(source.AvailabilityDetail, wantDetail) {
+			t.Fatalf("source %s detail = %q, want it to contain %q", id, source.AvailabilityDetail, wantDetail)
+		}
+		if len(source.Skills) != 0 {
+			t.Fatalf("source %s exposed %d skills; a failed scan must expose none", id, len(source.Skills))
+		}
+		return
+	}
+	t.Fatalf("source %s missing from catalog; a failed source must stay listable and removable", id)
 }
 
 func writeSkill(t *testing.T, dir, contents string) {
@@ -1347,5 +1376,50 @@ func TestLoadIgnoresStagingDirectories(t *testing.T) {
 	}
 	if loaded.Sources[0].ID != "vendor-shared/owner/repo" {
 		t.Fatalf("source = %q, want vendor-shared/owner/repo", loaded.Sources[0].ID)
+	}
+}
+
+func TestLoadIsolatesSourceDiscoveryFailureToItsOwnSource(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "acme", "healthy", "skills", "good"), `---
+name: good
+description: Stays loadable while a sibling source is broken.
+---
+`)
+	writeSkill(t, filepath.Join(sourcesRoot, "vendor", "shared", "acme", "broken", "skills", "bad"), `---
+name: Bad Name
+description: An upstream skill whose name cannot be a projection path.
+---
+`)
+
+	loaded, err := Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Load() error = %v, want the healthy source to survive a broken sibling", err)
+	}
+
+	if _, ok := loaded.Skill("vendor-shared/acme/healthy/skills/good"); !ok {
+		t.Fatal("healthy source lost its skill because a sibling source failed discovery")
+	}
+
+	var broken Source
+	for _, source := range loaded.Sources {
+		if source.ID == "vendor-shared/acme/broken" {
+			broken = source
+		}
+	}
+	if broken.ID == "" {
+		t.Fatal("broken source disappeared from the catalog; source remove could not reach it")
+	}
+	if broken.Availability != SourceDiscoveryFailed {
+		t.Fatalf("broken source availability = %q, want %q", broken.Availability, SourceDiscoveryFailed)
+	}
+	if !strings.Contains(broken.AvailabilityDetail, `invalid skill name "Bad Name"`) {
+		t.Fatalf("broken source detail = %q, want the discovery error", broken.AvailabilityDetail)
+	}
+	if len(broken.Skills) != 0 {
+		t.Fatalf("broken source exposed %d skills; an unvalidated name must never reach projection", len(broken.Skills))
+	}
+	if _, ok := loaded.Skill("vendor-shared/acme/broken/skills/bad"); ok {
+		t.Fatal("skill from a failed source entered the catalog")
 	}
 }

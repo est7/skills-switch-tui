@@ -1664,7 +1664,7 @@ func (m Model) sourceMatchesFilter(source catalog.Source) bool {
 	if m.filter == filterAll || m.filter == filterArchive {
 		return true
 	}
-	if m.filter == filterIssues && source.IsCheckoutMissing() {
+	if m.filter == filterIssues && (source.IsCheckoutMissing() || source.IsDiscoveryFailed()) {
 		return true
 	}
 	for _, skill := range source.Skills {

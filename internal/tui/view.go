@@ -493,6 +493,9 @@ func (m Model) renderLanguageSelector() string {
 }
 
 func sourceKindLabel(source catalog.Source) string {
+	if source.IsDiscoveryFailed() {
+		return "FAILED"
+	}
 	if source.IsArchived() {
 		return "ARCHIVE"
 	}
@@ -622,8 +625,14 @@ func (m Model) renderDetail() string {
 		if source.IsArchived() {
 			kind = m.translator.Text(i18n.ArchiveReference)
 		}
+		if source.IsDiscoveryFailed() {
+			kind += " · " + m.translator.Text(i18n.SourceDiscoveryFailed)
+		}
 		lines = append(lines, m.styles.accent.Render(source.ID)+"  "+m.styles.subtle.Render(kind))
 		lines = append(lines, m.styles.subtle.Render(truncate(source.Path, m.detailTextWidth())))
+		if source.AvailabilityDetail != "" {
+			lines = append(lines, m.styles.subtle.Render(truncate(source.AvailabilityDetail, m.detailTextWidth())))
+		}
 	} else {
 		skill := source.Skills[selected.skillIndex]
 		lines = append(lines, m.styles.accent.Render(skill.Name)+"  "+m.styles.subtle.Render(skill.ID))

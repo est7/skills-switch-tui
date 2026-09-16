@@ -93,6 +93,7 @@ const (
 	LocalSource                 Key = "local_source"
 	VendorBranch                Key = "vendor_branch"
 	SourceCheckoutMissing       Key = "source_checkout_missing"
+	SourceDiscoveryFailed       Key = "source_discovery_failed"
 	DiscoveryLabel              Key = "discovery_label"
 	ArchiveReference            Key = "archive_reference"
 	TargetsLabel                Key = "targets_label"
@@ -382,6 +383,7 @@ var messages = map[Language]map[Key]string{
 		LocalSource:                 "local",
 		VendorBranch:                "vendor · branch %s",
 		SourceCheckoutMissing:       "checkout missing · run source update",
+		SourceDiscoveryFailed:       "scan failed · skills withheld",
 		DiscoveryLabel:              "discovery %s",
 		ArchiveReference:            "archive · reference-only",
 		TargetsLabel:                "targets  %s",
@@ -665,6 +667,7 @@ var messages = map[Language]map[Key]string{
 		LocalSource:                 "本地",
 		VendorBranch:                "vendor · 分支 %s",
 		SourceCheckoutMissing:       "检出缺失 · 请运行 source update",
+		SourceDiscoveryFailed:       "扫描失败 · 技能已暂不加载",
 		DiscoveryLabel:              "发现策略 %s",
 		ArchiveReference:            "归档 · 仅供参考",
 		TargetsLabel:                "适用客户端  %s",

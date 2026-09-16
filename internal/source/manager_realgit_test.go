@@ -1050,3 +1050,85 @@ func realGitRunner(t *testing.T, gitBinary string) func(dir string, args ...stri
 		}
 	}
 }
+
+// TestRemoveReachesSourceThatFailedDiscovery is the regression for a vendor
+// repository whose skills cannot be scanned — an upstream SKILL.md whose name is
+// not a legal projection path. Before per-source isolation, such a repository
+// took the whole catalog down with it, and every command including remove failed
+// on the same scan, so the only way out was hand-editing git state.
+func TestRemoveReachesSourceThatFailedDiscovery(t *testing.T) {
+	run := gitRunner(t)
+	base := t.TempDir()
+
+	remote := filepath.Join(base, "remote")
+	if err := os.MkdirAll(filepath.Join(remote, "skills", "bad"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "skills", "bad", "SKILL.md"), []byte(`---
+name: Bad Name
+description: Upstream skill whose name cannot be a projection path.
+---
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(remote, "init", "-q", "-b", "main")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "init")
+
+	agentsRoot := filepath.Join(base, "parent")
+	sourcesRoot := filepath.Join(agentsRoot, "resources", "skills")
+	healthy := filepath.Join(sourcesRoot, "local", "shared", "keep", "good")
+	if err := os.MkdirAll(healthy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(healthy, "SKILL.md"), []byte(`---
+name: good
+description: A local skill that must survive the broken vendor repository.
+---
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(agentsRoot, "init", "-q", "-b", "main")
+	run(agentsRoot, "add", "-A")
+	run(agentsRoot, "commit", "-q", "-m", "init")
+
+	relative := "resources/skills/vendor/shared/acme/broken"
+	run(agentsRoot, "submodule", "add", "-b", "main", remote, relative)
+	target := filepath.Join(agentsRoot, filepath.FromSlash(relative))
+	config := "version: 1\nsources:\n  vendor-shared/acme/broken:\n    branch: main\n"
+	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("catalog.Load() error = %v, want the broken repository isolated", err)
+	}
+	if _, ok := loaded.Skill("local-shared/keep/good"); !ok {
+		t.Fatal("healthy local skill lost because a vendor repository failed discovery")
+	}
+	var broken catalog.Source
+	for _, source := range loaded.Sources {
+		if source.ID == "vendor-shared/acme/broken" {
+			broken = source
+		}
+	}
+	if !broken.IsDiscoveryFailed() {
+		t.Fatalf("broken source availability = %q, want discovery-failed", broken.Availability)
+	}
+
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: GitCommander{}}
+	if err := manager.Remove(context.Background(), broken); err != nil {
+		t.Fatalf("Remove() error = %v, want a failed source to stay removable", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("checkout not removed: %v", err)
+	}
+	updated, err := os.ReadFile(filepath.Join(sourcesRoot, "catalog.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(updated), "vendor-shared/acme/broken") {
+		t.Fatalf("catalog policy not removed:\n%s", updated)
+	}
+}

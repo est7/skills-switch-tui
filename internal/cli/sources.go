@@ -168,17 +168,18 @@ func newSourceRemoveCommand(options *rootOptions) *cobra.Command {
 }
 
 type sourceView struct {
-	ID                string                      `json:"id"`
-	Kind              string                      `json:"kind"`
-	Scope             string                      `json:"scope"`
-	Path              string                      `json:"path"`
-	Skills            int                         `json:"skills"`
-	Availability      string                      `json:"availability"`
-	Branch            string                      `json:"branch,omitempty"`
-	SkillPaths        []string                    `json:"skillPaths,omitempty"`
-	SparsePaths       []string                    `json:"sparsePaths,omitempty"`
-	DiscoveryStrategy catalog.DiscoveryStrategy   `json:"discoveryStrategy,omitempty"`
-	DiscoveryPriority []catalog.DiscoveryStrategy `json:"discoveryPriority,omitempty"`
+	ID                 string                      `json:"id"`
+	Kind               string                      `json:"kind"`
+	Scope              string                      `json:"scope"`
+	Path               string                      `json:"path"`
+	Skills             int                         `json:"skills"`
+	Availability       string                      `json:"availability"`
+	AvailabilityDetail string                      `json:"availabilityDetail,omitempty"`
+	Branch             string                      `json:"branch,omitempty"`
+	SkillPaths         []string                    `json:"skillPaths,omitempty"`
+	SparsePaths        []string                    `json:"sparsePaths,omitempty"`
+	DiscoveryStrategy  catalog.DiscoveryStrategy   `json:"discoveryStrategy,omitempty"`
+	DiscoveryPriority  []catalog.DiscoveryStrategy `json:"discoveryPriority,omitempty"`
 }
 
 func newSourceListCommand(options *rootOptions) *cobra.Command {
@@ -201,17 +202,18 @@ func newSourceListCommand(options *rootOptions) *cobra.Command {
 				}
 				kind := string(catalogSource.Kind)
 				result = append(result, sourceView{
-					ID:                catalogSource.ID,
-					Kind:              kind,
-					Scope:             catalogSource.Scope,
-					Path:              catalogSource.Path,
-					Skills:            len(catalogSource.Skills),
-					Availability:      sourceAvailability(catalogSource),
-					Branch:            catalogSource.Branch,
-					SkillPaths:        catalogSource.SkillPaths,
-					SparsePaths:       catalogSource.SparsePaths,
-					DiscoveryStrategy: catalogSource.DiscoveryStrategy,
-					DiscoveryPriority: catalogSource.DiscoveryPriority,
+					ID:                 catalogSource.ID,
+					Kind:               kind,
+					Scope:              catalogSource.Scope,
+					Path:               catalogSource.Path,
+					Skills:             len(catalogSource.Skills),
+					Availability:       sourceAvailability(catalogSource),
+					AvailabilityDetail: catalogSource.AvailabilityDetail,
+					Branch:             catalogSource.Branch,
+					SkillPaths:         catalogSource.SkillPaths,
+					SparsePaths:        catalogSource.SparsePaths,
+					DiscoveryStrategy:  catalogSource.DiscoveryStrategy,
+					DiscoveryPriority:  catalogSource.DiscoveryPriority,
 				})
 			}
 			if outputJSON {
@@ -249,6 +251,9 @@ func newSourceListCommand(options *rootOptions) *cobra.Command {
 func sourceAvailability(source catalog.Source) string {
 	if source.IsCheckoutMissing() {
 		return string(catalog.SourceCheckoutMissing)
+	}
+	if source.IsDiscoveryFailed() {
+		return string(catalog.SourceDiscoveryFailed)
 	}
 	return "available"
 }

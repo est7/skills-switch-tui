@@ -63,6 +63,9 @@ type Source struct {
 	DiscoveryStrategy DiscoveryStrategy
 	Skills            []Skill
 	Availability      SourceAvailability
+	// AvailabilityDetail carries why a source is unavailable when the availability
+	// value alone does not say. Empty for SourceAvailable.
+	AvailabilityDetail string
 }
 
 type SourceAvailability string
@@ -70,10 +73,23 @@ type SourceAvailability string
 const (
 	SourceAvailable       SourceAvailability = ""
 	SourceCheckoutMissing SourceAvailability = "checkout-missing"
+	// SourceDiscoveryFailed marks a source whose checkout exists but could not be
+	// scanned: unreadable frontmatter, an unusable manifest, or a skill name that
+	// cannot be a projection path. The source keeps its identity and policy so it
+	// stays listable and removable, and exposes no skills, so nothing unvalidated
+	// reaches projection.
+	SourceDiscoveryFailed SourceAvailability = "discovery-failed"
 )
 
 func (s Source) IsCheckoutMissing() bool {
 	return s.Availability == SourceCheckoutMissing
+}
+
+// IsDiscoveryFailed reports a source whose checkout is present but could not be
+// scanned. Its skills are absent from the catalog by design, so callers that
+// iterate Skills need no special case; callers that report health do.
+func (s Source) IsDiscoveryFailed() bool {
+	return s.Availability == SourceDiscoveryFailed
 }
 
 func (s Source) IsArchived() bool {
@@ -588,9 +604,11 @@ func discoverLocalSources(root string, defaults map[Client]bool, overrides map[s
 			path := filepath.Join(scopeRoot, group.Name())
 			source, discoverErr := discoverManagedSource(id, path, nil, nil, targets, overrides, clients, fallbackAlways)
 			if discoverErr != nil {
-				return nil, discoverErr
+				source = failedSource(id, path, discoverErr)
 			}
-			if len(source.Skills) > 0 {
+			// An empty group is not a source; a group that failed to scan is, so it
+			// stays visible and removable rather than silently disappearing.
+			if len(source.Skills) > 0 || source.Availability == SourceDiscoveryFailed {
 				source.Kind = SourceLocal
 				source.Scope = scope
 				sources = append(sources, source)
@@ -626,7 +644,7 @@ func discoverVendorSources(root string, defaults map[Client]bool, config configF
 			policy := config.Sources[id]
 			source, discoverErr := discoverManagedSource(id, path, policy.DiscoveryPriority, policy.SkillPaths, targets, config.Overrides, clients, fallbackWhenNoManifest)
 			if discoverErr != nil {
-				return nil, discoverErr
+				source = failedSource(id, path, discoverErr)
 			}
 			source.Kind = SourceVendor
 			source.Scope = scope
@@ -766,9 +784,11 @@ func discoverArchivedSources(root string, defaults map[Client]bool, overrides ma
 			path := filepath.Join(scopeRoot, collection.Name())
 			source, discoverErr := discoverArchivedSource(id, path, targets, overrides, clients)
 			if discoverErr != nil {
-				return nil, discoverErr
+				source = failedSource(id, path, discoverErr)
 			}
-			if len(source.Skills) > 0 {
+			// An empty group is not a source; a group that failed to scan is, so it
+			// stays visible and removable rather than silently disappearing.
+			if len(source.Skills) > 0 || source.Availability == SourceDiscoveryFailed {
 				source.Kind = SourceArchived
 				source.Scope = scope
 				sources = append(sources, source)
@@ -838,6 +858,22 @@ func ScopedSourceID(kind SourceKind, scope, name string) string {
 
 func discoverArchivedSource(id, root string, defaults map[Client]bool, overrides map[string]overrideConfig, clients client.Registry) (Source, error) {
 	return discoverSourceRoots(id, root, []string{root}, defaults, overrides, clients, true)
+}
+
+// failedSource keeps a source whose scan failed addressable instead of failing
+// the whole catalog. It retains the identity and path that `source list` and
+// `source remove` need, and carries no skills, so a name that could not be
+// validated never reaches a projection path. Errors that are not scoped to one
+// source — an unparsable catalog.yaml, an unknown client, a missing root — still
+// fail the load.
+func failedSource(id, path string, cause error) Source {
+	return Source{
+		ID:                 id,
+		Path:               path,
+		Skills:             []Skill{},
+		Availability:       SourceDiscoveryFailed,
+		AvailabilityDetail: cause.Error(),
+	}
 }
 
 func discoverSourceRoots(id, root string, scanRoots []string, defaults map[Client]bool, overrides map[string]overrideConfig, clients client.Registry, tolerateMetadataIssues bool) (Source, error) {

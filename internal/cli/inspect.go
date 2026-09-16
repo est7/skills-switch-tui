@@ -254,6 +254,15 @@ func newDoctorCommand(options *rootOptions) *cobra.Command {
 				if err := writer.Flush(); err != nil {
 					return err
 				}
+				// The table has no room for a cause; print the ones that carry a
+				// detail underneath it so a state like discovery-failed is
+				// actionable without re-running with --json.
+				for _, issue := range result.Issues {
+					if issue.Detail == "" {
+						continue
+					}
+					fmt.Fprintf(command.OutOrStdout(), "%s: %s\n", issue.Resource, issue.Detail)
+				}
 			}
 			if !result.Healthy {
 				return errors.New(runtime.translator.Text(i18n.DoctorFoundIssues, len(result.Issues)))
@@ -280,6 +289,13 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 			result.Issues = append(result.Issues, doctorIssue{
 				Kind: "source", Resource: source.ID, State: string(catalog.SourceCheckoutMissing), Path: source.Path,
 				Detail: "configured vendor checkout is missing; run source update " + source.ID,
+			})
+		}
+		if source.IsDiscoveryFailed() {
+			result.Healthy = false
+			result.Issues = append(result.Issues, doctorIssue{
+				Kind: "source", Resource: source.ID, State: string(catalog.SourceDiscoveryFailed), Path: source.Path,
+				Detail: source.AvailabilityDetail + "; its skills stay out of the catalog until this is fixed, or run source remove " + source.ID,
 			})
 		}
 		for _, skill := range source.Skills {
