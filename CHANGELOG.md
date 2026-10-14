@@ -2,11 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.17.0] - 2026-10-14
+
+### Features
+
+- **client:** **Breaking:** Replace the gemini client with agy (Antigravity CLI)
+
 ## [v0.16.0] - 2026-09-16
 
 ### Bug Fixes
 
 - **catalog:** Isolate a source's discovery failure to that source
+
+### Documentation
+
+- **changelog:** Update for v0.16.0
 
 ## [v0.15.2] - 2026-09-10
 
