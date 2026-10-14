@@ -2,11 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.18.0] - 2026-10-14
+
+### Refactoring
+
+- **client:** **Breaking:** Drop the agy client; Antigravity shares .agents/skills
+
 ## [v0.17.0] - 2026-10-14
 
 ### Features
 
 - **client:** **Breaking:** Replace the gemini client with agy (Antigravity CLI)
+
+### Documentation
+
+- **changelog:** Update for v0.17.0
 
 ## [v0.16.0] - 2026-09-16
 
