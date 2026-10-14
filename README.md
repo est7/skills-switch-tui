@@ -60,7 +60,9 @@ The built-in client registry owns both project-local and user-global client adap
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `codex` | `.agents/skills` | `~/.agents/skills` | `.codex/config.toml` | `.codex/prompts`, `.codex/hooks` | `.codex/agents` | — | `.codex/` |
 | `claude` | `.claude/skills` | `~/.claude/skills` | `.mcp.json` | `.claude/commands`, `.claude/hooks` | `.claude/agents` | `.claude/output-styles` | `.claude/` |
-| `gemini` | `.gemini/skills` | `~/.gemini/skills` | `.gemini/settings.json` | `.gemini/commands`, `.gemini/hooks` | `.gemini/agents` | — | `.gemini/` |
+| `agy` | — | `~/.gemini/config/skills` | — | — | — | — | — |
+
+`agy` is the Antigravity CLI. It reads workspace Skills from `.agents/skills`, the directory `codex` already projects, so it has no project Skill root of its own: project-scope Skills enabled for `codex` are visible to `agy`.
 
 Clients are data, not a closed enum. Built-ins live in the binary; `resources/registry.yaml` can override them or add another client without changing Go code:
 
@@ -294,8 +296,8 @@ skills-switch skills enable --source vendor-shared/max-sixty/worktrunk --client 
 skills-switch skills disable local-shared/make-goal --client codex
 skills-switch skills prune            # list projections orphaned by upstream removals; add --yes to remove
 skills-switch mcp list
-skills-switch mcp enable context7 --client claude --client codex --client gemini
-skills-switch mcp disable context7 --client claude --client codex --client gemini
+skills-switch mcp enable context7 --client claude --client codex
+skills-switch mcp disable context7 --client claude --client codex
 skills-switch mcp import '{"mcpServers":{"context7":{"command":"npx","args":["-y","ctx7"]}}}'
 skills-switch commands list
 skills-switch commands enable shared/remember.md --client claude --client codex

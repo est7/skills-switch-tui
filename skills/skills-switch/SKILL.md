@@ -52,11 +52,11 @@ Use `skills-switch` as the only mutation boundary. Let it preserve unmanaged pro
 
 Pass every target client to one command with repeated `--client` flags. Do not loop over separate mutation commands. A single command preflights every projection before changing any of them.
 
-For example, if `status --json` reports `codex`, `claude`, and `gemini`:
+For example, if `status --json` reports `codex` and `claude`:
 
 ```bash
 skills-switch --project "$PROJECT" skills enable <skill-id> \
-  --client codex --client claude --client gemini
+  --client codex --client claude
 ```
 
 Use only compatible clients reported for the selected Skill. For source-level enablement, the CLI filters each source to compatible Skills and rejects a client with no compatible Skills.

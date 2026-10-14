@@ -55,28 +55,6 @@ func TestClaudeEnableAndDisablePreserveCommentsAndUnknownServers(t *testing.T) {
 	}
 }
 
-func TestGeminiHTTPUsesHTTPURLAndPreservesJSONC(t *testing.T) {
-	project := t.TempDir()
-	path := filepath.Join(project, ".gemini", "settings.json")
-	writeTestFile(t, path, "{\n  // Keep the theme.\n  \"theme\": \"Dracula\"\n}\n")
-	manager := testManager(project, map[string]Server{
-		"deepwiki": {Name: "deepwiki", Transport: TransportHTTP, URL: "https://mcp.deepwiki.com/mcp"},
-	})
-
-	if err := manager.Apply([]Operation{{Server: "deepwiki", Client: client.Gemini, Enabled: true}}); err != nil {
-		t.Fatal(err)
-	}
-	got := readTestFile(t, path)
-	for _, fragment := range []string{"Keep the theme.", `"theme": "Dracula"`, `"httpUrl": "https://mcp.deepwiki.com/mcp"`} {
-		if !strings.Contains(got, fragment) {
-			t.Fatalf("Gemini config lost %q:\n%s", fragment, got)
-		}
-	}
-	if strings.Contains(got, `"url":`) {
-		t.Fatalf("Gemini streamable HTTP must use httpUrl:\n%s", got)
-	}
-}
-
 func TestCodexEnableAndDisablePreserveTOMLCommentsAndSiblings(t *testing.T) {
 	project := t.TempDir()
 	path := filepath.Join(project, ".codex", "config.toml")

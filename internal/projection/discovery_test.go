@@ -50,11 +50,11 @@ func TestDiscoverUnmanagedSkillsReportsOnlyRealSkillDirectoriesInStableOrder(t *
 
 func TestDiscoverUnmanagedSkillsTreatsMissingTargetsAsEmpty(t *testing.T) {
 	projectRoot := t.TempDir()
-	geminiRoot := filepath.Join(projectRoot, ".gemini")
-	if err := os.MkdirAll(geminiRoot, 0o755); err != nil {
+	claudeRoot := filepath.Join(projectRoot, ".claude")
+	if err := os.MkdirAll(claudeRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), filepath.Join(geminiRoot, "skills")); err != nil {
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), filepath.Join(claudeRoot, "skills")); err != nil {
 		t.Fatal(err)
 	}
 	manager := NewWithUserHome(projectRoot, t.TempDir(), catalog.Catalog{Clients: client.DefaultRegistry()})

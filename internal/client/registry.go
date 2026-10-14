@@ -17,13 +17,12 @@ type Capability string
 const (
 	Codex  ID = "codex"
 	Claude ID = "claude"
-	Gemini ID = "gemini"
+	Agy    ID = "agy"
 )
 
 const (
 	MCPClaudeJSON MCPFormat = "claude-json"
 	MCPCodexTOML  MCPFormat = "codex-toml"
-	MCPGeminiJSON MCPFormat = "gemini-json"
 )
 
 const (
@@ -68,7 +67,9 @@ var clientIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 var builtins = []Definition{
 	{ID: Codex, ProjectSkillsDir: ".agents/skills", UserSkillsDir: ".agents/skills", UserPromptDir: ".codex", UserPromptMode: PromptConcat, UserPromptEntry: "AGENTS.md", ProjectCommandsDir: ".codex/prompts", ProjectHooksDir: ".codex/hooks", UserAgentsDir: ".codex/agents", ProjectMCPFile: ".codex/config.toml", ProjectMCPFormat: MCPCodexTOML},
 	{ID: Claude, ProjectSkillsDir: ".claude/skills", UserSkillsDir: ".claude/skills", UserPromptDir: ".claude", UserPromptMode: PromptTree, ProjectCommandsDir: ".claude/commands", ProjectHooksDir: ".claude/hooks", UserAgentsDir: ".claude/agents", UserOutputStylesDir: ".claude/output-styles", ProjectMCPFile: ".mcp.json", ProjectMCPFormat: MCPClaudeJSON},
-	{ID: Gemini, ProjectSkillsDir: ".gemini/skills", UserSkillsDir: ".gemini/skills", UserPromptDir: ".gemini", UserPromptMode: PromptTree, ProjectCommandsDir: ".gemini/commands", ProjectHooksDir: ".gemini/hooks", UserAgentsDir: ".gemini/agents", ProjectMCPFile: ".gemini/settings.json", ProjectMCPFormat: MCPGeminiJSON},
+	// Antigravity reads workspace skills from .agents/skills, which Codex already
+	// projects; only its user-global skills root is distinct.
+	{ID: Agy, UserSkillsDir: ".gemini/config/skills"},
 }
 
 func NewRegistry(configured map[ID]Definition) (Registry, error) {
@@ -403,7 +404,7 @@ func validateDefinition(definition Definition) error {
 		return fmt.Errorf("client %s projectMCPFile is required when projectMCPFormat is set", definition.ID)
 	}
 	switch definition.ProjectMCPFormat {
-	case "", MCPClaudeJSON, MCPCodexTOML, MCPGeminiJSON:
+	case "", MCPClaudeJSON, MCPCodexTOML:
 	default:
 		return fmt.Errorf("client %s has unknown projectMCPFormat %q", definition.ID, definition.ProjectMCPFormat)
 	}

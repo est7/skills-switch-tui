@@ -719,14 +719,7 @@ func (m Model) executeDelete() (tea.Model, tea.Cmd) {
 			err := (source.Lifecycle{Manager: manager, ProjectRoot: projectRoot, UserHome: userHome}).Remove(ctx, plan.source)
 			return deleteFinishedMsg{plan: plan, err: err}
 		}
-		operations := make([]projection.Operation, 0, len(clients)*2)
-		for _, clientID := range clients {
-			operations = append(operations, projection.Operation{Skills: plan.skills, Client: clientID, Enabled: false, Scope: projection.ScopeProject})
-			if proj.SupportsScope(clientID, projection.ScopeGlobal) {
-				operations = append(operations, projection.Operation{Skills: plan.skills, Client: clientID, Enabled: false, Scope: projection.ScopeGlobal})
-			}
-		}
-		if err := proj.Apply(operations); err != nil {
+		if err := proj.Apply(proj.DisableEverywhere(plan.skills)); err != nil {
 			return deleteFinishedMsg{plan: plan, err: fmt.Errorf("clear projections before delete: %w", err)}
 		}
 		err := catalog.RemoveLocalResource(root, plan.path)

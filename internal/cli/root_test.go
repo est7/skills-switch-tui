@@ -276,7 +276,7 @@ func TestCommandAndHookCommandsUseScopedProjectProjections(t *testing.T) {
 			t.Fatalf("missing user resource projection %s: %v", path, err)
 		}
 	}
-	if _, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "hooks", "enable", "claude-only/audit.sh", "--client", "gemini"); err == nil {
+	if _, err := execute(t, "--resources", resourceRoot, "--project", projectRoot, "hooks", "enable", "claude-only/audit.sh", "--client", "codex"); err == nil {
 		t.Fatal("client-only hook was enabled for an incompatible client")
 	}
 }

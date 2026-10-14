@@ -19,8 +19,6 @@ func projectDefinition(format client.MCPFormat, server Server) (map[string]any, 
 	switch format {
 	case client.MCPClaudeJSON:
 		return claudeDefinition(server), nil
-	case client.MCPGeminiJSON:
-		return geminiDefinition(server), nil
 	case client.MCPCodexTOML:
 		return codexDefinition(server)
 	default:
@@ -35,19 +33,6 @@ func claudeDefinition(server Server) map[string]any {
 		return result
 	}
 	result := map[string]any{"type": "stdio", "command": server.Command}
-	putStrings(result, "args", server.Args)
-	putStringMap(result, "env", server.Env)
-	putString(result, "cwd", server.CWD)
-	return result
-}
-
-func geminiDefinition(server Server) map[string]any {
-	if server.Transport == TransportHTTP {
-		result := map[string]any{"httpUrl": server.URL}
-		putStringMap(result, "headers", server.Headers)
-		return result
-	}
-	result := map[string]any{"command": server.Command}
 	putStrings(result, "args", server.Args)
 	putStringMap(result, "env", server.Env)
 	putString(result, "cwd", server.CWD)

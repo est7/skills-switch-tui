@@ -324,7 +324,6 @@ func TestSkillToggleAllClientsEnablesAndDisablesEveryCompatibleProjection(t *tes
 	for _, target := range []string{
 		filepath.Join(projectRoot, ".agents", "skills", "portable"),
 		filepath.Join(projectRoot, ".claude", "skills", "portable"),
-		filepath.Join(projectRoot, ".gemini", "skills", "portable"),
 	} {
 		if _, err := os.Readlink(target); err != nil {
 			t.Fatalf("all-client toggle did not enable %s: %v", target, err)
@@ -339,7 +338,6 @@ func TestSkillToggleAllClientsEnablesAndDisablesEveryCompatibleProjection(t *tes
 	for _, target := range []string{
 		filepath.Join(projectRoot, ".agents", "skills", "portable"),
 		filepath.Join(projectRoot, ".claude", "skills", "portable"),
-		filepath.Join(projectRoot, ".gemini", "skills", "portable"),
 	} {
 		assertNotExist(t, target)
 	}
@@ -369,7 +367,6 @@ func TestSkillToggleAllClientsPreflightsEveryClientAtomically(t *testing.T) {
 		t.Fatal("all-client toggle succeeded despite an unmanaged client conflict")
 	}
 	assertNotExist(t, filepath.Join(projectRoot, ".agents", "skills", "portable"))
-	assertNotExist(t, filepath.Join(projectRoot, ".gemini", "skills", "portable"))
 	data, err := os.ReadFile(conflict)
 	if err != nil || string(data) != "user owned\n" {
 		t.Fatalf("conflict was not preserved: %q, %v", data, err)
@@ -399,7 +396,6 @@ func TestSourceToggleAllClientsEnablesAndDisablesEveryCompatibleProjection(t *te
 	for _, target := range []string{
 		filepath.Join(projectRoot, ".agents", "skills", "universal"),
 		filepath.Join(projectRoot, ".claude", "skills", "universal"),
-		filepath.Join(projectRoot, ".gemini", "skills", "universal"),
 		filepath.Join(projectRoot, ".agents", "skills", "codex-only"),
 	} {
 		if _, err := os.Readlink(target); err != nil {
@@ -407,14 +403,13 @@ func TestSourceToggleAllClientsEnablesAndDisablesEveryCompatibleProjection(t *te
 		}
 	}
 	assertNotExist(t, filepath.Join(projectRoot, ".claude", "skills", "codex-only"))
-	assertNotExist(t, filepath.Join(projectRoot, ".gemini", "skills", "codex-only"))
 
 	updated, _ = model.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
 	model = updated.(Model)
 	if model.err != nil {
 		t.Fatalf("disable source for all clients: %v", model.err)
 	}
-	for _, clientDir := range []string{".agents", ".claude", ".gemini"} {
+	for _, clientDir := range []string{".agents", ".claude"} {
 		for _, skill := range []string{"universal", "codex-only"} {
 			assertNotExist(t, filepath.Join(projectRoot, clientDir, "skills", skill))
 		}
@@ -448,8 +443,6 @@ func TestSourceToggleAllClientsPreflightsTheWholeMatrixAtomically(t *testing.T) 
 		filepath.Join(projectRoot, ".agents", "skills", "first"),
 		filepath.Join(projectRoot, ".agents", "skills", "second"),
 		filepath.Join(projectRoot, ".claude", "skills", "first"),
-		filepath.Join(projectRoot, ".gemini", "skills", "first"),
-		filepath.Join(projectRoot, ".gemini", "skills", "second"),
 	} {
 		assertNotExist(t, target)
 	}
@@ -640,7 +633,7 @@ func TestViewKeepsSourceGroupsCollapsedUntilExpanded(t *testing.T) {
 
 	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
 	view := model.View().Content
-	for _, fragment := range []string{"NAME / SKILL", "CODEX", "CLAUDE", "GEMINI", "shared/worktrunk"} {
+	for _, fragment := range []string{"NAME / SKILL", "CODEX", "CLAUDE", "shared/worktrunk"} {
 		if !strings.Contains(view, fragment) {
 			t.Fatalf("collapsed view does not contain %q:\n%s", fragment, view)
 		}
@@ -893,7 +886,7 @@ func TestNarrowViewScrollsDynamicClientColumnsWithSelection(t *testing.T) {
 	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
 	resized, _ := model.Update(tea.WindowSizeMsg{Width: 48, Height: 24})
 	model = resized.(Model)
-	for range 3 {
+	for range 2 {
 		updated, _ := model.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
 		model = updated.(Model)
 	}
@@ -1363,7 +1356,6 @@ func TestMCPToggleAllClientsEnablesAndDisablesEveryClient(t *testing.T) {
 	configFiles := []string{
 		filepath.Join(projectRoot, ".codex", "config.toml"),
 		filepath.Join(projectRoot, ".mcp.json"),
-		filepath.Join(projectRoot, ".gemini", "settings.json"),
 	}
 
 	updated, _ := model.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})

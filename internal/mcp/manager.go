@@ -267,7 +267,7 @@ func loadPlan(path string, format client.MCPFormat, existing map[string]*filePla
 		return nil, fmt.Errorf("read MCP config %s: %w", path, err)
 	}
 	documentData := data
-	if !exists && (format == client.MCPClaudeJSON || format == client.MCPGeminiJSON) {
+	if !exists && format == client.MCPClaudeJSON {
 		documentData = []byte("{}\n")
 	}
 	document, err := parseDocument(format, documentData)

@@ -175,7 +175,7 @@ description: Create and switch worktrees.
 
 	config := `version: 1
 defaults:
-  targets: [codex, claude, gemini]
+  targets: [codex, claude, agy]
 overrides:
   local-shared/codex-tools/codex-dynamic-workflows:
     targets: [codex]
@@ -198,7 +198,7 @@ overrides:
 	if !ok {
 		t.Fatal("worktrunk skill was not discovered")
 	}
-	if !worktrunk.Supports(ClientCodex) || !worktrunk.Supports(ClientClaude) || !worktrunk.Supports(ClientGemini) {
+	if !worktrunk.Supports(ClientCodex) || !worktrunk.Supports(ClientClaude) || !worktrunk.Supports(ClientAgy) {
 		t.Fatalf("worktrunk targets = %v, want all clients", worktrunk.Targets)
 	}
 
@@ -206,7 +206,7 @@ overrides:
 	if !ok {
 		t.Fatal("codex-dynamic-workflows skill was not discovered")
 	}
-	if !dynamic.Supports(ClientCodex) || dynamic.Supports(ClientClaude) || dynamic.Supports(ClientGemini) {
+	if !dynamic.Supports(ClientCodex) || dynamic.Supports(ClientClaude) || dynamic.Supports(ClientAgy) {
 		t.Fatalf("codex-dynamic-workflows targets = %v, want codex only", dynamic.Targets)
 	}
 	if got, want := dynamic.CompatibilityReason, "Requires Codex goal and collaboration tools."; got != want {
@@ -248,7 +248,7 @@ description: Uses Pi-native workflow APIs.
 	if !ok {
 		t.Fatal("shared local skill was not discovered")
 	}
-	for _, target := range []Client{ClientCodex, ClientClaude, ClientGemini, Client("pi")} {
+	for _, target := range []Client{ClientCodex, ClientClaude, ClientAgy, Client("pi")} {
 		if !portable.Supports(target) {
 			t.Fatalf("portable does not support %s: %v", target, portable.Targets)
 		}
@@ -258,7 +258,7 @@ description: Uses Pi-native workflow APIs.
 	if !ok {
 		t.Fatal("Codex-only local skill was not discovered")
 	}
-	if !codexWorkflow.Supports(ClientCodex) || codexWorkflow.Supports(ClientClaude) || codexWorkflow.Supports(ClientGemini) || codexWorkflow.Supports(Client("pi")) {
+	if !codexWorkflow.Supports(ClientCodex) || codexWorkflow.Supports(ClientClaude) || codexWorkflow.Supports(ClientAgy) || codexWorkflow.Supports(Client("pi")) {
 		t.Fatalf("codex-workflow targets = %v, want codex only", codexWorkflow.Targets)
 	}
 
@@ -405,7 +405,7 @@ description: Uses Pi-native APIs.
 	if !ok {
 		t.Fatal("Pi-only vendor skill was not discovered")
 	}
-	if !skill.Supports(Client("pi")) || skill.Supports(ClientCodex) || skill.Supports(ClientClaude) || skill.Supports(ClientGemini) {
+	if !skill.Supports(Client("pi")) || skill.Supports(ClientCodex) || skill.Supports(ClientClaude) || skill.Supports(ClientAgy) {
 		t.Fatalf("pi-tool targets = %v, want pi only", skill.Targets)
 	}
 	source, ok := loaded.Source("vendor-pi-only/pi-labs/pi-tools")
@@ -1207,7 +1207,7 @@ overrides:
     targets: [codex]
     reason: b
   vendor-shared/other/skills/three:
-    targets: [gemini]
+    targets: [agy]
     reason: c
 `
 	if err := os.WriteFile(filepath.Join(sourcesRoot, "catalog.yaml"), []byte(config), 0o644); err != nil {

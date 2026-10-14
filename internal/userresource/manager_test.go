@@ -13,7 +13,7 @@ func TestDiscoverScopedCommandsAndProjectSharedAndClientOnlyFiles(t *testing.T) 
 	root := t.TempDir()
 	userHome := t.TempDir()
 	writeResource(t, filepath.Join(root, "shared", "remember.md"))
-	writeResource(t, filepath.Join(root, "gemini-only", "android", "generate.toml"))
+	writeResource(t, filepath.Join(root, "claude-only", "android", "generate.md"))
 
 	catalog, err := Discover(root, KindCommand, client.DefaultRegistry())
 	if err != nil {
@@ -23,29 +23,29 @@ func TestDiscoverScopedCommandsAndProjectSharedAndClientOnlyFiles(t *testing.T) 
 	if !ok {
 		t.Fatal("shared command was not discovered")
 	}
-	gemini, ok := catalog.Resource("gemini-only/android/generate.toml")
+	claudeOnly, ok := catalog.Resource("claude-only/android/generate.md")
 	if !ok {
-		t.Fatal("Gemini-only command was not discovered")
+		t.Fatal("Claude-only command was not discovered")
 	}
 	manager := NewManager(userHome, client.DefaultRegistry())
 	if err := manager.Apply([]Operation{
 		{Resource: shared, Client: client.Claude, Enabled: true},
 		{Resource: shared, Client: client.Codex, Enabled: true},
-		{Resource: gemini, Client: client.Gemini, Enabled: true},
+		{Resource: claudeOnly, Client: client.Claude, Enabled: true},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{
 		filepath.Join(userHome, ".claude", "commands", "remember.md"),
 		filepath.Join(userHome, ".codex", "prompts", "remember.md"),
-		filepath.Join(userHome, ".gemini", "commands", "android", "generate.toml"),
+		filepath.Join(userHome, ".claude", "commands", "android", "generate.md"),
 	} {
 		if _, err := os.Readlink(path); err != nil {
 			t.Fatalf("missing command projection %s: %v", path, err)
 		}
 	}
-	if state, err := manager.State(gemini, client.Claude); err != nil || state != StateIncompatible {
-		t.Fatalf("Gemini command state for Claude = %q, %v", state, err)
+	if state, err := manager.State(claudeOnly, client.Codex); err != nil || state != StateIncompatible {
+		t.Fatalf("Claude-only command state for Codex = %q, %v", state, err)
 	}
 }
 

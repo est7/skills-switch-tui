@@ -20,7 +20,7 @@ type configDocument interface {
 
 func parseDocument(format client.MCPFormat, data []byte) (configDocument, error) {
 	switch format {
-	case client.MCPClaudeJSON, client.MCPGeminiJSON:
+	case client.MCPClaudeJSON:
 		return parseJSONDocument(data)
 	case client.MCPCodexTOML:
 		return parseTOMLDocument(data)

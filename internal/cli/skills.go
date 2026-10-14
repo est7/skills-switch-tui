@@ -343,15 +343,7 @@ func newSkillDeleteCommand(options *rootOptions) *cobra.Command {
 			if len(clients) > 0 {
 				return errors.New("--client cannot limit cleanup when deleting a shared provider; omit it to retire every projection")
 			}
-			targetClients := runtime.catalog.Clients.IDsFor(client.CapabilitySkills)
-			operations := make([]projection.Operation, 0, len(targetClients)*2)
-			for _, clientID := range targetClients {
-				operations = append(operations, projection.Operation{Skills: plan.skills, Client: clientID, Enabled: false, Scope: projection.ScopeProject})
-				if runtime.projection.SupportsScope(clientID, projection.ScopeGlobal) {
-					operations = append(operations, projection.Operation{Skills: plan.skills, Client: clientID, Enabled: false, Scope: projection.ScopeGlobal})
-				}
-			}
-			if err := runtime.projection.Apply(operations); err != nil {
+			if err := runtime.projection.Apply(runtime.projection.DisableEverywhere(plan.skills)); err != nil {
 				return err
 			}
 			if err := catalog.RemoveLocalResource(runtime.catalog.Root, plan.path); err != nil {

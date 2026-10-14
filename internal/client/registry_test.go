@@ -14,7 +14,7 @@ func TestRegistryExtendsBuiltinsWithConfiguredClient(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wantIDs := []ID{Codex, Claude, Gemini, "pi"}
+	wantIDs := []ID{Codex, Claude, Agy, "pi"}
 	if got := registry.IDs(); !reflect.DeepEqual(got, wantIDs) {
 		t.Fatalf("IDs() = %v, want %v", got, wantIDs)
 	}
@@ -45,11 +45,14 @@ func TestRegistryFiltersClientsByResourceCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := registry.IDsFor(CapabilityProjectSkills); !reflect.DeepEqual(got, []ID{Codex, Claude, Gemini, "skill-only"}) {
+	if got := registry.IDsFor(CapabilityProjectSkills); !reflect.DeepEqual(got, []ID{Codex, Claude, "skill-only"}) {
 		t.Fatalf("project Skill clients = %v", got)
 	}
-	if got := registry.IDsFor(CapabilityMCP); !reflect.DeepEqual(got, []ID{Codex, Claude, Gemini, "mcp-only"}) {
+	if got := registry.IDsFor(CapabilityMCP); !reflect.DeepEqual(got, []ID{Codex, Claude, "mcp-only"}) {
 		t.Fatalf("MCP clients = %v", got)
+	}
+	if registry.Supports(Agy, CapabilityProjectSkills) {
+		t.Fatal("Agy reads workspace skills from Codex's .agents/skills and must not own a project Skill root")
 	}
 	if err := registry.Require("mcp-only", CapabilitySkills); err == nil {
 		t.Fatal("MCP-only client unexpectedly accepted as a Skill adapter")
@@ -73,7 +76,7 @@ func TestRegistryExposesBuiltinUserSkillAdapters(t *testing.T) {
 	for id, relative := range map[ID]string{
 		Codex:  filepath.Join(".agents", "skills"),
 		Claude: filepath.Join(".claude", "skills"),
-		Gemini: filepath.Join(".gemini", "skills"),
+		Agy:    filepath.Join(".gemini", "config", "skills"),
 	} {
 		got, err := registry.UserSkillsTargetDir("/tmp/home", id)
 		if err != nil {
@@ -90,7 +93,6 @@ func TestRegistryExposesBuiltinPromptAndMCPAdapters(t *testing.T) {
 	for id, relative := range map[ID]string{
 		Codex:  ".codex",
 		Claude: ".claude",
-		Gemini: ".gemini",
 	} {
 		promptDir, err := registry.UserPromptTargetDir("/tmp/home", id)
 		if err != nil {
@@ -135,8 +137,8 @@ func TestRegistryValidatesConcatPromptAdapter(t *testing.T) {
 
 func TestRegistryExposesBuiltinCommandAndHookAdapters(t *testing.T) {
 	registry := DefaultRegistry()
-	commandDir, err := registry.ProjectCommandsTargetDir("/tmp/project", Gemini)
-	if err != nil || commandDir != filepath.Join("/tmp/project", ".gemini", "commands") {
+	commandDir, err := registry.ProjectCommandsTargetDir("/tmp/project", Claude)
+	if err != nil || commandDir != filepath.Join("/tmp/project", ".claude", "commands") {
 		t.Fatalf("ProjectCommandsTargetDir() = %q, %v", commandDir, err)
 	}
 	hookDir, err := registry.ProjectHooksTargetDir("/tmp/project", Codex)

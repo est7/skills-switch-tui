@@ -404,6 +404,21 @@ func (m Manager) SupportsScope(clientID catalog.Client, scope Scope) bool {
 	return definition.ProjectSkillsDir != ""
 }
 
+// DisableEverywhere returns the operations that retire skills from every scope
+// each registered client supports, so deleting their provider leaves no
+// projection behind. A client may support only one of the two scopes.
+func (m Manager) DisableEverywhere(skills []catalog.Skill) []Operation {
+	operations := make([]Operation, 0)
+	for _, clientID := range m.clients.IDs() {
+		for _, scope := range []Scope{ScopeProject, ScopeGlobal} {
+			if m.SupportsScope(clientID, scope) {
+				operations = append(operations, Operation{Skills: skills, Client: clientID, Enabled: false, Scope: scope})
+			}
+		}
+	}
+	return operations
+}
+
 func (m Manager) Apply(operations []Operation) error {
 	changes := make([]change, 0)
 	conflicts := make([]Conflict, 0)
@@ -443,7 +458,7 @@ func (m Manager) Apply(operations []Operation) error {
 				}
 			}
 		}
-		if scope == ScopeGlobal && operation.Enabled {
+		if scope == ScopeGlobal && operation.Enabled && m.SupportsScope(operation.Client, ScopeProject) {
 			projectDir, projectErr := m.clients.TargetDir(m.projectRoot, operation.Client)
 			if projectErr != nil {
 				return projectErr
