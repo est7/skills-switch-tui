@@ -127,28 +127,35 @@ func TestGlobalOnlyClientEnablesAndRetiresWithoutAProjectRoot(t *testing.T) {
 	projectRoot := t.TempDir()
 	userHome := t.TempDir()
 	skill := newSkill(t, t.TempDir(), "core")
-	skill.Targets[catalog.ClientAgy] = true
-	loaded := catalog.Catalog{Clients: client.DefaultRegistry(), Sources: []catalog.Source{{ID: "local-shared/core", Skills: []catalog.Skill{skill}}}}
+	globalOnly := catalog.Client("global-only")
+	skill.Targets[globalOnly] = true
+	registry, err := client.NewRegistry(map[client.ID]client.Definition{
+		globalOnly: {UserSkillsDir: ".global-only/skills"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded := catalog.Catalog{Clients: registry, Sources: []catalog.Source{{ID: "local-shared/core", Skills: []catalog.Skill{skill}}}}
 	manager := NewWithUserHome(projectRoot, userHome, loaded)
-	if manager.SupportsScope(catalog.ClientAgy, ScopeProject) {
-		t.Fatal("fixture requires agy to be a global-only Skill client")
+	if manager.SupportsScope(globalOnly, ScopeProject) {
+		t.Fatal("fixture requires a global-only Skill client")
 	}
 
 	if err := manager.Apply([]Operation{
-		{Skills: []catalog.Skill{skill}, Client: catalog.ClientAgy, Enabled: true, Scope: ScopeGlobal},
+		{Skills: []catalog.Skill{skill}, Client: globalOnly, Enabled: true, Scope: ScopeGlobal},
 		{Skills: []catalog.Skill{skill}, Client: catalog.ClientCodex, Enabled: true, Scope: ScopeProject},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	agyLink := filepath.Join(userHome, ".gemini", "config", "skills", "core")
+	globalOnlyLink := filepath.Join(userHome, ".global-only", "skills", "core")
 	codexLink := filepath.Join(projectRoot, ".agents", "skills", "core")
-	assertLinkTarget(t, agyLink, skill.Path)
+	assertLinkTarget(t, globalOnlyLink, skill.Path)
 	assertLinkTarget(t, codexLink, skill.Path)
 
 	if err := manager.Apply(manager.DisableEverywhere([]catalog.Skill{skill})); err != nil {
 		t.Fatal(err)
 	}
-	assertMissing(t, agyLink)
+	assertMissing(t, globalOnlyLink)
 	assertMissing(t, codexLink)
 }
 

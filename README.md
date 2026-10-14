@@ -60,9 +60,12 @@ The built-in client registry owns both project-local and user-global client adap
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `codex` | `.agents/skills` | `~/.agents/skills` | `.codex/config.toml` | `.codex/prompts`, `.codex/hooks` | `.codex/agents` | — | `.codex/` |
 | `claude` | `.claude/skills` | `~/.claude/skills` | `.mcp.json` | `.claude/commands`, `.claude/hooks` | `.claude/agents` | `.claude/output-styles` | `.claude/` |
-| `agy` | — | `~/.gemini/config/skills` | — | — | — | — | — |
 
-`agy` is the Antigravity CLI. It reads workspace Skills from `.agents/skills`, the directory `codex` already projects, so it has no project Skill root of its own: project-scope Skills enabled for `codex` are visible to `agy`.
+The Antigravity CLI (`agy`) is not a separate client: it shares the `codex` Skill directories. It reads workspace Skills from `.agents/skills` natively; to make it read `~/.agents/skills` too, list that directory in `~/.gemini/config/skills.json`. The path must be absolute — `agy` does not expand `~` there:
+
+```json
+{ "entries": [ { "path": "/Users/<you>/.agents/skills" } ] }
+```
 
 Clients are data, not a closed enum. Built-ins live in the binary; `resources/registry.yaml` can override them or add another client without changing Go code:
 

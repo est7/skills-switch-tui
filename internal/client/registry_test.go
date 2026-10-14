@@ -14,7 +14,7 @@ func TestRegistryExtendsBuiltinsWithConfiguredClient(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wantIDs := []ID{Codex, Claude, Agy, "pi"}
+	wantIDs := []ID{Codex, Claude, "pi"}
 	if got := registry.IDs(); !reflect.DeepEqual(got, wantIDs) {
 		t.Fatalf("IDs() = %v, want %v", got, wantIDs)
 	}
@@ -51,9 +51,6 @@ func TestRegistryFiltersClientsByResourceCapability(t *testing.T) {
 	if got := registry.IDsFor(CapabilityMCP); !reflect.DeepEqual(got, []ID{Codex, Claude, "mcp-only"}) {
 		t.Fatalf("MCP clients = %v", got)
 	}
-	if registry.Supports(Agy, CapabilityProjectSkills) {
-		t.Fatal("Agy reads workspace skills from Codex's .agents/skills and must not own a project Skill root")
-	}
 	if err := registry.Require("mcp-only", CapabilitySkills); err == nil {
 		t.Fatal("MCP-only client unexpectedly accepted as a Skill adapter")
 	}
@@ -76,7 +73,6 @@ func TestRegistryExposesBuiltinUserSkillAdapters(t *testing.T) {
 	for id, relative := range map[ID]string{
 		Codex:  filepath.Join(".agents", "skills"),
 		Claude: filepath.Join(".claude", "skills"),
-		Agy:    filepath.Join(".gemini", "config", "skills"),
 	} {
 		got, err := registry.UserSkillsTargetDir("/tmp/home", id)
 		if err != nil {

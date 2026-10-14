@@ -17,7 +17,6 @@ type Capability string
 const (
 	Codex  ID = "codex"
 	Claude ID = "claude"
-	Agy    ID = "agy"
 )
 
 const (
@@ -67,9 +66,6 @@ var clientIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 var builtins = []Definition{
 	{ID: Codex, ProjectSkillsDir: ".agents/skills", UserSkillsDir: ".agents/skills", UserPromptDir: ".codex", UserPromptMode: PromptConcat, UserPromptEntry: "AGENTS.md", ProjectCommandsDir: ".codex/prompts", ProjectHooksDir: ".codex/hooks", UserAgentsDir: ".codex/agents", ProjectMCPFile: ".codex/config.toml", ProjectMCPFormat: MCPCodexTOML},
 	{ID: Claude, ProjectSkillsDir: ".claude/skills", UserSkillsDir: ".claude/skills", UserPromptDir: ".claude", UserPromptMode: PromptTree, ProjectCommandsDir: ".claude/commands", ProjectHooksDir: ".claude/hooks", UserAgentsDir: ".claude/agents", UserOutputStylesDir: ".claude/output-styles", ProjectMCPFile: ".mcp.json", ProjectMCPFormat: MCPClaudeJSON},
-	// Antigravity reads workspace skills from .agents/skills, which Codex already
-	// projects; only its user-global skills root is distinct.
-	{ID: Agy, UserSkillsDir: ".gemini/config/skills"},
 }
 
 func NewRegistry(configured map[ID]Definition) (Registry, error) {
