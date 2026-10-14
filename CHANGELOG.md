@@ -2,7 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.18.1] - 2026-10-14
+
+### Documentation
+
+- **readme:** Document agy-only Skill roots via a configured client
+
 ## [v0.18.0] - 2026-10-14
+
+### Documentation
+
+- **changelog:** Update for v0.18.0
 
 ### Refactoring
 
