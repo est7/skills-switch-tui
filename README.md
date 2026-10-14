@@ -67,6 +67,24 @@ The Antigravity CLI (`agy`) is not a separate client: it shares the `codex` Skil
 { "entries": [ { "path": "/Users/<you>/.agents/skills" } ] }
 ```
 
+Skills that only `agy` should see need their own roots, which `agy` also reads: `.agent/skills` in a workspace and `~/.gemini/config/skills` globally. Register them as a client in `resources/registry.yaml`, then pin the catalog defaults so shared Skills keep targeting only `codex` and `claude` — otherwise a shared Skill enabled for `agy` loads twice:
+
+```yaml
+# resources/registry.yaml
+clients:
+  agy:
+    projectSkillsDir: .agent/skills
+    userSkillsDir: .gemini/config/skills
+```
+
+```yaml
+# resources/skills/catalog.yaml
+defaults:
+  targets: [codex, claude]
+```
+
+Skills under `skills/local/agy/` or `skills/vendor/agy/` then target `agy` alone. Add `.agent/` to your gitignore.
+
 Clients are data, not a closed enum. Built-ins live in the binary; `resources/registry.yaml` can override them or add another client without changing Go code:
 
 ```yaml
