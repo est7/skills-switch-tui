@@ -20,6 +20,7 @@ func TestUpdateHardResetsReadOnlySourceBeforeInspectingAndUpdating(t *testing.T)
 		target + "|clean -ffdx":                      "Removing local-only/\n",
 		target + "|rev-parse HEAD":                   "aaaaaaaa\n",
 		target + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
+
 		agentsRoot + "|submodule update --init -- sources/vendor/shared/modified": "",
 		target + "|fetch --no-tags origin refs/heads/main":                        "",
 		target + "|reset --hard bbbbbbbb":                                         "HEAD is now at bbbbbbbb remote\n",
@@ -160,6 +161,7 @@ func TestUpdateRecomputesDerivedSparsePathsAfterManifestChanges(t *testing.T) {
 		target + "|clean -ffdx":                      "",
 		target + "|rev-parse HEAD":                   "aaaaaaaa\n",
 		target + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
+
 		agentsRoot + "|submodule update --init -- sources/vendor/shared/changing": "",
 		target + "|fetch --no-tags origin refs/heads/main":                        "",
 		target + "|reset --hard bbbbbbbb":                                         "",

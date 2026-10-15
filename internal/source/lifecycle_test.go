@@ -39,6 +39,7 @@ func TestLifecycleUpdatePrunesLastSkillFromProjectAndGlobalScopes(t *testing.T) 
 		sourcePath + "|clean -ffdx":                      "",
 		sourcePath + "|rev-parse HEAD":                   "aaaaaaaa\n",
 		sourcePath + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
+
 		repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/repo": "",
 		sourcePath + "|fetch --no-tags origin refs/heads/main":                             "",
 		sourcePath + "|reset --hard bbbbbbbb":                                              "",
@@ -110,6 +111,7 @@ func TestLifecycleUpdatePrunesRemovedSkillAndPreservesLiveSkill(t *testing.T) {
 		sourcePath + "|clean -ffdx":                      "",
 		sourcePath + "|rev-parse HEAD":                   "aaaaaaaa\n",
 		sourcePath + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
+
 		repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/repo": "",
 		sourcePath + "|fetch --no-tags origin refs/heads/main":                             "",
 		sourcePath + "|reset --hard bbbbbbbb":                                              "",
