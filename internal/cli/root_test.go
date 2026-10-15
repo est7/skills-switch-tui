@@ -359,6 +359,9 @@ func TestDoctorReportsProjectCommandConflict(t *testing.T) {
 }
 
 func TestEnableThenListReportsProjectState(t *testing.T) {
+	// Isolate the user home: a real global projection of the same name would
+	// lock the project scope this test enables.
+	t.Setenv("HOME", t.TempDir())
 	resourceRoot := t.TempDir()
 	sourcesRoot := filepath.Join(resourceRoot, "skills")
 	projectRoot := t.TempDir()
