@@ -18,6 +18,11 @@ import (
 // (for example after a discovery scope was narrowed) is deliberately not an
 // orphan — that is a scan/config concern, and removing such a link would delete
 // a projection whose skill is still present.
+//
+// A stale link — one into the resources skills root, outside every registered
+// source, whose target is gone — is an orphan as well: its provider left the
+// catalog, typically because its source was relocated or removed while this
+// project was not the one being operated on.
 type Orphan struct {
 	Client catalog.Client
 	Scope  Scope
@@ -50,7 +55,15 @@ func (m Manager) OrphanedProjections(sources []catalog.Source) ([]Orphan, error)
 }
 
 func (m Manager) OrphanedProjectionsAt(sources []catalog.Source, scope Scope) ([]Orphan, error) {
-	return m.orphanedProjectionsAt(sources, scope, false)
+	orphans, err := m.orphanedProjectionsAt(sources, scope, false)
+	if err != nil {
+		return nil, err
+	}
+	stale, err := m.staleProjectionsAt(scope)
+	if err != nil {
+		return nil, err
+	}
+	return append(orphans, stale...), nil
 }
 
 // OrphanedProjectionsAfterRefreshAt is the update-only variant of orphan
@@ -155,6 +168,53 @@ func (m Manager) orphanedProjectionsAt(sources []catalog.Source, scope Scope, re
 		}
 	}
 	return orphans, nil
+}
+
+// staleProjectionsAt reports the stale links in every client directory of
+// scope. They lie outside every registered source, so they never overlap the
+// per-source orphans. The post-update cleanup deliberately leaves them alone:
+// an update concerns only the sources it refreshed.
+func (m Manager) staleProjectionsAt(scope Scope) ([]Orphan, error) {
+	if scope == ScopeGlobal && m.userHome == "" {
+		return nil, errors.New("global skill scope requires a user home")
+	}
+	capability := client.CapabilityProjectSkills
+	if scope == ScopeGlobal {
+		capability = client.CapabilityGlobalSkills
+	}
+	stale := make([]Orphan, 0)
+	for _, clientID := range m.clients.IDsFor(capability) {
+		targetDir, err := m.targetDirAt(clientID, scope)
+		if err != nil {
+			continue
+		}
+		entries, err := os.ReadDir(targetDir)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read projection directory %s: %w", targetDir, err)
+		}
+		for _, entry := range entries {
+			if entry.Type()&os.ModeSymlink == 0 {
+				continue
+			}
+			linkPath := filepath.Join(targetDir, entry.Name())
+			target, err := os.Readlink(linkPath)
+			if err != nil {
+				return nil, fmt.Errorf("read projection %s: %w", linkPath, err)
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(targetDir, target)
+			}
+			target = filepath.Clean(target)
+			if !m.isStaleTarget(target) {
+				continue
+			}
+			stale = append(stale, Orphan{Client: clientID, Scope: scope, Name: entry.Name(), Path: linkPath, Target: target})
+		}
+	}
+	return stale, nil
 }
 
 // PruneOrphans removes the given orphan symlinks. Before unlinking each one it

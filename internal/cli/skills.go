@@ -183,7 +183,8 @@ type pruneOutput struct {
 
 // newSkillPruneCommand removes projections in the selected scope whose skill
 // disappeared from its source — the residue an upstream `source update` leaves
-// when a skill is dropped. It lists candidates by default and only removes them
+// when a skill is dropped — and stale links whose source was relocated or
+// removed while another project was the one being operated on. It lists candidates by default and only removes them
 // with --yes, mirroring `skills delete`. Detection reuses the same guard as the
 // automatic post-update cleanup: an empty (unavailable) source is never treated
 // as a wholesale removal.

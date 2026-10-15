@@ -294,7 +294,7 @@ Launching the TUI never updates submodules automatically. Press `u` for the sele
 
 Batch updates isolate failures per source, so a reset, clean, or Git failure in one repository does not block independent repositories. Source Git failures include the source id, repository path, failed operation, and underlying Git detail. After an update, the catalog is rediscovered from the new upstream snapshot; added and removed Skills immediately change each source's enabled/total counts.
 
-When an update removes a Skill that was enabled, `source update` reconciles the changed source automatically: it removes dangling catalog-managed links from both the current project scope (when available) and user-global scope. A Skill that is merely no longer discovered but still exists on disk is never removed. Reconciliation failures remain observable and make the command fail instead of silently leaving state inconsistent. JSON output is an object `{updates, pruned, failures}`; every pruned link includes its scope, source-attributed failures include source/path/operation fields, and every failure includes its error. Run `skills prune` at any time to review other orphaned projections (`--yes` removes them), and `doctor` reports them as unhealthy.
+When an update removes a Skill that was enabled, `source update` reconciles the changed source automatically: it removes dangling catalog-managed links from both the current project scope (when available) and user-global scope. A Skill that is merely no longer discovered but still exists on disk is never removed. Reconciliation failures remain observable and make the command fail instead of silently leaving state inconsistent. JSON output is an object `{updates, pruned, failures}`; every pruned link includes its scope, source-attributed failures include source/path/operation fields, and every failure includes its error. Run `skills prune` at any time to review other orphaned projections (`--yes` removes them), and `doctor` reports them as unhealthy. A link is also orphaned when it is stale: it points into the resources `skills/` tree, outside every registered source, and its target is gone. Moving a source (`source migrate`) or removing it rewrites links only in the project it ran against, so other projects keep such links. A stale link never blocks a Skill: enabling a Skill of the same name replaces it, and promoting the Skill to global removes it.
 
 `source remove` first retires the source's catalog-managed projections in the current project and user-global scopes, then removes the clean vendor submodule, gitlink, `.gitmodules` entry, and catalog policy. If source removal fails, the retired projections are restored. The command still refuses a dirty vendor checkout; other projects may retain links to the removed source and must be handled in their own scope.
 
@@ -315,7 +315,7 @@ skills-switch skills create make-goal --description "Draft a goal."
 skills-switch status
 skills-switch skills enable --source vendor-shared/max-sixty/worktrunk --client codex --client claude
 skills-switch skills disable local-shared/make-goal --client codex
-skills-switch skills prune            # list projections orphaned by upstream removals; add --yes to remove
+skills-switch skills prune            # list orphaned or stale projections; add --yes to remove
 skills-switch mcp list
 skills-switch mcp enable context7 --client claude --client codex
 skills-switch mcp disable context7 --client claude --client codex

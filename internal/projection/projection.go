@@ -16,6 +16,7 @@ type Manager struct {
 	projectRoot     string
 	userHome        string
 	skillsRoot      string
+	sourceRoots     []string
 	clients         client.Registry
 	providersByPath map[string]catalog.Skill
 	beforeAdoptLink func(path, backupPath, ssotPath string) error
@@ -27,7 +28,9 @@ func New(projectRoot string, loaded catalog.Catalog) Manager {
 
 func NewWithUserHome(projectRoot, userHome string, loaded catalog.Catalog) Manager {
 	providersByPath := make(map[string]catalog.Skill)
+	sourceRoots := make([]string, 0, len(loaded.Sources))
 	for _, source := range loaded.Sources {
+		sourceRoots = append(sourceRoots, filepath.Clean(source.Path))
 		if source.IsArchived() {
 			continue
 		}
@@ -39,6 +42,7 @@ func NewWithUserHome(projectRoot, userHome string, loaded catalog.Catalog) Manag
 		projectRoot:     projectRoot,
 		userHome:        userHome,
 		skillsRoot:      loaded.Root,
+		sourceRoots:     sourceRoots,
 		clients:         loaded.Clients,
 		providersByPath: providersByPath,
 	}
@@ -88,9 +92,9 @@ func (m Manager) StateAt(skill catalog.Skill, client catalog.Client, scope Scope
 			return "", err
 		}
 		_, err = os.Lstat(globalPath)
-		if err == nil && m.resolvesToManagedAlternative(globalPath, skill) {
-			// Another provider holds the global name; this skill's project
-			// scope is independent of it.
+		if err == nil && m.yieldsSlot(globalPath, skill) {
+			// Another provider or a stale link holds the global name; this
+			// skill's project scope is independent of it.
 			return m.directState(skill, client, scope)
 		}
 		if err == nil {
@@ -99,7 +103,7 @@ func (m Manager) StateAt(skill catalog.Skill, client catalog.Client, scope Scope
 				return "", pathErr
 			}
 			if _, projectErr := os.Lstat(projectPath); projectErr == nil {
-				if !m.resolvesToManagedAlternative(projectPath, skill) {
+				if !m.yieldsSlot(projectPath, skill) {
 					return StateDuplicate, nil
 				}
 			} else if !errors.Is(projectErr, os.ErrNotExist) {
@@ -161,7 +165,7 @@ func (m Manager) HealthAt(skill catalog.Skill, client catalog.Client, scope Scop
 	}
 	health.Target = filepath.Clean(target)
 	if filepath.Clean(target) != filepath.Clean(skill.Path) {
-		if m.isManagedAlternative(target, skill) {
+		if m.isManagedAlternative(target, skill) || m.isStaleTarget(target) {
 			if !supported {
 				health.State = StateIncompatible
 				return health, nil
@@ -449,7 +453,7 @@ func (m Manager) Apply(operations []Operation) error {
 			for _, skill := range operation.Skills {
 				path := filepath.Join(globalDir, skill.Name)
 				if _, globalErr := os.Lstat(path); globalErr == nil {
-					if m.resolvesToManagedAlternative(path, skill) {
+					if m.yieldsSlot(path, skill) {
 						continue
 					}
 					conflicts = append(conflicts, Conflict{Path: path, Reason: "skill is globally configured; disable global scope first"})
@@ -602,7 +606,7 @@ func (m Manager) plan(skills []catalog.Skill, client catalog.Client, targetDir s
 			resolvedTarget = filepath.Join(filepath.Dir(linkPath), resolvedTarget)
 		}
 		if filepath.Clean(resolvedTarget) != filepath.Clean(skill.Path) {
-			if m.isManagedAlternative(resolvedTarget, skill) {
+			if m.isManagedAlternative(resolvedTarget, skill) || m.isStaleTarget(resolvedTarget) {
 				if enabled {
 					changes = append(changes, change{
 						action:         replaceLink,
@@ -655,6 +659,10 @@ func (m Manager) planRetireProject(skills []catalog.Skill, targetDir string) ([]
 		if !filepath.IsAbs(resolved) {
 			resolved = filepath.Join(filepath.Dir(path), resolved)
 		}
+		if m.isStaleTarget(resolved) {
+			changes = append(changes, change{action: removeLink, path: path, target: resolved, originalTarget: original})
+			continue
+		}
 		provider, managed := m.providersByPath[filepath.Clean(resolved)]
 		if !managed || provider.Name != skill.Name {
 			conflicts = append(conflicts, Conflict{Path: path, Reason: "project skill blocks global promotion and is not catalog-managed"})
@@ -670,11 +678,12 @@ func (m Manager) planRetireProject(skills []catalog.Skill, targetDir string) ([]
 	return changes, conflicts
 }
 
-// resolvesToManagedAlternative reports whether path is a symlink to a
-// catalog-managed provider that shares selected's name but is a different
-// skill. Such a link occupies the name for another provider and must neither
-// count as selected's own projection nor block selected in the other scope.
-func (m Manager) resolvesToManagedAlternative(path string, selected catalog.Skill) bool {
+// yieldsSlot reports whether path is a symlink that occupies selected's name
+// without being selected's projection and without blocking it: a link to a
+// catalog-managed alternative provider, or a stale link. Such a link must
+// neither count as selected's own projection nor block selected in the other
+// scope.
+func (m Manager) yieldsSlot(path string, selected catalog.Skill) bool {
 	info, err := os.Lstat(path)
 	if err != nil || info.Mode()&os.ModeSymlink == 0 {
 		return false
@@ -686,10 +695,33 @@ func (m Manager) resolvesToManagedAlternative(path string, selected catalog.Skil
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(filepath.Dir(path), target)
 	}
-	return m.isManagedAlternative(target, selected)
+	return m.isManagedAlternative(target, selected) || m.isStaleTarget(target)
 }
 
 func (m Manager) isManagedAlternative(target string, selected catalog.Skill) bool {
 	provider, ok := m.providersByPath[filepath.Clean(target)]
 	return ok && provider.Name == selected.Name && filepath.Clean(provider.Path) != filepath.Clean(selected.Path)
+}
+
+// isStaleTarget reports whether target is what a managed projection points at
+// after its provider left the catalog: it lies under the resources skills root,
+// outside every registered source, and nothing exists there. Relocating or
+// removing a source rewrites only the projections of the project and user it
+// ran against, so every other project keeps such links. Registered sources are
+// excluded even when their checkout is missing, so an unavailable checkout is
+// never mistaken for a departed provider; a source's own dropped Skills remain
+// the per-source orphan detection's concern. Replacing or removing a stale link
+// discards only the dangling link itself.
+func (m Manager) isStaleTarget(target string) bool {
+	target = filepath.Clean(target)
+	if m.skillsRoot == "" || !underRoot(target, filepath.Clean(m.skillsRoot)) {
+		return false
+	}
+	for _, root := range m.sourceRoots {
+		if target == root || underRoot(target, root) {
+			return false
+		}
+	}
+	_, err := os.Lstat(target)
+	return errors.Is(err, os.ErrNotExist)
 }
