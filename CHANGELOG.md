@@ -2,11 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.18.2] - 2026-10-15
+
+### Bug Fixes
+
+- **projection:** Reclaim stale links left by source relocation
+- **tui:** Toggle a global duplicate off in project scope
+
+### Styling
+
+- **source:** Gofmt source test fixtures
+- **source:** Make git fixture maps gofmt-stable across Go versions
+
+### Testing
+
+- **cli:** Isolate HOME in the enable-then-list test
+
 ## [v0.18.1] - 2026-10-14
 
 ### Documentation
 
 - **readme:** Document agy-only Skill roots via a configured client
+- **changelog:** Update for v0.18.1
 
 ## [v0.18.0] - 2026-10-14
 
