@@ -35,10 +35,10 @@ func TestLifecycleUpdatePrunesLastSkillFromProjectAndGlobalScopes(t *testing.T) 
 	}
 
 	git := &recordingGit{responses: map[string]string{
-		sourcePath + "|reset --hard HEAD":                                                  "",
-		sourcePath + "|clean -ffdx":                                                        "",
-		sourcePath + "|rev-parse HEAD":                                                     "aaaaaaaa\n",
-		sourcePath + "|ls-remote origin refs/heads/main":                                   "bbbbbbbb\trefs/heads/main\n",
+		sourcePath + "|reset --hard HEAD":                "",
+		sourcePath + "|clean -ffdx":                      "",
+		sourcePath + "|rev-parse HEAD":                   "aaaaaaaa\n",
+		sourcePath + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
 		repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/repo": "",
 		sourcePath + "|fetch --no-tags origin refs/heads/main":                             "",
 		sourcePath + "|reset --hard bbbbbbbb":                                              "",
@@ -106,10 +106,10 @@ func TestLifecycleUpdatePrunesRemovedSkillAndPreservesLiveSkill(t *testing.T) {
 		}
 	}
 	git := &recordingGit{responses: map[string]string{
-		sourcePath + "|reset --hard HEAD":                                                  "",
-		sourcePath + "|clean -ffdx":                                                        "",
-		sourcePath + "|rev-parse HEAD":                                                     "aaaaaaaa\n",
-		sourcePath + "|ls-remote origin refs/heads/main":                                   "bbbbbbbb\trefs/heads/main\n",
+		sourcePath + "|reset --hard HEAD":                "",
+		sourcePath + "|clean -ffdx":                      "",
+		sourcePath + "|rev-parse HEAD":                   "aaaaaaaa\n",
+		sourcePath + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
 		repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/repo": "",
 		sourcePath + "|fetch --no-tags origin refs/heads/main":                             "",
 		sourcePath + "|reset --hard bbbbbbbb":                                              "",
@@ -221,7 +221,7 @@ func TestLifecycleRemoveRetiresProjectAndGlobalProjections(t *testing.T) {
 	}
 	relative := filepath.ToSlash(filepath.Join("resources", "skills", "vendor", "shared", "repo"))
 	git := &recordingGit{responses: map[string]string{
-		repositoryRoot + "|ls-files --stage -- " + relative:         "160000 0000000000000000000000000000000000000000 0\t" + relative + "\n",
+		repositoryRoot + "|ls-files --stage -- " + relative:          "160000 0000000000000000000000000000000000000000 0\t" + relative + "\n",
 		sourcePath + "|status --porcelain":                           "",
 		repositoryRoot + "|rm -f -- " + relative:                     "",
 		repositoryRoot + "|rev-parse --git-path modules/" + relative: "",

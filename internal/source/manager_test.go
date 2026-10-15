@@ -16,10 +16,10 @@ func TestUpdateHardResetsReadOnlySourceBeforeInspectingAndUpdating(t *testing.T)
 	agentsRoot := t.TempDir()
 	target := filepath.Join(agentsRoot, "sources", "vendor", "shared", "modified")
 	git := &recordingGit{responses: map[string]string{
-		target + "|reset --hard HEAD":                                             "HEAD is now at aaaaaaaa current\n",
-		target + "|clean -ffdx":                                                   "Removing local-only/\n",
-		target + "|rev-parse HEAD":                                                "aaaaaaaa\n",
-		target + "|ls-remote origin refs/heads/main":                              "bbbbbbbb\trefs/heads/main\n",
+		target + "|reset --hard HEAD":                "HEAD is now at aaaaaaaa current\n",
+		target + "|clean -ffdx":                      "Removing local-only/\n",
+		target + "|rev-parse HEAD":                   "aaaaaaaa\n",
+		target + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
 		agentsRoot + "|submodule update --init -- sources/vendor/shared/modified": "",
 		target + "|fetch --no-tags origin refs/heads/main":                        "",
 		target + "|reset --hard bbbbbbbb":                                         "HEAD is now at bbbbbbbb remote\n",
@@ -156,10 +156,10 @@ func TestUpdateRecomputesDerivedSparsePathsAfterManifestChanges(t *testing.T) {
   "skills": ["./skills/old"]
 }`)
 	git := &recordingGit{responses: map[string]string{
-		target + "|reset --hard HEAD":                                             "HEAD is now at aaaaaaaa current\n",
-		target + "|clean -ffdx":                                                   "",
-		target + "|rev-parse HEAD":                                                "aaaaaaaa\n",
-		target + "|ls-remote origin refs/heads/main":                              "bbbbbbbb\trefs/heads/main\n",
+		target + "|reset --hard HEAD":                "HEAD is now at aaaaaaaa current\n",
+		target + "|clean -ffdx":                      "",
+		target + "|rev-parse HEAD":                   "aaaaaaaa\n",
+		target + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
 		agentsRoot + "|submodule update --init -- sources/vendor/shared/changing": "",
 		target + "|fetch --no-tags origin refs/heads/main":                        "",
 		target + "|reset --hard bbbbbbbb":                                         "",
@@ -233,7 +233,7 @@ func TestRemoveRejectsDirtyVendorBeforeGitMutation(t *testing.T) {
 	target := filepath.Join(agentsRoot, "resources", "skills", "vendor", "shared", "dirty")
 	git := &recordingGit{responses: map[string]string{
 		agentsRoot + "|ls-files --stage -- resources/skills/vendor/shared/dirty": "160000 0000000000000000000000000000000000000000 0\tresources/skills/vendor/shared/dirty\n",
-		target + "|status --porcelain": " M SKILL.md\n",
+		target + "|status --porcelain":                                           " M SKILL.md\n",
 	}}
 	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: filepath.Join(agentsRoot, "resources", "skills"), Git: git}
 
