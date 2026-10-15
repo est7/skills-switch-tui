@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -301,6 +302,69 @@ func TestSkillScopeKeyPromotesToGlobalAndLocksProjectToggle(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(projectRoot, ".agents", "skills", "core")); !os.IsNotExist(err) {
 		t.Fatalf("locked project toggle created a link: %v", err)
+	}
+}
+
+func TestProjectToggleRemovesDuplicateShadowedByGlobal(t *testing.T) {
+	cases := map[string]struct {
+		key     tea.KeyPressMsg
+		removed []catalog.Client
+	}{
+		"selected client": {key: tea.KeyPressMsg{Code: tea.KeySpace}, removed: []catalog.Client{catalog.ClientCodex}},
+		"all clients":     {key: tea.KeyPressMsg{Code: 'a', Text: "a"}, removed: []catalog.Client{catalog.ClientCodex, catalog.ClientClaude}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			sourcesRoot := t.TempDir()
+			projectRoot := t.TempDir()
+			userHome := t.TempDir()
+			skillPath := filepath.Join(sourcesRoot, "local", "shared", "core")
+			writeSkill(t, skillPath, "core")
+			loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The Skill was promoted to global from another project, so this
+			// project keeps its old projection next to the global one.
+			dirs := map[catalog.Client]string{catalog.ClientCodex: ".agents", catalog.ClientClaude: ".claude"}
+			for _, dir := range dirs {
+				for _, root := range []string{projectRoot, userHome} {
+					link := filepath.Join(root, dir, "skills", "core")
+					if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(skillPath, link); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			manager := projection.NewWithUserHome(projectRoot, userHome, loaded)
+			model := NewModel(loaded, projectRoot, manager, nil, i18n.New(i18n.English), Resources{UserHome: userHome})
+			skill := loaded.Sources[0].Skills[0]
+			if state, err := model.skillState(skill, catalog.ClientCodex); err != nil || state != projection.StateDuplicate {
+				t.Fatalf("codex state = %q, %v; want duplicate", state, err)
+			}
+
+			updated, _ := model.Update(tc.key)
+			model = updated.(Model)
+			if model.err != nil {
+				t.Fatalf("duplicate toggle: %v", model.err)
+			}
+			for clientID, dir := range dirs {
+				projectLink := filepath.Join(projectRoot, dir, "skills", "core")
+				if slices.Contains(tc.removed, clientID) {
+					assertNotExist(t, projectLink)
+					if cell, _ := model.stateCell(skill, clientID); cell != "G" {
+						t.Fatalf("%s cell = %q, want the remaining global projection", clientID, cell)
+					}
+				} else if _, err := os.Readlink(projectLink); err != nil {
+					t.Fatalf("toggle touched unselected %s: %v", clientID, err)
+				}
+				if target, err := os.Readlink(filepath.Join(userHome, dir, "skills", "core")); err != nil || target != skillPath {
+					t.Fatalf("%s global link = %q, %v; want it kept", clientID, target, err)
+				}
+			}
+		})
 	}
 }
 

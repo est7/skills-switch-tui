@@ -951,7 +951,7 @@ func (m *Model) toggleSkillSelection() {
 					m.status = m.translator.Text(i18n.InspectProjectFailed)
 					return
 				}
-				if state != projection.StateEnabled {
+				if !projectedInScope(state) {
 					enable = true
 					break
 				}
@@ -978,7 +978,7 @@ func (m *Model) toggleSkillSelection() {
 			return
 		}
 		skills = []catalog.Skill{skill}
-		enable = state != projection.StateEnabled && state != projection.StateIncompatibleEnabled
+		enable = !projectedInScope(state) && state != projection.StateIncompatibleEnabled
 	}
 	if source.IsArchived() && enable {
 		m.err = errors.New(m.translator.Text(i18n.ArchiveReferenceError, source.ID))
@@ -998,6 +998,15 @@ func (m *Model) toggleSkillSelection() {
 		resultKey = i18n.EnabledSkills
 	}
 	m.status = m.translator.Text(resultKey, len(skills), client)
+}
+
+// projectedInScope reports whether state is a compatible projection in the
+// active scope that a toggle turns off. A duplicate is a project projection
+// shadowed by the same Skill's global one — typically left behind when the
+// Skill was promoted from another project — so toggling it removes the project
+// copy and keeps the global one, instead of re-enabling into a conflict.
+func projectedInScope(state projection.State) bool {
+	return state == projection.StateEnabled || state == projection.StateDuplicate
 }
 
 func (m *Model) toggleAllClients() {
@@ -1043,14 +1052,14 @@ func (m *Model) toggleAllClients() {
 				return
 			}
 			states[stateKey{skill: skillIndex, client: clientID}] = state
-			if state == projection.StateEnabled || state == projection.StateIncompatibleEnabled {
+			if projectedInScope(state) || state == projection.StateIncompatibleEnabled {
 				hasManagedProjection = true
 			}
 			if !skill.Supports(clientID) {
 				continue
 			}
 			compatibleCount++
-			if state != projection.StateEnabled {
+			if !projectedInScope(state) {
 				enable = true
 			}
 		}
@@ -1079,7 +1088,7 @@ func (m *Model) toggleAllClients() {
 				}
 				continue
 			}
-			if state == projection.StateEnabled || state == projection.StateIncompatibleEnabled {
+			if projectedInScope(state) || state == projection.StateIncompatibleEnabled {
 				toDisable = append(toDisable, skill)
 			}
 		}
