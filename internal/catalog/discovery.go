@@ -93,6 +93,14 @@ type unusableManifestError struct{ err error }
 func (e *unusableManifestError) Error() string { return e.err.Error() }
 func (e *unusableManifestError) Unwrap() error { return e.err }
 
+// discoveryInputs is what one discovery strategy reads from a source tree: the
+// skill roots it scans and the plugin directories whose presence it requires.
+// A sparse checkout must keep both, or discovery fails on the checkout it planned.
+type discoveryInputs struct {
+	skillRoots  []string
+	pluginPaths []string
+}
+
 type DiscoveryPlan struct {
 	Strategy    DiscoveryStrategy
 	SparsePaths []string
@@ -134,7 +142,7 @@ func PlanVendorDiscovery(root string, configuredPriority []DiscoveryStrategy, sk
 		if err != nil {
 			return DiscoveryPlan{}, fmt.Errorf("plan explicit discovery: %w", err)
 		}
-		paths, err := sparsePathsForDiscovery(root, DiscoveryExplicit, roots)
+		paths, err := sparsePathsForDiscovery(root, DiscoveryExplicit, discoveryInputs{skillRoots: roots})
 		if err != nil {
 			return DiscoveryPlan{}, fmt.Errorf("plan sparse checkout for explicit discovery: %w", err)
 		}
@@ -146,7 +154,7 @@ func PlanVendorDiscovery(root string, configuredPriority []DiscoveryStrategy, sk
 	}
 	var unusable error
 	for _, strategy := range priority {
-		roots, matched, err := discoveryRoots(root, strategy)
+		inputs, matched, err := discoveryRoots(root, strategy)
 		if err != nil {
 			wrapped := fmt.Errorf("plan discovery with %s: %w", strategy, err)
 			var contentErr *unusableManifestError
@@ -161,7 +169,7 @@ func PlanVendorDiscovery(root string, configuredPriority []DiscoveryStrategy, sk
 		if !matched {
 			continue
 		}
-		paths, err := sparsePathsForDiscovery(root, strategy, roots)
+		paths, err := sparsePathsForDiscovery(root, strategy, inputs)
 		if err != nil {
 			return DiscoveryPlan{}, fmt.Errorf("plan sparse checkout for %s: %w", strategy, err)
 		}
@@ -228,7 +236,7 @@ func discoverManagedSource(
 	}
 	var unusable error
 	for _, strategy := range priority {
-		roots, matched, err := discoveryRoots(root, strategy)
+		inputs, matched, err := discoveryRoots(root, strategy)
 		if err != nil {
 			wrapped := fmt.Errorf("discover source %s with %s: %w", id, strategy, err)
 			var contentErr *unusableManifestError
@@ -243,7 +251,7 @@ func discoverManagedSource(
 		if !matched {
 			continue
 		}
-		source, err := discoverSourceRoots(id, root, roots, defaults, overrides, clients, false)
+		source, err := discoverSourceRoots(id, root, inputs.skillRoots, defaults, overrides, clients, false)
 		if err != nil {
 			return Source{}, err
 		}
@@ -318,7 +326,7 @@ func containsSkillManifest(dir string) (bool, error) {
 	return found, err
 }
 
-func discoveryRoots(root string, strategy DiscoveryStrategy) ([]string, bool, error) {
+func discoveryRoots(root string, strategy DiscoveryStrategy) (discoveryInputs, bool, error) {
 	switch strategy {
 	case DiscoveryAgentsMarketplace:
 		return marketplaceRoots(
@@ -333,66 +341,71 @@ func discoveryRoots(root string, strategy DiscoveryStrategy) ([]string, bool, er
 			filepath.Join(".claude-plugin", "plugin.json"),
 		)
 	case DiscoveryCodexPlugin:
-		return pluginManifestRoots(root, root, filepath.Join(root, ".codex-plugin", "plugin.json"))
+		return skillRootsOnly(pluginManifestRoots(root, root, filepath.Join(root, ".codex-plugin", "plugin.json")))
 	case DiscoveryClaudePlugin:
-		return pluginManifestRoots(root, root, filepath.Join(root, ".claude-plugin", "plugin.json"))
+		return skillRootsOnly(pluginManifestRoots(root, root, filepath.Join(root, ".claude-plugin", "plugin.json")))
 	case DiscoverySkillsDir:
 		skillsRoot := filepath.Join(root, "skills")
 		if !isDirectory(skillsRoot) {
-			return nil, false, nil
+			return discoveryInputs{}, false, nil
 		}
-		return []string{skillsRoot}, true, nil
+		return discoveryInputs{skillRoots: []string{skillsRoot}}, true, nil
 	default:
-		return nil, false, fmt.Errorf("unknown discovery strategy %q", strategy)
+		return discoveryInputs{}, false, fmt.Errorf("unknown discovery strategy %q", strategy)
 	}
 }
 
-func marketplaceRoots(sourceRoot, manifestPath, pluginManifestRelativePath string) ([]string, bool, error) {
+func skillRootsOnly(roots []string, matched bool, err error) (discoveryInputs, bool, error) {
+	return discoveryInputs{skillRoots: roots}, matched, err
+}
+
+func marketplaceRoots(sourceRoot, manifestPath, pluginManifestRelativePath string) (discoveryInputs, bool, error) {
 	data, err := os.ReadFile(manifestPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, nil
+		return discoveryInputs{}, false, nil
 	}
 	if err != nil {
-		return nil, true, fmt.Errorf("read %s: %w", manifestPath, err)
+		return discoveryInputs{}, true, fmt.Errorf("read %s: %w", manifestPath, err)
 	}
 	var manifest marketplaceManifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, true, &unusableManifestError{fmt.Errorf("parse %s: %w", manifestPath, err)}
+		return discoveryInputs{}, true, &unusableManifestError{fmt.Errorf("parse %s: %w", manifestPath, err)}
 	}
 
-	roots := make([]string, 0)
+	inputs := discoveryInputs{skillRoots: make([]string, 0)}
 	seen := make(map[string]bool)
 	for _, plugin := range manifest.Plugins {
 		sourcePath, err := decodeMarketplaceSource(plugin.Source)
 		if err != nil {
-			return nil, true, &unusableManifestError{fmt.Errorf("plugin %q source: %w", plugin.Name, err)}
+			return discoveryInputs{}, true, &unusableManifestError{fmt.Errorf("plugin %q source: %w", plugin.Name, err)}
 		}
 		pluginRoot, err := resolveDeclaredPath(sourceRoot, sourceRoot, sourcePath)
 		if err != nil {
-			return nil, true, &unusableManifestError{fmt.Errorf("plugin %q source path %q: %w", plugin.Name, sourcePath, err)}
+			return discoveryInputs{}, true, &unusableManifestError{fmt.Errorf("plugin %q source path %q: %w", plugin.Name, sourcePath, err)}
 		}
-		pluginRoots, manifestFound, err := pluginManifestRoots(
-			sourceRoot,
-			pluginRoot,
-			filepath.Join(pluginRoot, pluginManifestRelativePath),
-		)
+		pluginManifestPath := filepath.Join(pluginRoot, pluginManifestRelativePath)
+		pluginRoots, manifestFound, err := pluginManifestRoots(sourceRoot, pluginRoot, pluginManifestPath)
 		if err != nil {
-			return nil, true, fmt.Errorf("plugin %q: %w", plugin.Name, err)
+			return discoveryInputs{}, true, fmt.Errorf("plugin %q: %w", plugin.Name, err)
 		}
-		if !manifestFound {
-			defaultSkillsRoot := filepath.Join(pluginRoot, "skills")
-			if isDirectory(defaultSkillsRoot) {
-				pluginRoots = []string{defaultSkillsRoot}
-			}
+		// Discovery resolves every declared plugin root, so the sparse checkout
+		// must keep each one even when the plugin contributes no skills.
+		switch defaultSkillsRoot := filepath.Join(pluginRoot, "skills"); {
+		case manifestFound:
+			inputs.pluginPaths = append(inputs.pluginPaths, filepath.Dir(pluginManifestPath))
+		case isDirectory(defaultSkillsRoot):
+			pluginRoots = []string{defaultSkillsRoot}
+		case pluginRoot != sourceRoot:
+			inputs.pluginPaths = append(inputs.pluginPaths, pluginRoot)
 		}
 		for _, root := range pluginRoots {
 			if !seen[root] {
 				seen[root] = true
-				roots = append(roots, root)
+				inputs.skillRoots = append(inputs.skillRoots, root)
 			}
 		}
 	}
-	return roots, true, nil
+	return inputs, true, nil
 }
 
 func decodeMarketplaceSource(raw json.RawMessage) (string, error) {
@@ -497,7 +510,7 @@ func resolveDeclaredPath(sourceRoot, base, declared string) (string, error) {
 	return resolved, nil
 }
 
-func sparsePathsForDiscovery(sourceRoot string, strategy DiscoveryStrategy, roots []string) ([]string, error) {
+func sparsePathsForDiscovery(sourceRoot string, strategy DiscoveryStrategy, inputs discoveryInputs) ([]string, error) {
 	paths := make(map[string]bool)
 	requiresFullRoot := false
 	add := func(path string) error {
@@ -534,27 +547,9 @@ func sparsePathsForDiscovery(sourceRoot string, strategy DiscoveryStrategy, root
 		}
 	}
 
-	for _, root := range roots {
-		if err := add(root); err != nil {
+	for _, path := range append(append([]string(nil), inputs.pluginPaths...), inputs.skillRoots...) {
+		if err := add(path); err != nil {
 			return nil, err
-		}
-		manifestDirectory := ".claude-plugin"
-		if strategy == DiscoveryAgentsMarketplace {
-			manifestDirectory = ".codex-plugin"
-		}
-		if strategy == DiscoveryAgentsMarketplace || strategy == DiscoveryClaudeMarketplace {
-			for current := filepath.Dir(root); current != sourceRoot; current = filepath.Dir(current) {
-				manifestPath := filepath.Join(current, manifestDirectory, "plugin.json")
-				if _, err := os.Stat(manifestPath); err == nil {
-					if err := add(filepath.Dir(manifestPath)); err != nil {
-						return nil, err
-					}
-					break
-				}
-				if filepath.Dir(current) == current {
-					break
-				}
-			}
 		}
 	}
 	if requiresFullRoot {
