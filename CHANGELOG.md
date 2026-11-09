@@ -2,12 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.18.3] - 2026-11-09
+
+### Bug Fixes
+
+- **catalog:** Keep skill-less marketplace plugins in sparse checkouts
+
 ## [v0.18.2] - 2026-10-15
 
 ### Bug Fixes
 
 - **projection:** Reclaim stale links left by source relocation
 - **tui:** Toggle a global duplicate off in project scope
+
+### Documentation
+
+- **changelog:** Update for v0.18.2
 
 ### Styling
 
