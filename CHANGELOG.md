@@ -2,11 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.19.0] - 2026-11-24
+
+### Features
+
+- **source:** Default source add to shallow clones and keep updates shallow
+
+### Other
+
+- Merge branch 'source/s1-shallow-clone' into main
+
 ## [v0.18.3] - 2026-11-09
 
 ### Bug Fixes
 
 - **catalog:** Keep skill-less marketplace plugins in sparse checkouts
+
+### Documentation
+
+- **changelog:** Update for v0.18.3
 
 ## [v0.18.2] - 2026-10-15
 
