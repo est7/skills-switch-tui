@@ -64,6 +64,9 @@ func (m Manager) Add(ctx context.Context, request AddRequest) (returnErr error) 
 	if request.Branch == "" {
 		request.Branch = "main"
 	}
+	if strings.HasPrefix(request.Branch, "-") {
+		return fmt.Errorf("invalid branch name %q", request.Branch)
+	}
 	if request.Scope == "" {
 		request.Scope = "shared"
 	}
@@ -112,25 +115,82 @@ func (m Manager) Add(ctx context.Context, request AddRequest) (returnErr error) 
 	if err != nil || strings.HasPrefix(relativePath, "..") {
 		return fmt.Errorf("skills root must be inside repository root %s: %s", repositoryRoot, m.SkillsRoot)
 	}
-	// The rollback is armed before `submodule add` runs: git clones into
-	// .git/modules first and only then checks the branch out, so a missing
-	// branch fails after the clone with nothing staged and a checkout holding
-	// nothing but a .git pointer. Both that strand and a fully added submodule
-	// are discarded the same way.
+	gitdir, err := m.resolveSubmoduleGitdir(ctx, repositoryRoot, relativePath)
+	if err != nil {
+		return err
+	}
+	if gitdir != "" {
+		if _, err := os.Lstat(gitdir); err == nil {
+			return fmt.Errorf("submodule gitdir already exists: %s", gitdir)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect submodule gitdir: %w", err)
+		}
+	}
+	hadGitmodules := false
+	if _, err := os.Lstat(filepath.Join(repositoryRoot, ".gitmodules")); err == nil {
+		hadGitmodules = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect .gitmodules: %w", err)
+	}
+	slashRelative := filepath.ToSlash(relativePath)
+	// The rollback is armed before cloning begins. Preflight already confirmed
+	// neither targetPath nor its .git/modules gitdir existed beforehand, so any
+	// partial clone, absorbed submodule, or newly created .gitmodules can be
+	// removed cleanly on failure.
 	completed := false
+	cloneStarted := false
+	shallowWritten := false
+	shallowStaged := false
 	defer func() {
 		if completed {
 			return
 		}
-		if rollbackErr := m.discardCheckout(context.WithoutCancel(ctx), repositoryRoot, targetPath, relativePath); rollbackErr != nil {
+		undoCtx := context.WithoutCancel(ctx)
+		if shallowWritten && !shallowStaged {
+			// Undo an unstaged .gitmodules edit so `git rm -f` does not refuse
+			// to remove the submodule section.
+			if _, unsetErr := m.Git.Output(undoCtx, repositoryRoot,
+				"config", "--file", ".gitmodules", "--unset", "submodule."+slashRelative+".shallow",
+			); unsetErr != nil {
+				returnErr = errors.Join(returnErr, fmt.Errorf("rollback shallow config: %w", unsetErr))
+			}
+		}
+		if rollbackErr := m.discardCheckout(undoCtx, repositoryRoot, targetPath, relativePath, cloneStarted, hadGitmodules); rollbackErr != nil {
 			returnErr = errors.Join(returnErr, fmt.Errorf("rollback added submodule: %w", rollbackErr))
 		}
 	}()
+	// Clone directly with --depth 1 --branch --single-branch instead of relying
+	// on `git submodule add --depth 1 -b`: git's submodule add passes --depth
+	// to clone without forwarding -b, which fails whenever the tracked branch
+	// is not the remote's default HEAD.
+	cloneStarted = true
 	if _, err := m.Git.Output(ctx, repositoryRoot,
-		"submodule", "add", "-b", request.Branch, request.URL, filepath.ToSlash(relativePath),
+		"clone", "--depth", "1", "--branch", request.Branch, "--single-branch", "--", request.URL, slashRelative,
 	); err != nil {
 		return err
 	}
+	if _, err := m.Git.Output(ctx, repositoryRoot,
+		"submodule", "add", "-b", request.Branch, "--", request.URL, slashRelative,
+	); err != nil {
+		return err
+	}
+	if _, err := m.Git.Output(ctx, repositoryRoot,
+		"submodule", "absorbgitdirs", "--", slashRelative,
+	); err != nil {
+		return err
+	}
+	if _, err := m.Git.Output(ctx, repositoryRoot,
+		"config", "--file", ".gitmodules", "submodule."+slashRelative+".shallow", "true",
+	); err != nil {
+		return err
+	}
+	shallowWritten = true
+	if _, err := m.Git.Output(ctx, repositoryRoot,
+		"add", "--", ".gitmodules",
+	); err != nil {
+		return err
+	}
+	shallowStaged = true
 	discovery, err := catalog.PlanVendorDiscovery(targetPath, request.DiscoveryPriority, request.SkillPaths)
 	if err != nil {
 		return err
@@ -934,18 +994,34 @@ func (m Manager) removeOrphanCheckout(ctx context.Context, repositoryRoot string
 }
 
 // discardCheckout removes a vendor checkout in whichever state an add left it: a
-// staged gitlink is dropped through git so .gitmodules follows, and a checkout
-// that never reached the index is deleted directly. Both end with the
+// staged gitlink is dropped through git so .gitmodules follows, and an unstaged
+// checkout that Add just cloned is deleted directly. Both end with the
 // .git/modules gitdir gone, so a later add of the same path is not refused as
 // an existing local repository, and with an emptied owner directory pruned.
-func (m Manager) discardCheckout(ctx context.Context, repositoryRoot, targetPath, relativePath string) error {
+func (m Manager) discardCheckout(ctx context.Context, repositoryRoot, targetPath, relativePath string, ownedCheckout, hadGitmodules bool) error {
+	slashRelative := filepath.ToSlash(relativePath)
 	staged, err := m.isStagedGitlink(ctx, repositoryRoot, relativePath)
 	if err != nil {
 		return err
 	}
 	if staged {
-		if _, err := m.Git.Output(ctx, repositoryRoot, "rm", "-f", "--", filepath.ToSlash(relativePath)); err != nil {
+		if _, err := m.Git.Output(ctx, repositoryRoot, "rm", "-f", "--", slashRelative); err != nil {
 			return err
+		}
+		if !hadGitmodules {
+			gitmodulesPath := filepath.Join(repositoryRoot, ".gitmodules")
+			data, readErr := os.ReadFile(gitmodulesPath)
+			if readErr == nil && strings.TrimSpace(string(data)) == "" {
+				if _, err := m.Git.Output(ctx, repositoryRoot, "rm", "-f", "--", ".gitmodules"); err != nil {
+					return err
+				}
+			} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+				return fmt.Errorf("inspect .gitmodules: %w", readErr)
+			}
+		}
+	} else if ownedCheckout {
+		if err := os.RemoveAll(targetPath); err != nil {
+			return fmt.Errorf("delete partial checkout %s: %w", targetPath, err)
 		}
 	} else if err := removeStrandedCheckout(targetPath); err != nil {
 		return err
@@ -1015,28 +1091,27 @@ func (m Manager) pruneEmptyOwnerDirectory(sourcePath string) {
 	_ = os.Remove(owner)
 }
 
-// removeSubmoduleGitdir deletes only a strict descendant of the repository's
-// common Git modules directory. Git-provided paths are treated as untrusted
-// filesystem input and cleanup failures remain observable to the caller.
-func (m Manager) removeSubmoduleGitdir(ctx context.Context, repositoryRoot, relativePath string) error {
+// resolveSubmoduleGitdir resolves the submodule's gitdir under the repository's
+// common Git modules directory and rejects any path outside it.
+func (m Manager) resolveSubmoduleGitdir(ctx context.Context, repositoryRoot, relativePath string) (string, error) {
 	out, err := m.Git.Output(ctx, repositoryRoot, "rev-parse", "--git-path", "modules/"+filepath.ToSlash(relativePath))
 	if err != nil {
-		return fmt.Errorf("resolve submodule gitdir: %w", err)
+		return "", fmt.Errorf("resolve submodule gitdir: %w", err)
 	}
 	gitdir := strings.TrimSpace(string(out))
 	if gitdir == "" {
-		return nil
+		return "", nil
 	}
 	if !filepath.IsAbs(gitdir) {
 		gitdir = filepath.Join(repositoryRoot, gitdir)
 	}
 	commonOut, err := m.Git.Output(ctx, repositoryRoot, "rev-parse", "--git-common-dir")
 	if err != nil {
-		return fmt.Errorf("resolve Git common directory: %w", err)
+		return "", fmt.Errorf("resolve Git common directory: %w", err)
 	}
 	commonDir := strings.TrimSpace(string(commonOut))
 	if commonDir == "" {
-		return errors.New("resolve Git common directory: empty path")
+		return "", errors.New("resolve Git common directory: empty path")
 	}
 	if !filepath.IsAbs(commonDir) {
 		commonDir = filepath.Join(repositoryRoot, commonDir)
@@ -1045,7 +1120,18 @@ func (m Manager) removeSubmoduleGitdir(ctx context.Context, repositoryRoot, rela
 	gitdir = filepath.Clean(gitdir)
 	relative, err := filepath.Rel(modulesRoot, gitdir)
 	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("refuse submodule gitdir outside %s: %s", modulesRoot, gitdir)
+		return "", fmt.Errorf("refuse submodule gitdir outside %s: %s", modulesRoot, gitdir)
+	}
+	return gitdir, nil
+}
+
+// removeSubmoduleGitdir deletes only a strict descendant of the repository's
+// common Git modules directory. Git-provided paths are treated as untrusted
+// filesystem input and cleanup failures remain observable to the caller.
+func (m Manager) removeSubmoduleGitdir(ctx context.Context, repositoryRoot, relativePath string) error {
+	gitdir, err := m.resolveSubmoduleGitdir(ctx, repositoryRoot, relativePath)
+	if err != nil || gitdir == "" {
+		return err
 	}
 	if err := os.RemoveAll(gitdir); err != nil {
 		return fmt.Errorf("delete submodule gitdir %s: %w", gitdir, err)
@@ -1164,10 +1250,16 @@ func (m Manager) Update(ctx context.Context, sources []catalog.Source, dryRun bo
 }
 
 func (m Manager) applyUpdate(ctx context.Context, source catalog.Source, revision string) (bool, error) {
-	if err := m.initializeSubmodule(ctx, source); err != nil {
-		return false, err
+	shallow, err := m.isShallowRepository(ctx, source.Path)
+	if err != nil {
+		return false, sourceError(source, "inspect shallow state", err)
 	}
-	if _, err := m.Git.Output(ctx, source.Path, "fetch", "--no-tags", "origin", "refs/heads/"+source.Branch); err != nil {
+	fetchArgs := []string{"fetch", "--no-tags"}
+	if shallow {
+		fetchArgs = append(fetchArgs, "--depth", "1")
+	}
+	fetchArgs = append(fetchArgs, "origin", "refs/heads/"+source.Branch)
+	if _, err := m.Git.Output(ctx, source.Path, fetchArgs...); err != nil {
 		return false, sourceError(source, "fetch tracked branch", err)
 	}
 	if _, err := m.Git.Output(ctx, source.Path, "reset", "--hard", revision); err != nil {
@@ -1201,6 +1293,21 @@ func (m Manager) applyUpdate(ctx context.Context, source catalog.Source, revisio
 		return false, sourceError(source, "reapply sparse checkout", err)
 	}
 	return true, nil
+}
+
+func (m Manager) isShallowRepository(ctx context.Context, path string) (bool, error) {
+	output, err := m.Git.Output(ctx, path, "rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return false, err
+	}
+	switch state := strings.TrimSpace(string(output)); state {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("unexpected shallow repository state %q", state)
+	}
 }
 
 func (m Manager) initializeSubmodule(ctx context.Context, source catalog.Source) error {

@@ -188,7 +188,7 @@ The sections below detail each surface: vendor source registration and discovery
 
 ## Vendor sources
 
-Add an upstream repository as a submodule tracking `main`. `source add <ref>` accepts an `owner/repo` (or `owner/repo/sub/path`) GitHub shorthand, a `github:`/`gitlab:` prefix, a full web link (including `/tree/<branch>/<path>` and the GitLab `/-/tree/` form), a plain `<repo>.git`, or an scp-style `git@host:owner/repo`. It derives the source name, branch, and Skill subpath, so `--name` is optional when it can be derived and explicit flags override:
+Add an upstream repository as a shallow submodule (`--depth 1`, recording `shallow = true` in `.gitmodules`) tracking `main`. `source add <ref>` accepts an `owner/repo` (or `owner/repo/sub/path`) GitHub shorthand, a `github:`/`gitlab:` prefix, a full web link (including `/tree/<branch>/<path>` and the GitLab `/-/tree/` form), a plain `<repo>.git`, or an scp-style `git@host:owner/repo`. It derives the source name, branch, and Skill subpath, so `--name` is optional when it can be derived and explicit flags override:
 
 ```sh
 skills-switch source add DannyMac180/skills                                   # owner/repo shorthand
@@ -290,7 +290,7 @@ skills-switch source update vendor-shared/max-sixty/worktrunk
 skills-switch source remove vendor-shared/max-sixty/worktrunk
 ```
 
-Launching the TUI never updates submodules automatically. Press `u` for the selected vendor source, `U` for every vendor source, or use `source update` without a source ID. Vendor submodules are read-only mirrors: before remote inspection, a real update runs `git reset --hard HEAD` and `git clean -ffdx` in each selected checkout, discarding tracked, untracked, and ignored local changes. It then reads the exact configured branch tip, fetches that ref, resets to the advertised SHA, and verifies the resulting `HEAD`. A missing registered checkout is initialized by a real update. `--dry-run` remains non-mutating.
+Launching the TUI never updates submodules automatically. Press `u` for the selected vendor source, `U` for every vendor source, or use `source update` without a source ID. Vendor submodules are read-only mirrors: before remote inspection, a real update runs `git reset --hard HEAD` and `git clean -ffdx` in each selected checkout, discarding tracked, untracked, and ignored local changes. It then reads the exact configured branch tip, fetches that ref (with `--depth 1` on shallow checkouts so history stays shallow), resets to the advertised SHA, and verifies the resulting `HEAD`. A missing registered checkout is initialized by a real update. `--dry-run` remains non-mutating.
 
 Batch updates isolate failures per source, so a reset, clean, or Git failure in one repository does not block independent repositories. Source Git failures include the source id, repository path, failed operation, and underlying Git detail. After an update, the catalog is rediscovered from the new upstream snapshot; added and removed Skills immediately change each source's enabled/total counts.
 

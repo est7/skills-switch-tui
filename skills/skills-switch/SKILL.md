@@ -146,7 +146,7 @@ skills-switch source add <url> \
   --skill-path plugins/android-ui-tools
 ```
 
-One repository is one vendor source (a single git submodule), so plugins selected from the same repo share one source id; their Skill ids carry the `plugins/<name>/...` path that distinguishes them, and each Skill still enables/disables independently. `--name` defaults to the remote's `owner/repo`; pass it to override.
+One repository is one vendor source (a single git submodule, cloned shallowly at `--depth 1` with `shallow = true` recorded in `.gitmodules`), so plugins selected from the same repo share one source id; their Skill ids carry the `plugins/<name>/...` path that distinguishes them, and each Skill still enables/disables independently. `--name` defaults to the remote's `owner/repo`; pass it to override.
 
 Restrict the whole source to a single client with `--client <client>`; on `source add` this flag is single-valued (one client per source), unlike the repeatable `--client` on `skills enable`/`skills disable`.
 
@@ -237,7 +237,7 @@ skills-switch --project "$PROJECT" source update <source-id>
 
 When a project is in scope, pass `--project "$PROJECT"` to `source update`, `source remove`, and `source migrate`. Without it they resolve a project from the current working directory, so reconciliation, projection retirement, and migration repointing can attach to an unrelated project or to none. Omit it only when the operation intentionally has no project scope.
 
-Update every vendor source by omitting the source ID. Each checkout is a read-only mirror: before remote inspection, a real update runs `git reset --hard HEAD` and `git clean -ffdx`, discarding tracked, untracked, and ignored local changes. It initializes a missing registered checkout, reads the exact configured branch tip, fetches that ref, resets to the advertised SHA, and verifies `HEAD`. `--dry-run` is non-mutating. Failures are isolated per source and identify the source, path, operation, and underlying Git error.
+Update every vendor source by omitting the source ID. Each checkout is a read-only mirror: before remote inspection, a real update runs `git reset --hard HEAD` and `git clean -ffdx`, discarding tracked, untracked, and ignored local changes. It initializes a missing registered checkout, reads the exact configured branch tip, fetches that ref (with `--depth 1` on shallow checkouts so history stays shallow), resets to the advertised SHA, and verifies `HEAD`. `--dry-run` is non-mutating. Failures are isolated per source and identify the source, path, operation, and underlying Git error.
 
 After changed sources are rediscovered, the command removes dangling catalog-managed Skill links from the current project scope (when available) and user-global scope. Reconciliation failures are command failures, not warnings. JSON output contains `updates`, scope-bearing `pruned` links, and structured `failures`.
 

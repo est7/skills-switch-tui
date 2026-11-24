@@ -21,10 +21,10 @@ func TestUpdateHardResetsReadOnlySourceBeforeInspectingAndUpdating(t *testing.T)
 		target + "|rev-parse HEAD":                   "aaaaaaaa\n",
 		target + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
 
-		agentsRoot + "|submodule update --init -- sources/vendor/shared/modified": "",
-		target + "|fetch --no-tags origin refs/heads/main":                        "",
-		target + "|reset --hard bbbbbbbb":                                         "HEAD is now at bbbbbbbb remote\n",
-		target + "|rev-parse --verify HEAD":                                       "bbbbbbbb\n",
+		target + "|rev-parse --is-shallow-repository":      "false\n",
+		target + "|fetch --no-tags origin refs/heads/main": "",
+		target + "|reset --hard bbbbbbbb":                  "HEAD is now at bbbbbbbb remote\n",
+		target + "|rev-parse --verify HEAD":                "bbbbbbbb\n",
 	}}
 	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: filepath.Join(agentsRoot, "sources"), Git: git}
 	sources := []catalog.Source{{ID: "vendor-shared/modified", Kind: catalog.SourceVendor, Scope: "shared", Path: target, Branch: "main"}}
@@ -39,7 +39,7 @@ func TestUpdateHardResetsReadOnlySourceBeforeInspectingAndUpdating(t *testing.T)
 	if len(git.calls) < 7 || git.calls[0] != "reset --hard HEAD" || git.calls[1] != "clean -ffdx" || git.calls[2] != "rev-parse HEAD" {
 		t.Fatalf("Update() did not clean the read-only checkout before inspection: %v", git.calls)
 	}
-	if !git.called("submodule update --init -- sources/vendor/shared/modified") ||
+	if !git.called("rev-parse --is-shallow-repository") ||
 		!git.called("fetch --no-tags origin refs/heads/main") ||
 		!git.called("reset --hard bbbbbbbb") {
 		t.Fatalf("Update() did not update the reset source; calls = %v", git.calls)
@@ -162,13 +162,13 @@ func TestUpdateRecomputesDerivedSparsePathsAfterManifestChanges(t *testing.T) {
 		target + "|rev-parse HEAD":                   "aaaaaaaa\n",
 		target + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
 
-		agentsRoot + "|submodule update --init -- sources/vendor/shared/changing": "",
-		target + "|fetch --no-tags origin refs/heads/main":                        "",
-		target + "|reset --hard bbbbbbbb":                                         "",
-		target + "|rev-parse --verify HEAD":                                       "bbbbbbbb\n",
-		target + "|sparse-checkout disable":                                       "",
-		target + "|sparse-checkout init --cone":                                   "",
-		target + "|sparse-checkout set .claude-plugin skills/new":                 "",
+		target + "|rev-parse --is-shallow-repository":             "false\n",
+		target + "|fetch --no-tags origin refs/heads/main":        "",
+		target + "|reset --hard bbbbbbbb":                         "",
+		target + "|rev-parse --verify HEAD":                       "bbbbbbbb\n",
+		target + "|sparse-checkout disable":                       "",
+		target + "|sparse-checkout init --cone":                   "",
+		target + "|sparse-checkout set .claude-plugin skills/new": "",
 	}}
 	git.onCall = func(key string) {
 		if !strings.Contains(key, "|reset --hard bbbbbbbb") {
@@ -293,15 +293,25 @@ func TestRemoveUsesGitRMAndUnregistersCatalogPolicy(t *testing.T) {
 	}
 }
 
+func addShallowSubmoduleResponses(responses map[string]string, repositoryRoot, branch, url, relativePath string) map[string]string {
+	responses[repositoryRoot+"|rev-parse --git-path modules/"+relativePath] = ".git/modules/" + relativePath
+	responses[repositoryRoot+"|rev-parse --git-common-dir"] = ".git"
+	responses[repositoryRoot+"|clone --depth 1 --branch "+branch+" --single-branch -- "+url+" "+relativePath] = ""
+	responses[repositoryRoot+"|submodule add -b "+branch+" -- "+url+" "+relativePath] = ""
+	responses[repositoryRoot+"|submodule absorbgitdirs -- "+relativePath] = ""
+	responses[repositoryRoot+"|config --file .gitmodules submodule."+relativePath+".shallow true"] = ""
+	responses[repositoryRoot+"|add -- .gitmodules"] = ""
+	return responses
+}
+
 func TestAddRegistersMainTrackingSparseSubmodule(t *testing.T) {
 	agentsRoot := t.TempDir()
 	sourcesRoot := filepath.Join(agentsRoot, "sources")
 	target := filepath.Join(sourcesRoot, "vendor", "shared", "worktrunk")
-	git := &recordingGit{responses: map[string]string{
-		agentsRoot + "|submodule add -b main https://github.com/max-sixty/worktrunk.git sources/vendor/shared/worktrunk": "",
+	git := &recordingGit{responses: addShallowSubmoduleResponses(map[string]string{
 		target + "|sparse-checkout init --cone": "",
 		target + "|sparse-checkout set skills":  "",
-	}}
+	}, agentsRoot, "main", "https://github.com/max-sixty/worktrunk.git", "sources/vendor/shared/worktrunk")}
 	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: git}
 
 	if err := manager.Add(context.Background(), AddRequest{
@@ -311,6 +321,13 @@ func TestAddRegistersMainTrackingSparseSubmodule(t *testing.T) {
 		SparsePaths: []string{"skills"},
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if !git.called("clone --depth 1 --branch main --single-branch -- https://github.com/max-sixty/worktrunk.git sources/vendor/shared/worktrunk") {
+		t.Fatalf("Add() did not shallow-clone the repository: %v", git.calls)
+	}
+	if !git.called("config --file .gitmodules submodule.sources/vendor/shared/worktrunk.shallow true") ||
+		!git.called("add -- .gitmodules") {
+		t.Fatalf("Add() did not persist and stage shallow=true in .gitmodules: %v", git.calls)
 	}
 	config, err := os.ReadFile(filepath.Join(sourcesRoot, "catalog.yaml"))
 	if err != nil {
@@ -327,14 +344,13 @@ func TestAddDerivesRepositoryRootForNestedResourceCatalog(t *testing.T) {
 	repositoryRoot := t.TempDir()
 	sourcesRoot := filepath.Join(repositoryRoot, "resources", "skills")
 	target := filepath.Join(sourcesRoot, "vendor", "shared", "worktrunk")
-	git := &recordingGit{responses: map[string]string{
+	git := &recordingGit{responses: addShallowSubmoduleResponses(map[string]string{
 		sourcesRoot + "|rev-parse --show-toplevel": repositoryRoot + "\n",
-		repositoryRoot + "|submodule add -b main https://github.com/max-sixty/worktrunk.git resources/skills/vendor/shared/worktrunk": "",
-		target + "|sparse-checkout init --cone": "",
-		target + "|sparse-checkout set skills":  "",
-	}}
+		target + "|sparse-checkout init --cone":    "",
+		target + "|sparse-checkout set skills":     "",
+	}, repositoryRoot, "main", "https://github.com/max-sixty/worktrunk.git", "resources/skills/vendor/shared/worktrunk")}
 	git.onCall = func(key string) {
-		if strings.Contains(key, "|submodule add ") {
+		if strings.Contains(key, "|clone ") {
 			writeSourceSkill(t, filepath.Join(target, "skills", "worktrunk"))
 		}
 	}
@@ -353,13 +369,12 @@ func TestAddDerivesSparseCheckoutFromDiscoveryPriority(t *testing.T) {
 	agentsRoot := t.TempDir()
 	sourcesRoot := filepath.Join(agentsRoot, "sources")
 	target := filepath.Join(sourcesRoot, "vendor", "shared", "mattpocock-skills")
-	git := &recordingGit{responses: map[string]string{
-		agentsRoot + "|submodule add -b main https://github.com/mattpocock/skills.git sources/vendor/shared/mattpocock-skills": "",
+	git := &recordingGit{responses: addShallowSubmoduleResponses(map[string]string{
 		target + "|sparse-checkout init --cone":                          "",
 		target + "|sparse-checkout set .claude-plugin skills/registered": "",
-	}}
+	}, agentsRoot, "main", "https://github.com/mattpocock/skills.git", "sources/vendor/shared/mattpocock-skills")}
 	git.onCall = func(key string) {
-		if !strings.Contains(key, "|submodule add ") {
+		if !strings.Contains(key, "|clone ") {
 			return
 		}
 		writeSourceSkill(t, filepath.Join(target, "skills", "registered"))
@@ -397,13 +412,12 @@ func TestAddRegistersExplicitSkillPathsAndChecksOutOnlyThosePaths(t *testing.T) 
 	agentsRoot := t.TempDir()
 	sourcesRoot := filepath.Join(agentsRoot, "sources")
 	target := filepath.Join(sourcesRoot, "vendor", "shared", "spellbook")
-	git := &recordingGit{responses: map[string]string{
-		agentsRoot + "|submodule add -b main https://github.com/majiayu000/spellbook.git sources/vendor/shared/spellbook": "",
+	git := &recordingGit{responses: addShallowSubmoduleResponses(map[string]string{
 		target + "|sparse-checkout init --cone":               "",
 		target + "|sparse-checkout set skills/codebase-audit": "",
-	}}
+	}, agentsRoot, "main", "https://github.com/majiayu000/spellbook.git", "sources/vendor/shared/spellbook")}
 	git.onCall = func(key string) {
-		if strings.Contains(key, "|submodule add ") {
+		if strings.Contains(key, "|clone ") {
 			writeSourceSkill(t, filepath.Join(target, "skills", "codebase-audit"))
 		}
 	}
@@ -432,13 +446,12 @@ func TestAddAcceptsContainerSkillPathPointingAtAPluginDir(t *testing.T) {
 	agentsRoot := t.TempDir()
 	sourcesRoot := filepath.Join(agentsRoot, "sources")
 	target := filepath.Join(sourcesRoot, "vendor", "shared", "android-cc-plugin")
-	git := &recordingGit{responses: map[string]string{
-		agentsRoot + "|submodule add -b main ssh://git@host:1022/lihang/android-cc-plugin.git sources/vendor/shared/android-cc-plugin": "",
+	git := &recordingGit{responses: addShallowSubmoduleResponses(map[string]string{
 		target + "|sparse-checkout init --cone":                     "",
 		target + "|sparse-checkout set plugins/android-debug-tools": "",
-	}}
+	}, agentsRoot, "main", "ssh://git@host:1022/lihang/android-cc-plugin.git", "sources/vendor/shared/android-cc-plugin")}
 	git.onCall = func(key string) {
-		if strings.Contains(key, "|submodule add ") {
+		if strings.Contains(key, "|clone ") {
 			// A tree URL points at a plugin directory, not a leaf skill.
 			writeSourceSkill(t, filepath.Join(target, "plugins", "android-debug-tools", "skills", "adb-logcat"))
 			writeSourceFile(t, filepath.Join(target, "plugins", "android-debug-tools", ".claude-plugin", "plugin.json"), `{"name":"android-debug-tools"}`)
@@ -491,15 +504,12 @@ func TestAddRollsBackSubmoduleWhenDiscoveryFails(t *testing.T) {
 	agentsRoot := t.TempDir()
 	sourcesRoot := filepath.Join(agentsRoot, "resources", "skills")
 	target := filepath.Join(sourcesRoot, "vendor", "shared", "empty")
-	git := &recordingGit{responses: map[string]string{
-		agentsRoot + "|submodule add -b main https://example.invalid/empty.git resources/skills/vendor/shared/empty": "",
-		agentsRoot + "|ls-files --stage -- resources/skills/vendor/shared/empty":                                     "160000 0000000000000000000000000000000000000000 0\tresources/skills/vendor/shared/empty\n",
-		agentsRoot + "|rm -f -- resources/skills/vendor/shared/empty":                                                "",
-		agentsRoot + "|rev-parse --git-path modules/resources/skills/vendor/shared/empty":                            ".git/modules/resources/skills/vendor/shared/empty",
-		agentsRoot + "|rev-parse --git-common-dir":                                                                   ".git",
-	}}
+	git := &recordingGit{responses: addShallowSubmoduleResponses(map[string]string{
+		agentsRoot + "|ls-files --stage -- resources/skills/vendor/shared/empty": "160000 0000000000000000000000000000000000000000 0\tresources/skills/vendor/shared/empty\n",
+		agentsRoot + "|rm -f -- resources/skills/vendor/shared/empty":            "",
+	}, agentsRoot, "main", "https://example.invalid/empty.git", "resources/skills/vendor/shared/empty")}
 	git.onCall = func(key string) {
-		if strings.Contains(key, "|submodule add ") {
+		if strings.Contains(key, "|clone ") {
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -522,13 +532,12 @@ func TestAddRegistersClientScopedVendorSource(t *testing.T) {
 	agentsRoot := t.TempDir()
 	sourcesRoot := filepath.Join(agentsRoot, "sources")
 	target := filepath.Join(sourcesRoot, "vendor", "pi", "pi-tools")
-	git := &recordingGit{responses: map[string]string{
-		agentsRoot + "|submodule add -b main https://example.invalid/pi-tools.git sources/vendor/pi/pi-tools": "",
+	git := &recordingGit{responses: addShallowSubmoduleResponses(map[string]string{
 		target + "|sparse-checkout init --cone": "",
 		target + "|sparse-checkout set skills":  "",
-	}}
+	}, agentsRoot, "main", "https://example.invalid/pi-tools.git", "sources/vendor/pi/pi-tools")}
 	git.onCall = func(key string) {
-		if strings.Contains(key, "|submodule add ") {
+		if strings.Contains(key, "|clone ") {
 			writeSourceSkill(t, filepath.Join(target, "skills", "pi-tool"))
 		}
 	}
@@ -554,6 +563,140 @@ func TestAddRegistersClientScopedVendorSource(t *testing.T) {
 	}
 	if !strings.Contains(string(config), "vendor-pi-only/pi-tools") {
 		t.Fatalf("catalog config omitted scoped logical source id:\n%s", config)
+	}
+}
+
+func TestUpdateFetchesShallowSubmoduleWithDepthOne(t *testing.T) {
+	agentsRoot := t.TempDir()
+	target := filepath.Join(agentsRoot, "sources", "vendor", "shared", "shallow")
+	git := &recordingGit{responses: map[string]string{
+		target + "|reset --hard HEAD":                                "HEAD is now at aaaaaaaa current\n",
+		target + "|clean -ffdx":                                      "",
+		target + "|rev-parse HEAD":                                   "aaaaaaaa\n",
+		target + "|ls-remote origin refs/heads/main":                 "bbbbbbbb\trefs/heads/main\n",
+		target + "|rev-parse --is-shallow-repository":                "true\n",
+		target + "|fetch --no-tags --depth 1 origin refs/heads/main": "",
+		target + "|reset --hard bbbbbbbb":                            "",
+		target + "|rev-parse --verify HEAD":                          "bbbbbbbb\n",
+	}}
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: filepath.Join(agentsRoot, "sources"), Git: git}
+
+	results, err := manager.Update(context.Background(), []catalog.Source{{
+		ID: "vendor-shared/shallow", Kind: catalog.SourceVendor, Scope: "shared", Path: target, Branch: "main",
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || !results[0].Changed {
+		t.Fatalf("Update() results = %#v, want one changed source", results)
+	}
+	if !git.called("fetch --no-tags --depth 1 origin refs/heads/main") {
+		t.Fatalf("Update() did not fetch shallow submodule with --depth 1: %v", git.calls)
+	}
+}
+
+func TestUpdateFailsWhenShallowStateInspectionFails(t *testing.T) {
+	agentsRoot := t.TempDir()
+	target := filepath.Join(agentsRoot, "sources", "vendor", "shared", "broken-shallow")
+	git := &recordingGit{responses: map[string]string{
+		target + "|reset --hard HEAD":                 "",
+		target + "|clean -ffdx":                       "",
+		target + "|rev-parse HEAD":                    "aaaaaaaa\n",
+		target + "|ls-remote origin refs/heads/main":  "bbbbbbbb\trefs/heads/main\n",
+		target + "|rev-parse --is-shallow-repository": "unexpected\n",
+	}}
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: filepath.Join(agentsRoot, "sources"), Git: git}
+
+	results, err := manager.Update(context.Background(), []catalog.Source{{
+		ID: "vendor-shared/broken-shallow", Kind: catalog.SourceVendor, Scope: "shared", Path: target, Branch: "main",
+	}}, false)
+	if err == nil || !strings.Contains(err.Error(), "inspect shallow state") {
+		t.Fatalf("Update() error = %v, want inspect shallow state failure", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("Update() results = %#v, want none when shallow inspection fails", results)
+	}
+}
+
+func TestAddRejectsExistingSubmoduleGitdirBeforeClone(t *testing.T) {
+	agentsRoot := t.TempDir()
+	sourcesRoot := filepath.Join(agentsRoot, "resources", "skills")
+	rel := "resources/skills/vendor/shared/stale"
+	existingGitdir := filepath.Join(agentsRoot, ".git", "modules", filepath.FromSlash(rel))
+	if err := os.MkdirAll(existingGitdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git := &recordingGit{responses: map[string]string{
+		agentsRoot + "|rev-parse --git-path modules/" + rel: ".git/modules/" + rel,
+		agentsRoot + "|rev-parse --git-common-dir":          ".git",
+	}}
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: git}
+
+	err := manager.Add(context.Background(), AddRequest{Name: "stale", URL: "https://example.invalid/stale.git"})
+	if err == nil || !strings.Contains(err.Error(), "submodule gitdir already exists") {
+		t.Fatalf("Add() error = %v, want existing submodule gitdir rejection", err)
+	}
+	for _, call := range git.calls {
+		if strings.HasPrefix(call, "clone ") {
+			t.Fatalf("Add() cloned despite pre-existing submodule gitdir: %v", git.calls)
+		}
+	}
+	if _, statErr := os.Stat(existingGitdir); statErr != nil {
+		t.Fatalf("preflight failure disturbed pre-existing gitdir: %v", statErr)
+	}
+}
+
+func TestAddRollbackUnsetsUnstagedShallowConfigBeforeRemovingSubmodule(t *testing.T) {
+	agentsRoot := t.TempDir()
+	sourcesRoot := filepath.Join(agentsRoot, "resources", "skills")
+	rel := "resources/skills/vendor/shared/unstage"
+	git := &recordingGit{responses: map[string]string{
+		agentsRoot + "|rev-parse --git-path modules/" + rel:                                                   ".git/modules/" + rel,
+		agentsRoot + "|rev-parse --git-common-dir":                                                            ".git",
+		agentsRoot + "|clone --depth 1 --branch main --single-branch -- https://example.invalid/u.git " + rel: "",
+		agentsRoot + "|submodule add -b main -- https://example.invalid/u.git " + rel:                         "",
+		agentsRoot + "|submodule absorbgitdirs -- " + rel:                                                     "",
+		agentsRoot + "|config --file .gitmodules submodule." + rel + ".shallow true":                          "",
+		// `add -- .gitmodules` is deliberately omitted so it fails and triggers rollback.
+		agentsRoot + "|config --file .gitmodules --unset submodule." + rel + ".shallow": "",
+		agentsRoot + "|ls-files --stage -- " + rel:                                      "160000 0000000000000000000000000000000000000000 0\t" + rel + "\n",
+		agentsRoot + "|rm -f -- " + rel:                                                 "",
+	}}
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: git}
+
+	err := manager.Add(context.Background(), AddRequest{Name: "unstage", URL: "https://example.invalid/u.git"})
+	if err == nil {
+		t.Fatal("Add() succeeded despite failing to stage .gitmodules")
+	}
+	unsetIdx, rmIdx := -1, -1
+	for i, call := range git.calls {
+		if call == "config --file .gitmodules --unset submodule."+rel+".shallow" {
+			unsetIdx = i
+		}
+		if call == "rm -f -- "+rel {
+			rmIdx = i
+		}
+	}
+	if unsetIdx < 0 || rmIdx < 0 || unsetIdx > rmIdx {
+		t.Fatalf("rollback did not unset unstaged shallow config before git rm: %v", git.calls)
+	}
+}
+
+func TestAddRejectsFlagLikeBranchName(t *testing.T) {
+	agentsRoot := t.TempDir()
+	git := &recordingGit{responses: map[string]string{}}
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: filepath.Join(agentsRoot, "sources"), Git: git}
+
+	err := manager.Add(context.Background(), AddRequest{
+		Name:   "repo",
+		URL:    "https://example.invalid/repo.git",
+		Branch: "--upload-pack=evil",
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid branch name") {
+		t.Fatalf("Add() error = %v, want invalid branch name rejection", err)
+	}
+	if len(git.calls) != 0 {
+		t.Fatalf("Add() called git with invalid branch name: %v", git.calls)
 	}
 }
 
