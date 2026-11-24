@@ -40,10 +40,10 @@ func TestLifecycleUpdatePrunesLastSkillFromProjectAndGlobalScopes(t *testing.T) 
 		sourcePath + "|rev-parse HEAD":                   "aaaaaaaa\n",
 		sourcePath + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
 
-		repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/repo": "",
-		sourcePath + "|fetch --no-tags origin refs/heads/main":                             "",
-		sourcePath + "|reset --hard bbbbbbbb":                                              "",
-		sourcePath + "|rev-parse --verify HEAD":                                            "bbbbbbbb\n",
+		sourcePath + "|rev-parse --is-shallow-repository":      "false\n",
+		sourcePath + "|fetch --no-tags origin refs/heads/main": "",
+		sourcePath + "|reset --hard bbbbbbbb":                  "",
+		sourcePath + "|rev-parse --verify HEAD":                "bbbbbbbb\n",
 	}}
 	git.onCall = func(key string) {
 		if strings.HasSuffix(key, "|reset --hard bbbbbbbb") {
@@ -112,10 +112,10 @@ func TestLifecycleUpdatePrunesRemovedSkillAndPreservesLiveSkill(t *testing.T) {
 		sourcePath + "|rev-parse HEAD":                   "aaaaaaaa\n",
 		sourcePath + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
 
-		repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/repo": "",
-		sourcePath + "|fetch --no-tags origin refs/heads/main":                             "",
-		sourcePath + "|reset --hard bbbbbbbb":                                              "",
-		sourcePath + "|rev-parse --verify HEAD":                                            "bbbbbbbb\n",
+		sourcePath + "|rev-parse --is-shallow-repository":      "false\n",
+		sourcePath + "|fetch --no-tags origin refs/heads/main": "",
+		sourcePath + "|reset --hard bbbbbbbb":                  "",
+		sourcePath + "|rev-parse --verify HEAD":                "bbbbbbbb\n",
 	}}
 	git.onCall = func(key string) {
 		if strings.HasSuffix(key, "|reset --hard bbbbbbbb") {

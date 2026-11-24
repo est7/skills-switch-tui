@@ -158,8 +158,11 @@ func (g *bootstrapGit) Output(_ context.Context, directory string, arguments ...
 	case command == "init":
 		g.initialized = true
 		return nil, nil
-	case strings.HasPrefix(command, "submodule add "):
-		g.submoduleAdds++
+	case command == "rev-parse --git-common-dir":
+		return []byte(".git\n"), nil
+	case strings.HasPrefix(command, "rev-parse --git-path "):
+		return []byte(".git/" + arguments[len(arguments)-1] + "\n"), nil
+	case strings.HasPrefix(command, "clone "):
 		target := filepath.Join(directory, filepath.FromSlash(arguments[len(arguments)-1]))
 		if err := writeBootstrapFile(filepath.Join(target, ".agents", "plugins", "marketplace.json"), `{
   "name": "skills-switch",
@@ -174,6 +177,15 @@ description: Manage skills-switch resources.
 `); err != nil {
 			return nil, err
 		}
+		return nil, nil
+	case strings.HasPrefix(command, "submodule add "):
+		g.submoduleAdds++
+		return nil, nil
+	case strings.HasPrefix(command, "submodule absorbgitdirs "):
+		return nil, nil
+	case strings.HasPrefix(command, "config --file .gitmodules "):
+		return nil, nil
+	case command == "add -- .gitmodules":
 		return nil, nil
 	case strings.HasPrefix(command, "sparse-checkout "):
 		return nil, nil

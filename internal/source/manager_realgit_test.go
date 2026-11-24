@@ -937,7 +937,7 @@ func TestAddMissingBranchLeavesNoStrandedCheckout(t *testing.T) {
 	if err == nil {
 		t.Fatal("add of a missing branch unexpectedly succeeded")
 	}
-	if !strings.Contains(err.Error(), "origin/main") {
+	if !strings.Contains(err.Error(), "Remote branch main") {
 		t.Fatalf("add error does not name the missing branch: %v", err)
 	}
 	target := filepath.Join(sourcesRoot, "vendor", "shared", "owner", "repo")
@@ -1130,5 +1130,571 @@ description: A local skill that must survive the broken vendor repository.
 	}
 	if strings.Contains(string(updated), "vendor-shared/acme/broken") {
 		t.Fatalf("catalog policy not removed:\n%s", updated)
+	}
+}
+
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	gitBinary, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	command := exec.Command(gitBinary, args...)
+	command.Dir = dir
+	command.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e",
+	)
+	out, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func fileURL(path string) string {
+	return "file://" + filepath.ToSlash(path)
+}
+
+func TestAddShallowClonesDepthOneAndRecordsGitmodules(t *testing.T) {
+	run := gitRunner(t)
+	base := t.TempDir()
+
+	// Build a multi-commit upstream with both default branch main (3 commits)
+	// and a non-default branch release (2 commits beyond main) plus an extra
+	// non-skill file so sparse checkout is exercised alongside shallow cloning.
+	remote := filepath.Join(base, "acme", "design-skills")
+	writeSourceFile(t, filepath.Join(remote, "skills", "layout", "SKILL.md"), "---\nname: layout\ndescription: v1\n---\n")
+	writeSourceFile(t, filepath.Join(remote, "assets", "heavy.txt"), "non-skill payload\n")
+	run(remote, "init", "-q", "-b", "main")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c1")
+	writeSourceFile(t, filepath.Join(remote, "skills", "layout", "SKILL.md"), "---\nname: layout\ndescription: v2\n---\n")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c2")
+	writeSourceFile(t, filepath.Join(remote, "skills", "layout", "SKILL.md"), "---\nname: layout\ndescription: v3\n---\n")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c3")
+
+	otherRemote := filepath.Join(base, "acme", "branch-skills")
+	writeSourceFile(t, filepath.Join(otherRemote, "skills", "core", "SKILL.md"), "---\nname: core\ndescription: dev1\n---\n")
+	run(otherRemote, "init", "-q", "-b", "dev")
+	run(otherRemote, "add", "-A")
+	run(otherRemote, "commit", "-q", "-m", "d1")
+	writeSourceFile(t, filepath.Join(otherRemote, "skills", "core", "SKILL.md"), "---\nname: core\ndescription: dev2\n---\n")
+	run(otherRemote, "add", "-A")
+	run(otherRemote, "commit", "-q", "-m", "d2")
+	run(otherRemote, "checkout", "-q", "-b", "release")
+	writeSourceFile(t, filepath.Join(otherRemote, "skills", "core", "SKILL.md"), "---\nname: core\ndescription: rel1\n---\n")
+	run(otherRemote, "add", "-A")
+	run(otherRemote, "commit", "-q", "-m", "r1")
+	writeSourceFile(t, filepath.Join(otherRemote, "skills", "core", "SKILL.md"), "---\nname: core\ndescription: rel2\n---\n")
+	run(otherRemote, "add", "-A")
+	run(otherRemote, "commit", "-q", "-m", "r2")
+	run(otherRemote, "checkout", "-q", "dev")
+
+	unmanagedRemote := filepath.Join(base, "external-repo")
+	writeSourceFile(t, filepath.Join(unmanagedRemote, "README.md"), "unmanaged\n")
+	run(unmanagedRemote, "init", "-q", "-b", "main")
+	run(unmanagedRemote, "add", "-A")
+	run(unmanagedRemote, "commit", "-q", "-m", "u1")
+
+	agentsRoot := filepath.Join(base, "agents")
+	sourcesRoot := filepath.Join(agentsRoot, "resources", "skills")
+	if err := os.MkdirAll(sourcesRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(agentsRoot, "init", "-q", "-b", "main")
+	run(agentsRoot, "commit", "-q", "--allow-empty", "-m", "init")
+	run(agentsRoot, "submodule", "add", "-q", "-b", "main", fileURL(unmanagedRemote), "external/unmanaged")
+	run(agentsRoot, "commit", "-q", "-m", "add unmanaged submodule")
+
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: GitCommander{}}
+	ctx := context.Background()
+
+	if err := manager.Add(ctx, AddRequest{
+		Name: "acme/design-skills", URL: fileURL(remote), Branch: "main",
+	}); err != nil {
+		t.Fatalf("Add(default branch): %v", err)
+	}
+	if err := manager.Add(ctx, AddRequest{
+		Name: "acme/branch-skills", URL: fileURL(otherRemote), Branch: "release",
+	}); err != nil {
+		t.Fatalf("Add(non-default branch): %v", err)
+	}
+
+	for _, tc := range []struct {
+		relPath string
+		branch  string
+		wantSub string
+	}{
+		{"resources/skills/vendor/shared/acme/design-skills", "main", "description: v3"},
+		{"resources/skills/vendor/shared/acme/branch-skills", "release", "description: rel2"},
+	} {
+		checkout := filepath.Join(agentsRoot, filepath.FromSlash(tc.relPath))
+		if got := gitOutput(t, checkout, "rev-parse", "--is-shallow-repository"); got != "true" {
+			t.Fatalf("%s is-shallow-repository = %q, want true", tc.relPath, got)
+		}
+		if got := gitOutput(t, checkout, "rev-list", "--count", "HEAD"); got != "1" {
+			t.Fatalf("%s rev-list --count HEAD = %q, want 1", tc.relPath, got)
+		}
+		if got := gitOutput(t, agentsRoot, "config", "--file", ".gitmodules", "--get", "submodule."+tc.relPath+".shallow"); got != "true" {
+			t.Fatalf(".gitmodules shallow for %s = %q, want true", tc.relPath, got)
+		}
+		if got := gitOutput(t, agentsRoot, "config", "--file", ".gitmodules", "--get", "submodule."+tc.relPath+".branch"); got != tc.branch {
+			t.Fatalf(".gitmodules branch for %s = %q, want %q", tc.relPath, got, tc.branch)
+		}
+		gitdir, err := submoduleGitdir(checkout)
+		if err != nil || gitdir == "" {
+			t.Fatalf("%s .git is not an absorbed gitdir pointer: gitdir=%q err=%v", tc.relPath, gitdir, err)
+		}
+		if !strings.HasSuffix(filepath.ToSlash(gitdir), "/.git/modules/"+tc.relPath) {
+			t.Fatalf("%s gitdir = %q, want suffix /.git/modules/%s", tc.relPath, gitdir, tc.relPath)
+		}
+		// Verify sparse checkout excluded non-skill payload on design-skills.
+		if tc.branch == "main" {
+			if _, statErr := os.Stat(filepath.Join(checkout, "assets", "heavy.txt")); !os.IsNotExist(statErr) {
+				t.Fatalf("sparse checkout materialized non-skill file: %v", statErr)
+			}
+			skillBody, err := os.ReadFile(filepath.Join(checkout, "skills", "layout", "SKILL.md"))
+			if err != nil || !strings.Contains(string(skillBody), tc.wantSub) {
+				t.Fatalf("layout SKILL.md = %q err=%v, want %q", skillBody, err, tc.wantSub)
+			}
+		} else {
+			skillBody, err := os.ReadFile(filepath.Join(checkout, "skills", "core", "SKILL.md"))
+			if err != nil || !strings.Contains(string(skillBody), tc.wantSub) {
+				t.Fatalf("core SKILL.md = %q err=%v, want %q", skillBody, err, tc.wantSub)
+			}
+		}
+	}
+
+	// .gitmodules changes must be staged cleanly with unmanaged entry intact.
+	if unstaged := gitOutput(t, agentsRoot, "diff", "--", ".gitmodules"); unstaged != "" {
+		t.Fatalf(".gitmodules has unstaged changes after Add:\n%s", unstaged)
+	}
+	if got := gitOutput(t, agentsRoot, "config", "--file", ".gitmodules", "--get", "submodule.external/unmanaged.path"); got != "external/unmanaged" {
+		t.Fatalf("unmanaged .gitmodules entry was disturbed: %q", got)
+	}
+}
+
+func TestUpdateAdvancesShallowSubmoduleWhileStayingShallow(t *testing.T) {
+	run := gitRunner(t)
+	base := t.TempDir()
+
+	remote := filepath.Join(base, "acme", "shallow-up")
+	writeSourceFile(t, filepath.Join(remote, "skills", "alpha", "SKILL.md"), "---\nname: alpha\ndescription: v1\n---\n")
+	writeSourceFile(t, filepath.Join(remote, "extra", "ignored.txt"), "not a skill\n")
+	run(remote, "init", "-q", "-b", "main")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c1")
+	writeSourceFile(t, filepath.Join(remote, "skills", "alpha", "SKILL.md"), "---\nname: alpha\ndescription: v2\n---\n")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c2")
+	writeSourceFile(t, filepath.Join(remote, "skills", "alpha", "SKILL.md"), "---\nname: alpha\ndescription: v3\n---\n")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c3")
+
+	fullRemote := filepath.Join(base, "acme", "full-up")
+	writeSourceFile(t, filepath.Join(fullRemote, "skills", "legacy", "SKILL.md"), "---\nname: legacy\ndescription: f1\n---\n")
+	run(fullRemote, "init", "-q", "-b", "main")
+	run(fullRemote, "add", "-A")
+	run(fullRemote, "commit", "-q", "-m", "f1")
+	writeSourceFile(t, filepath.Join(fullRemote, "skills", "legacy", "SKILL.md"), "---\nname: legacy\ndescription: f2\n---\n")
+	run(fullRemote, "add", "-A")
+	run(fullRemote, "commit", "-q", "-m", "f2")
+
+	agentsRoot := filepath.Join(base, "agents")
+	sourcesRoot := filepath.Join(agentsRoot, "resources", "skills")
+	if err := os.MkdirAll(sourcesRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(agentsRoot, "init", "-q", "-b", "main")
+	run(agentsRoot, "commit", "-q", "--allow-empty", "-m", "init")
+
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: GitCommander{}}
+	ctx := context.Background()
+	if err := manager.Add(ctx, AddRequest{
+		Name: "acme/shallow-up", URL: fileURL(remote), Branch: "main",
+		DiscoveryPriority: []catalog.DiscoveryStrategy{catalog.DiscoverySkillsDir},
+	}); err != nil {
+		t.Fatalf("Add(shallow): %v", err)
+	}
+	// Existing non-shallow submodule added via plain git submodule add.
+	fullRel := "resources/skills/vendor/shared/acme/full-up"
+	run(agentsRoot, "submodule", "add", "-q", "-b", "main", fileURL(fullRemote), fullRel)
+	run(agentsRoot, "commit", "-q", "-m", "add shallow and full submodules")
+
+	shallowTarget := filepath.Join(sourcesRoot, "vendor", "shared", "acme", "shallow-up")
+	fullTarget := filepath.Join(agentsRoot, filepath.FromSlash(fullRel))
+
+	// Advance shallow upstream by 2 commits, adding a second skill.
+	writeSourceFile(t, filepath.Join(remote, "skills", "alpha", "SKILL.md"), "---\nname: alpha\ndescription: v4\n---\n")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c4")
+	writeSourceFile(t, filepath.Join(remote, "skills", "alpha", "SKILL.md"), "---\nname: alpha\ndescription: v5\n---\n")
+	writeSourceFile(t, filepath.Join(remote, "skills", "beta", "SKILL.md"), "---\nname: beta\ndescription: v5\n---\n")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c5")
+
+	// Advance full upstream by 1 commit.
+	writeSourceFile(t, filepath.Join(fullRemote, "skills", "legacy", "SKILL.md"), "---\nname: legacy\ndescription: f3\n---\n")
+	run(fullRemote, "add", "-A")
+	run(fullRemote, "commit", "-q", "-m", "f3")
+
+	shallowSource := catalog.Source{
+		ID: "vendor-shared/acme/shallow-up", Kind: catalog.SourceVendor, Scope: "shared",
+		Path: shallowTarget, Branch: "main",
+		DiscoveryPriority: []catalog.DiscoveryStrategy{catalog.DiscoverySkillsDir},
+	}
+	fullSource := catalog.Source{
+		ID: "vendor-shared/acme/full-up", Kind: catalog.SourceVendor, Scope: "shared",
+		Path: fullTarget, Branch: "main",
+	}
+
+	results, err := manager.Update(ctx, []catalog.Source{shallowSource, fullSource}, false)
+	if err != nil {
+		t.Fatalf("first Update(): %v", err)
+	}
+	if len(results) != 2 || !results[0].Changed || !results[1].Changed {
+		t.Fatalf("first Update() results = %#v, want both changed", results)
+	}
+	if got := gitOutput(t, shallowTarget, "rev-parse", "--is-shallow-repository"); got != "true" {
+		t.Fatalf("shallow submodule after update is-shallow = %q, want true", got)
+	}
+	if got := gitOutput(t, shallowTarget, "rev-list", "--count", "HEAD"); got != "1" {
+		t.Fatalf("shallow submodule after update commit count = %q, want 1", got)
+	}
+	if _, err := os.Stat(filepath.Join(shallowTarget, "skills", "beta", "SKILL.md")); err != nil {
+		t.Fatalf("new upstream skill missing after shallow sparse update: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(shallowTarget, "extra", "ignored.txt")); !os.IsNotExist(err) {
+		t.Fatalf("sparse checkout leaked non-skill file after shallow update: %v", err)
+	}
+	// Non-shallow existing submodule keeps its full history.
+	if got := gitOutput(t, fullTarget, "rev-parse", "--is-shallow-repository"); got != "false" {
+		t.Fatalf("existing non-shallow submodule became shallow: %q", got)
+	}
+	if got := gitOutput(t, fullTarget, "rev-list", "--count", "HEAD"); got != "3" {
+		t.Fatalf("existing non-shallow submodule commit count = %q, want 3", got)
+	}
+
+	// Second update without committing the parent gitlink, after upstream rewrites
+	// history and prunes the old gitlink commit (c3): Update must still advance
+	// cleanly instead of failing on the stale parent gitlink.
+	run(remote, "checkout", "-q", "--orphan", "rewritten")
+	writeSourceFile(t, filepath.Join(remote, "skills", "alpha", "SKILL.md"), "---\nname: alpha\ndescription: v6-rewritten\n---\n")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c6-rewritten")
+	run(remote, "branch", "-M", "rewritten", "main")
+	run(remote, "reflog", "expire", "--expire=now", "--all")
+	run(remote, "gc", "-q", "--prune=now")
+	run(shallowTarget, "reflog", "expire", "--expire=now", "--all")
+	run(shallowTarget, "gc", "-q", "--prune=now")
+
+	results, err = manager.Update(ctx, []catalog.Source{shallowSource}, false)
+	if err != nil {
+		t.Fatalf("second Update() after upstream rewrite: %v", err)
+	}
+	if len(results) != 1 || !results[0].Changed {
+		t.Fatalf("second Update() results = %#v, want changed", results)
+	}
+	if got := gitOutput(t, shallowTarget, "rev-parse", "--is-shallow-repository"); got != "true" {
+		t.Fatalf("shallow submodule after rewrite update is-shallow = %q, want true", got)
+	}
+	if got := gitOutput(t, shallowTarget, "rev-list", "--count", "HEAD"); got != "1" {
+		t.Fatalf("shallow submodule after rewrite update commit count = %q, want 1", got)
+	}
+	alphaBody, err := os.ReadFile(filepath.Join(shallowTarget, "skills", "alpha", "SKILL.md"))
+	if err != nil || !strings.Contains(string(alphaBody), "v6-rewritten") {
+		t.Fatalf("alpha SKILL.md = %q err=%v, want v6-rewritten", alphaBody, err)
+	}
+
+	// Fresh clone of the parent repository without initialized submodules:
+	// source update must initialize the missing checkout shallowly (honoring
+	// .gitmodules shallow=true) and advance it to v7-post-init while staying shallow.
+	run(agentsRoot, "add", "resources/skills/vendor/shared/acme/shallow-up")
+	run(agentsRoot, "commit", "-q", "-m", "record updated shallow gitlink")
+	freshParent := filepath.Join(base, "agents-fresh-clone")
+	run(base, "clone", "-q", fileURL(agentsRoot), freshParent)
+	freshSources := filepath.Join(freshParent, "resources", "skills")
+	freshShallowTarget := filepath.Join(freshSources, "vendor", "shared", "acme", "shallow-up")
+	// Advance remote one more commit beyond the fresh clone's gitlink so Update both
+	// initializes the missing checkout and advances it to the new tip.
+	writeSourceFile(t, filepath.Join(remote, "skills", "alpha", "SKILL.md"), "---\nname: alpha\ndescription: v7-post-init\n---\n")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c7")
+	freshManager := Manager{RepositoryRoot: freshParent, SkillsRoot: freshSources, Git: GitCommander{}}
+	freshSource := catalog.Source{
+		ID: "vendor-shared/acme/shallow-up", Kind: catalog.SourceVendor, Scope: "shared",
+		Path: freshShallowTarget, Branch: "main", Availability: catalog.SourceCheckoutMissing,
+		DiscoveryPriority: []catalog.DiscoveryStrategy{catalog.DiscoverySkillsDir},
+	}
+	results, err = freshManager.Update(ctx, []catalog.Source{freshSource}, false)
+	if err != nil {
+		t.Fatalf("Update(missing shallow checkout): %v", err)
+	}
+	if len(results) != 1 || !results[0].Changed {
+		t.Fatalf("Update(missing shallow checkout) results = %#v, want changed", results)
+	}
+	if got := gitOutput(t, freshShallowTarget, "rev-parse", "--is-shallow-repository"); got != "true" {
+		t.Fatalf("initialized missing shallow checkout is-shallow = %q, want true", got)
+	}
+	if got := gitOutput(t, freshShallowTarget, "rev-list", "--count", "HEAD"); got != "1" {
+		t.Fatalf("initialized missing shallow checkout commit count = %q, want 1", got)
+	}
+	alphaBody, err = os.ReadFile(filepath.Join(freshShallowTarget, "skills", "alpha", "SKILL.md"))
+	if err != nil || !strings.Contains(string(alphaBody), "v7-post-init") {
+		t.Fatalf("fresh alpha SKILL.md = %q err=%v, want v7-post-init", alphaBody, err)
+	}
+}
+
+func TestAddShallowRollbackCleansGitmodulesAndModulesDir(t *testing.T) {
+	run := gitRunner(t)
+	base := t.TempDir()
+
+	remote := filepath.Join(base, "acme", "repo")
+	writeSourceFile(t, filepath.Join(remote, "skills", "tool", "SKILL.md"), "---\nname: tool\ndescription: v1\n---\n")
+	run(remote, "init", "-q", "-b", "main")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c1")
+	writeSourceFile(t, filepath.Join(remote, "skills", "tool", "SKILL.md"), "---\nname: tool\ndescription: v2\n---\n")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c2")
+
+	// Case 1: repo with no prior .gitmodules; discovery fails after shallow clone.
+	agentsEmpty := filepath.Join(base, "agents-empty")
+	sourcesEmpty := filepath.Join(agentsEmpty, "resources", "skills")
+	if err := os.MkdirAll(sourcesEmpty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(agentsEmpty, "init", "-q", "-b", "main")
+	run(agentsEmpty, "commit", "-q", "--allow-empty", "-m", "init")
+	managerEmpty := Manager{RepositoryRoot: agentsEmpty, SkillsRoot: sourcesEmpty, Git: GitCommander{}}
+	rel := "resources/skills/vendor/shared/acme/repo"
+	if err := managerEmpty.Add(context.Background(), AddRequest{
+		Name: "acme/repo", URL: fileURL(remote), Branch: "main", SkillPaths: []string{"missing"},
+	}); err == nil {
+		t.Fatal("Add() with missing skill path unexpectedly succeeded")
+	}
+	if _, err := os.Lstat(filepath.Join(agentsEmpty, ".gitmodules")); !os.IsNotExist(err) {
+		t.Fatalf("rollback left newly-created empty .gitmodules behind: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(agentsEmpty, ".git", "modules", filepath.FromSlash(rel))); !os.IsNotExist(err) {
+		t.Fatalf("rollback left .git/modules gitdir behind: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(sourcesEmpty, "vendor", "shared", "acme")); !os.IsNotExist(err) {
+		t.Fatalf("rollback left empty owner directory behind: %v", err)
+	}
+	if status := gitOutput(t, agentsEmpty, "status", "--porcelain"); status != "" {
+		t.Fatalf("rollback left parent repo dirty:\n%s", status)
+	}
+
+	// Case 2: repo with a pre-existing unmanaged .gitmodules entry; rollback must
+	// drop the failed shallow entry while preserving the unmanaged one.
+	unmanaged := filepath.Join(base, "unmanaged")
+	writeSourceFile(t, filepath.Join(unmanaged, "README.md"), "keep\n")
+	run(unmanaged, "init", "-q", "-b", "main")
+	run(unmanaged, "add", "-A")
+	run(unmanaged, "commit", "-q", "-m", "u1")
+
+	agentsManaged := filepath.Join(base, "agents-managed")
+	sourcesManaged := filepath.Join(agentsManaged, "resources", "skills")
+	if err := os.MkdirAll(sourcesManaged, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(agentsManaged, "init", "-q", "-b", "main")
+	run(agentsManaged, "commit", "-q", "--allow-empty", "-m", "init")
+	run(agentsManaged, "submodule", "add", "-q", "-b", "main", fileURL(unmanaged), "external/keep")
+	run(agentsManaged, "commit", "-q", "-m", "add unmanaged")
+
+	managerManaged := Manager{RepositoryRoot: agentsManaged, SkillsRoot: sourcesManaged, Git: GitCommander{}}
+	if err := managerManaged.Add(context.Background(), AddRequest{
+		Name: "acme/repo", URL: fileURL(remote), Branch: "main", SkillPaths: []string{"missing"},
+	}); err == nil {
+		t.Fatal("Add() with missing skill path unexpectedly succeeded")
+	}
+	modulesBytes, err := os.ReadFile(filepath.Join(agentsManaged, ".gitmodules"))
+	if err != nil {
+		t.Fatalf("read .gitmodules after rollback: %v", err)
+	}
+	modulesText := string(modulesBytes)
+	if !strings.Contains(modulesText, "external/keep") {
+		t.Fatalf("rollback dropped unmanaged .gitmodules entry:\n%s", modulesText)
+	}
+	if strings.Contains(modulesText, "acme/repo") || strings.Contains(modulesText, "shallow = true") {
+		t.Fatalf("rollback left failed shallow entry in .gitmodules:\n%s", modulesText)
+	}
+	if _, err := os.Stat(filepath.Join(agentsManaged, ".git", "modules", filepath.FromSlash(rel))); !os.IsNotExist(err) {
+		t.Fatalf("rollback left .git/modules gitdir behind: %v", err)
+	}
+
+	// Re-adding cleanly succeeds and produces a depth-1 shallow submodule.
+	if err := managerManaged.Add(context.Background(), AddRequest{
+		Name: "acme/repo", URL: fileURL(remote), Branch: "main",
+	}); err != nil {
+		t.Fatalf("re-add after rollback failed: %v", err)
+	}
+	checkout := filepath.Join(agentsManaged, filepath.FromSlash(rel))
+	if got := gitOutput(t, checkout, "rev-parse", "--is-shallow-repository"); got != "true" {
+		t.Fatalf("re-added submodule is-shallow = %q, want true", got)
+	}
+	if got := gitOutput(t, checkout, "rev-list", "--count", "HEAD"); got != "1" {
+		t.Fatalf("re-added submodule commit count = %q, want 1", got)
+	}
+
+	// Case 3: git submodule add fails after clone (path ignored by .gitignore);
+	// rollback must remove the unabsorbed cloned worktree and empty owner dir.
+	agentsIgnored := filepath.Join(base, "agents-ignored")
+	sourcesIgnored := filepath.Join(agentsIgnored, "resources", "skills")
+	if err := os.MkdirAll(sourcesIgnored, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSourceFile(t, filepath.Join(agentsIgnored, ".gitignore"), "resources/skills/\n")
+	run(agentsIgnored, "init", "-q", "-b", "main")
+	run(agentsIgnored, "add", ".gitignore")
+	run(agentsIgnored, "commit", "-q", "-m", "ignore skills")
+	managerIgnored := Manager{RepositoryRoot: agentsIgnored, SkillsRoot: sourcesIgnored, Git: GitCommander{}}
+	if err := managerIgnored.Add(context.Background(), AddRequest{
+		Name: "acme/repo", URL: fileURL(remote), Branch: "main",
+	}); err == nil {
+		t.Fatal("Add() into gitignored path unexpectedly succeeded")
+	}
+	if _, err := os.Lstat(filepath.Join(sourcesIgnored, "vendor", "shared", "acme")); !os.IsNotExist(err) {
+		t.Fatalf("rollback left partial clone/owner dir after submodule add failure: %v", err)
+	}
+
+	// Case 4: staging .gitmodules fails after shallow=true was written; rollback
+	// must unset the unstaged shallow entry so `git rm -f` succeeds in real git.
+	agentsUnstaged := filepath.Join(base, "agents-unstaged")
+	sourcesUnstaged := filepath.Join(agentsUnstaged, "resources", "skills")
+	if err := os.MkdirAll(sourcesUnstaged, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(agentsUnstaged, "init", "-q", "-b", "main")
+	run(agentsUnstaged, "commit", "-q", "--allow-empty", "-m", "init")
+	failStageGit := scriptedGit{refuse: func(arguments []string) bool {
+		return len(arguments) == 3 && arguments[0] == "add" && arguments[1] == "--" && arguments[2] == ".gitmodules"
+	}}
+	managerUnstaged := Manager{RepositoryRoot: agentsUnstaged, SkillsRoot: sourcesUnstaged, Git: failStageGit}
+	if err := managerUnstaged.Add(context.Background(), AddRequest{
+		Name: "acme/repo", URL: fileURL(remote), Branch: "main",
+	}); err == nil {
+		t.Fatal("Add() succeeded despite refused .gitmodules staging")
+	}
+	if _, err := os.Lstat(filepath.Join(agentsUnstaged, ".gitmodules")); !os.IsNotExist(err) {
+		t.Fatalf("rollback after unstaged .gitmodules left .gitmodules behind: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(agentsUnstaged, ".git", "modules", filepath.FromSlash(rel))); !os.IsNotExist(err) {
+		t.Fatalf("rollback after unstaged .gitmodules left .git/modules behind: %v", err)
+	}
+	if status := gitOutput(t, agentsUnstaged, "status", "--porcelain"); status != "" {
+		t.Fatalf("rollback after unstaged .gitmodules left repo dirty:\n%s", status)
+	}
+}
+
+func TestShallowSubmoduleSupportsMigrateAndRemove(t *testing.T) {
+	run := gitRunner(t)
+	base := t.TempDir()
+
+	remote := filepath.Join(base, "acme", "tools")
+	writeSourceFile(t, filepath.Join(remote, "skills", "one", "SKILL.md"), "---\nname: one\ndescription: v1\n---\n")
+	run(remote, "init", "-q", "-b", "main")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c1")
+	writeSourceFile(t, filepath.Join(remote, "skills", "one", "SKILL.md"), "---\nname: one\ndescription: v2\n---\n")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c2")
+
+	unmanaged := filepath.Join(base, "external-keep")
+	writeSourceFile(t, filepath.Join(unmanaged, "README.md"), "keep\n")
+	run(unmanaged, "init", "-q", "-b", "main")
+	run(unmanaged, "add", "-A")
+	run(unmanaged, "commit", "-q", "-m", "u1")
+
+	agentsRoot := filepath.Join(base, "agents")
+	sourcesRoot := filepath.Join(agentsRoot, "resources", "skills")
+	if err := os.MkdirAll(sourcesRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(agentsRoot, "init", "-q", "-b", "main")
+	run(agentsRoot, "commit", "-q", "--allow-empty", "-m", "init")
+	run(agentsRoot, "submodule", "add", "-q", "-b", "main", fileURL(unmanaged), "external/keep")
+	run(agentsRoot, "commit", "-q", "-m", "add unmanaged")
+
+	manager := Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: GitCommander{}}
+	ctx := context.Background()
+	// Add under legacy bare name so source migrate moves it under acme/tools.
+	if err := manager.Add(ctx, AddRequest{Name: "tools", URL: fileURL(remote), Branch: "main"}); err != nil {
+		t.Fatalf("Add(bare shallow): %v", err)
+	}
+
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := Lifecycle{
+		Manager:     Manager{RepositoryRoot: agentsRoot, SkillsRoot: sourcesRoot, Git: GitCommander{}, Clients: loaded.Clients},
+		ProjectRoot: t.TempDir(),
+	}
+	outcome, err := lifecycle.Migrate(ctx, loaded.Sources, false)
+	if err != nil {
+		t.Fatalf("Migrate(shallow): %v", err)
+	}
+	if len(outcome.Migrations) != 1 || outcome.Migrations[0].Status != MigrationMoved {
+		t.Fatalf("migrations = %#v, want moved", outcome.Migrations)
+	}
+	moved := outcome.Migrations[0].TargetPath
+	if got := gitOutput(t, moved, "rev-parse", "--is-shallow-repository"); got != "true" {
+		t.Fatalf("migrated shallow submodule is-shallow = %q, want true", got)
+	}
+	if got := gitOutput(t, moved, "rev-list", "--count", "HEAD"); got != "1" {
+		t.Fatalf("migrated shallow submodule commit count = %q, want 1", got)
+	}
+	modulesBytes, err := os.ReadFile(filepath.Join(agentsRoot, ".gitmodules"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(modulesBytes), "shallow = true") || !strings.Contains(string(modulesBytes), "vendor/shared/acme/tools") {
+		t.Fatalf(".gitmodules after migrate missing shallow/path:\n%s", modulesBytes)
+	}
+
+	// Update after migrate still advances and stays shallow.
+	writeSourceFile(t, filepath.Join(remote, "skills", "one", "SKILL.md"), "---\nname: one\ndescription: v3\n---\n")
+	run(remote, "add", "-A")
+	run(remote, "commit", "-q", "-m", "c3")
+	migratedSource, ok := outcome.Catalog.Source("vendor-shared/acme/tools")
+	if !ok {
+		t.Fatal("migrated source missing from reloaded catalog")
+	}
+	results, err := manager.Update(ctx, []catalog.Source{migratedSource}, false)
+	if err != nil {
+		t.Fatalf("Update(migrated shallow): %v", err)
+	}
+	if len(results) != 1 || !results[0].Changed {
+		t.Fatalf("Update() results = %#v, want changed", results)
+	}
+	if got := gitOutput(t, moved, "rev-list", "--count", "HEAD"); got != "1" {
+		t.Fatalf("updated migrated shallow submodule commit count = %q, want 1", got)
+	}
+
+	// Remove cleans up the shallow submodule while preserving the unmanaged entry.
+	if err := manager.Remove(ctx, migratedSource); err != nil {
+		t.Fatalf("Remove(shallow): %v", err)
+	}
+	if _, err := os.Lstat(moved); !os.IsNotExist(err) {
+		t.Fatalf("removed shallow checkout survived: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Dir(moved)); !os.IsNotExist(err) {
+		t.Fatalf("empty owner directory survived removal: %v", err)
+	}
+	modulesBytes, err = os.ReadFile(filepath.Join(agentsRoot, ".gitmodules"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(modulesBytes), "external/keep") {
+		t.Fatalf("Remove disturbed unmanaged .gitmodules entry:\n%s", modulesBytes)
+	}
+	if strings.Contains(string(modulesBytes), "acme/tools") || strings.Contains(string(modulesBytes), "shallow = true") {
+		t.Fatalf("Remove left shallow submodule entry in .gitmodules:\n%s", modulesBytes)
 	}
 }

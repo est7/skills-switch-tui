@@ -614,17 +614,17 @@ func TestUpdateAllContinuesCleanSourcesAndReportsResetFailure(t *testing.T) {
 	broken := loaded.Sources[0]
 	clean := loaded.Sources[1]
 	git := &tuiSourceGit{responses: map[string]string{
-		clean.Path + "|reset --hard HEAD":                "HEAD is now at aaaaaaaa current\n",
-		clean.Path + "|clean -ffdx":                      "",
-		clean.Path + "|rev-parse HEAD":                   "aaaaaaaa\n",
-		clean.Path + "|ls-remote origin refs/heads/main": "bbbbbbbb\trefs/heads/main\n",
-		repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/owner/clean": "",
-		clean.Path + "|fetch --no-tags origin refs/heads/main":                                    "",
-		clean.Path + "|reset --hard bbbbbbbb":                                                     "",
-		clean.Path + "|rev-parse --verify HEAD":                                                   "bbbbbbbb\n",
-		clean.Path + "|sparse-checkout disable":                                                   "",
-		clean.Path + "|sparse-checkout init --cone":                                               "",
-		clean.Path + "|sparse-checkout set skills":                                                "",
+		clean.Path + "|reset --hard HEAD":                      "HEAD is now at aaaaaaaa current\n",
+		clean.Path + "|clean -ffdx":                            "",
+		clean.Path + "|rev-parse HEAD":                         "aaaaaaaa\n",
+		clean.Path + "|ls-remote origin refs/heads/main":       "bbbbbbbb\trefs/heads/main\n",
+		clean.Path + "|rev-parse --is-shallow-repository":      "false\n",
+		clean.Path + "|fetch --no-tags origin refs/heads/main": "",
+		clean.Path + "|reset --hard bbbbbbbb":                  "",
+		clean.Path + "|rev-parse --verify HEAD":                "bbbbbbbb\n",
+		clean.Path + "|sparse-checkout disable":                "",
+		clean.Path + "|sparse-checkout init --cone":            "",
+		clean.Path + "|sparse-checkout set skills":             "",
 	}}
 	updater := source.Manager{RepositoryRoot: repositoryRoot, SkillsRoot: sourcesRoot, Git: git}
 	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), &updater, i18n.New(i18n.English))
@@ -645,7 +645,7 @@ func TestUpdateAllContinuesCleanSourcesAndReportsResetFailure(t *testing.T) {
 	if !strings.Contains(model.status, "Updated 1 source(s)") {
 		t.Fatalf("partial update status = %q err=%v calls=%v", model.status, model.err, git.calls)
 	}
-	if !git.called(repositoryRoot + "|submodule update --init -- resources/skills/vendor/shared/owner/clean") {
+	if !git.called(clean.Path + "|fetch --no-tags origin refs/heads/main") {
 		t.Fatalf("clean source was not updated; calls = %v", git.calls)
 	}
 }
