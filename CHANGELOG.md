@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.20.0] - 2026-11-25
+
+### Features
+
+- **agy:** Add native Antigravity client and managed copy projections
+
 ## [v0.19.0] - 2026-11-24
 
 ### Features
@@ -11,6 +17,10 @@ All notable changes to this project will be documented in this file.
 ### Other
 
 - Merge branch 'source/s1-shallow-clone' into main
+
+### Documentation
+
+- **changelog:** Update for v0.19.0
 
 ## [v0.18.3] - 2026-11-09
 
