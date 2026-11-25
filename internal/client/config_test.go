@@ -32,6 +32,27 @@ clients:
 	}
 }
 
+func TestLoadRegistryParsesProjectSkillsMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.yaml")
+	contents := `version: 1
+clients:
+  custom:
+    projectSkillsDir: .custom/skills
+    projectSkillsMode: copy
+`
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := LoadRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode, err := registry.ProjectSkillsMode("custom")
+	if err != nil || mode != SkillModeCopy {
+		t.Fatalf("ProjectSkillsMode(custom) = %q, %v; want %q", mode, err, SkillModeCopy)
+	}
+}
+
 func TestLoadRegistryMissingFileUsesBuiltins(t *testing.T) {
 	registry, err := LoadRegistry(filepath.Join(t.TempDir(), "registry.yaml"))
 	if err != nil {

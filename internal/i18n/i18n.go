@@ -205,6 +205,7 @@ const (
 	ChangedYes                  Key = "changed_yes"
 	ChangedNo                   Key = "changed_no"
 	UpdatePrunedSummary         Key = "update_pruned_summary"
+	UpdateRefreshedSummary      Key = "update_refreshed_summary"
 	UpdatePruneFailed           Key = "update_prune_failed"
 	PruneNoOrphans              Key = "prune_no_orphans"
 	PruneDryRunSummary          Key = "prune_dry_run_summary"
@@ -493,6 +494,7 @@ var messages = map[Language]map[Key]string{
 		SourceNotVendor:             "source %s is not an updateable vendor source",
 		NoVendorSources:             "no vendor sources selected",
 		UpdatePrunedSummary:         "removed %d orphaned projection(s) whose skill left the source:",
+		UpdateRefreshedSummary:      "refreshed %d managed copy projection(s) after source update:",
 		UpdatePruneFailed:           "some orphaned projections could not be removed: %v",
 		PruneNoOrphans:              "no orphaned projections found",
 		PruneDryRunSummary:          "%d orphaned projection(s) would be removed; re-run with --yes:",
@@ -777,6 +779,7 @@ var messages = map[Language]map[Key]string{
 		SourceNotVendor:             "来源 %s 不是可更新的 vendor 来源",
 		NoVendorSources:             "未选择 vendor 来源",
 		UpdatePrunedSummary:         "更新后清理了 %d 条已从来源移除的失效投影：",
+		UpdateRefreshedSummary:      "更新后刷新了 %d 条受管副本投影：",
 		UpdatePruneFailed:           "部分失效投影未能清理：%v",
 		PruneNoOrphans:              "未发现失效投影",
 		PruneDryRunSummary:          "发现 %d 条失效投影，加 --yes 执行清理：",

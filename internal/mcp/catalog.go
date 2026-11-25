@@ -58,13 +58,14 @@ type catalogFile struct {
 }
 
 type rawServer struct {
-	Type    string            `json:"type,omitempty"`
-	Command string            `json:"command,omitempty"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	CWD     string            `json:"cwd,omitempty"`
-	URL     string            `json:"url,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
+	Type      string            `json:"type,omitempty"`
+	Command   string            `json:"command,omitempty"`
+	Args      []string          `json:"args,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	CWD       string            `json:"cwd,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	ServerURL string            `json:"serverUrl,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
 }
 
 func LoadCatalog(path string) (Catalog, error) {
@@ -304,12 +305,19 @@ func ParseServers(data []byte) ([]Server, error) {
 // when omitted. It does not validate the name so a bare pasted object can be
 // named by the caller before AddServer validates it.
 func serverFromRaw(name string, raw rawServer) (Server, error) {
+	endpointURL := raw.URL
+	if raw.ServerURL != "" {
+		if endpointURL != "" && endpointURL != raw.ServerURL {
+			return Server{}, fmt.Errorf("cannot declare conflicting url and serverUrl")
+		}
+		endpointURL = raw.ServerURL
+	}
 	transport := Transport(raw.Type)
 	if transport == "" {
 		switch {
-		case raw.Command != "" && raw.URL == "":
+		case raw.Command != "" && endpointURL == "":
 			transport = TransportStdio
-		case raw.URL != "" && raw.Command == "":
+		case endpointURL != "" && raw.Command == "":
 			transport = TransportHTTP
 		default:
 			return Server{}, fmt.Errorf("cannot infer one unambiguous transport")
@@ -322,7 +330,7 @@ func serverFromRaw(name string, raw rawServer) (Server, error) {
 		Args:      append([]string(nil), raw.Args...),
 		Env:       cloneStrings(raw.Env),
 		CWD:       raw.CWD,
-		URL:       raw.URL,
+		URL:       endpointURL,
 		Headers:   cloneStrings(raw.Headers),
 	}, nil
 }

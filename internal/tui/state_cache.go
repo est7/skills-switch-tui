@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/est7/skills-switch-tui/internal/catalog"
 	"github.com/est7/skills-switch-tui/internal/client"
@@ -102,8 +103,11 @@ func (m *Model) refreshSkillOperationStates(operations []projection.Operation) {
 func (m *Model) refreshSkillClientStates(touched map[skillClientKey]catalog.Skill) {
 	affected := make(map[skillClientKey]catalog.Skill, len(touched))
 	for key, skill := range touched {
+		peers := m.sharedSkillClients(key.client)
 		for _, provider := range m.stateCache.skillsByName[skill.Name] {
-			affected[skillClientKey{skill: provider.ID, client: key.client}] = provider
+			for _, peer := range peers {
+				affected[skillClientKey{skill: provider.ID, client: peer}] = provider
+			}
 		}
 	}
 	for key, skill := range affected {
@@ -115,6 +119,39 @@ func (m *Model) refreshSkillClientStates(touched map[skillClientKey]catalog.Skil
 			m.stateCache.skills[skillStateKey{scope: cachedScope.scope, skill: skill.ID, client: key.client}] = cachedState[projection.State]{value: state, err: err}
 		}
 	}
+}
+
+func cleanRegistryDir(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return filepath.ToSlash(filepath.Clean(filepath.FromSlash(dir)))
+}
+
+// sharedSkillClients returns clientID along with every other registered client
+// that projects Skills into the same project or user target directory, so a
+// mutation through one client immediately refreshes shared-slot peers in the
+// TUI state cache.
+func (m *Model) sharedSkillClients(clientID client.ID) []client.ID {
+	definition, ok := m.catalog.Clients.Definition(clientID)
+	if !ok {
+		return []client.ID{clientID}
+	}
+	projectDir := cleanRegistryDir(definition.ProjectSkillsDir)
+	userDir := cleanRegistryDir(definition.UserSkillsDir)
+	peers := []client.ID{clientID}
+	for _, other := range m.catalog.Clients.Definitions() {
+		if other.ID == clientID {
+			continue
+		}
+		otherProjectDir := cleanRegistryDir(other.ProjectSkillsDir)
+		otherUserDir := cleanRegistryDir(other.UserSkillsDir)
+		if (projectDir != "" && projectDir == otherProjectDir) ||
+			(userDir != "" && userDir == otherUserDir) {
+			peers = append(peers, other.ID)
+		}
+	}
+	return peers
 }
 
 func (m *Model) refreshMCPStates(names []string, clients []client.ID) {

@@ -20,7 +20,7 @@ type configDocument interface {
 
 func parseDocument(format client.MCPFormat, data []byte) (configDocument, error) {
 	switch format {
-	case client.MCPClaudeJSON:
+	case client.MCPClaudeJSON, client.MCPAgyJSON:
 		return parseJSONDocument(data)
 	case client.MCPCodexTOML:
 		return parseTOMLDocument(data)
@@ -278,6 +278,19 @@ func definitionsEqual(format client.MCPFormat, existing, expected map[string]any
 		}
 		if existing["type"] == "streamable-http" {
 			existing["type"] = "http"
+		}
+	}
+	if format == client.MCPAgyJSON {
+		// `agy mcp disable` writes a boolean runtime disabled flag beside the
+		// managed entry; ignore it so disabling in agy does not report a conflict.
+		if _, isBool := existing["disabled"].(bool); isBool {
+			delete(existing, "disabled")
+		}
+		if _, hasServerURL := existing["serverUrl"]; !hasServerURL {
+			if rawURL, hasURL := existing["url"]; hasURL {
+				existing["serverUrl"] = rawURL
+				delete(existing, "url")
+			}
 		}
 	}
 	return reflect.DeepEqual(existing, expected)

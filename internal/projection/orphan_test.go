@@ -42,8 +42,8 @@ func TestOrphanedProjectionsDetectsUpstreamRemoval(t *testing.T) {
 	if orphan.Name != "two" || orphan.Client != catalog.ClientCodex {
 		t.Fatalf("orphan = %#v, want the 'two' codex link", orphan)
 	}
-	if orphan.Target != filepath.Clean(two.Path) {
-		t.Fatalf("orphan.Target = %q, want %q", orphan.Target, two.Path)
+	if orphan.Target != canonicalPath(two.Path) {
+		t.Fatalf("orphan.Target = %q, want %q", orphan.Target, canonicalPath(two.Path))
 	}
 }
 

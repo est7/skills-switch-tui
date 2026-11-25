@@ -70,7 +70,7 @@ skills-switch --project "$PROJECT" skills list --scope project --json
 skills-switch --project "$PROJECT" skills list --scope global --json
 ```
 
-The scopes are mutually exclusive by final Skill name for each client. A project state of `global` is locked and must not be enabled at project scope. To make an always-on Skill global, use one global command; it atomically retires any catalog-managed project link and creates the native user-global link:
+The scopes are mutually exclusive by final Skill name for each client. A project state of `global` is locked and must not be enabled at project scope. Because `codex` and `agy` share project `.agents/skills` (symlink for `codex`, managed copy with `.skills-switch-managed.json` for `agy`), enabling a project copy for `agy` is also rejected when a peer sharing `.agents/skills` does not support the Skill or has it globally configured — disable the peer's global projection first or enable with `--scope global --client agy` (where `~/.gemini/config/skills` is isolated). On an existing shared managed copy, disabling or promoting `codex` alone is refused so `agy` is not silently wiped; pass `--client codex --client agy` (or target `agy`) to remove the shared copy. To make an always-on Skill global, use one global command; it atomically retires any catalog-managed project projection and creates the native user-global link:
 
 ```bash
 skills-switch --project "$PROJECT" skills enable <skill-id> \
@@ -204,7 +204,7 @@ skills-switch mcp add <server> \
 skills-switch mcp add <server> --url https://<host>/mcp --header 'Authorization=${MCP_AUTHORIZATION}'
 ```
 
-When the user pastes a client-style JSON block, register it with `mcp import` instead of translating it into flags. It accepts either a full `{"mcpServers": {...}}` wrapper (names come from the keys; several servers are validated and added in one catalog transaction) or a single bare object such as `{"command": "npx", ...}` / `{"url": "..."}` (supply the name with `--name`). Read the JSON from an argument, `--file`, or standard input. Never store plaintext credentials in secret-like environment or header fields; new definitions must use `${ENV_VAR}` references.
+When the user pastes a client-style JSON block, register it with `mcp import` instead of translating it into flags. It accepts either a full `{"mcpServers": {...}}` wrapper (names come from the keys; several servers are validated and added in one catalog transaction) or a single bare object such as `{"command": "npx", ...}` / `{"url": "..."}` / `{"serverUrl": "..."}` (supply the name with `--name`). Read the JSON from an argument, `--file`, or standard input. Never store plaintext credentials in secret-like environment or header fields; new definitions must use `${ENV_VAR}` references.
 
 ```bash
 # full wrapper (names from keys)
@@ -239,7 +239,7 @@ When a project is in scope, pass `--project "$PROJECT"` to `source update`, `sou
 
 Update every vendor source by omitting the source ID. Each checkout is a read-only mirror: before remote inspection, a real update runs `git reset --hard HEAD` and `git clean -ffdx`, discarding tracked, untracked, and ignored local changes. It initializes a missing registered checkout, reads the exact configured branch tip, fetches that ref (with `--depth 1` on shallow checkouts so history stays shallow), resets to the advertised SHA, and verifies `HEAD`. `--dry-run` is non-mutating. Failures are isolated per source and identify the source, path, operation, and underlying Git error.
 
-After changed sources are rediscovered, the command removes dangling catalog-managed Skill links from the current project scope (when available) and user-global scope. Reconciliation failures are command failures, not warnings. JSON output contains `updates`, scope-bearing `pruned` links, and structured `failures`.
+After changed sources are rediscovered, the command removes dangling catalog-managed Skill projections (symlinks and clean managed copies) from the current project scope (when available) and user-global scope, and refreshes clean managed copies whose SSOT changed. Locally modified copies are preserved (never overwritten or auto-pruned) and surface as `conflict` in `doctor` even when orphaned. Reconciliation failures are command failures, not warnings. JSON output contains `updates`, scope-bearing `pruned` projections, optional `refreshed` managed copies, and structured `failures`.
 
 ### Move legacy checkouts under their owner
 
@@ -344,7 +344,7 @@ Commands and hooks are project-scoped. Agents and output styles are user-global;
 
 Run the nearest read command after each change:
 
-- Skill or source projection: `skills-switch --project "$PROJECT" skills list --json`
+- Skill or source projection: `skills-switch --project "$PROJECT" skills list --json` (enabled copy-mode Skills must not be `stale`; re-enable to refresh)
 - Local Skill scaffold or deletion: `skills-switch skills list --json` (the id appears or is gone)
 - MCP server projection or definition: `skills-switch --project "$PROJECT" mcp list --json`
 - Project command: `skills-switch --project "$PROJECT" commands list --json`

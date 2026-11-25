@@ -14,7 +14,7 @@ func TestRegistryExtendsBuiltinsWithConfiguredClient(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wantIDs := []ID{Codex, Claude, "pi"}
+	wantIDs := []ID{Codex, Claude, Agy, "pi"}
 	if got := registry.IDs(); !reflect.DeepEqual(got, wantIDs) {
 		t.Fatalf("IDs() = %v, want %v", got, wantIDs)
 	}
@@ -45,10 +45,10 @@ func TestRegistryFiltersClientsByResourceCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := registry.IDsFor(CapabilityProjectSkills); !reflect.DeepEqual(got, []ID{Codex, Claude, "skill-only"}) {
+	if got := registry.IDsFor(CapabilityProjectSkills); !reflect.DeepEqual(got, []ID{Codex, Claude, Agy, "skill-only"}) {
 		t.Fatalf("project Skill clients = %v", got)
 	}
-	if got := registry.IDsFor(CapabilityMCP); !reflect.DeepEqual(got, []ID{Codex, Claude, "mcp-only"}) {
+	if got := registry.IDsFor(CapabilityMCP); !reflect.DeepEqual(got, []ID{Codex, Claude, Agy, "mcp-only"}) {
 		t.Fatalf("MCP clients = %v", got)
 	}
 	if err := registry.Require("mcp-only", CapabilitySkills); err == nil {
@@ -73,6 +73,7 @@ func TestRegistryExposesBuiltinUserSkillAdapters(t *testing.T) {
 	for id, relative := range map[ID]string{
 		Codex:  filepath.Join(".agents", "skills"),
 		Claude: filepath.Join(".claude", "skills"),
+		Agy:    filepath.Join(".gemini", "config", "skills"),
 	} {
 		got, err := registry.UserSkillsTargetDir("/tmp/home", id)
 		if err != nil {
@@ -82,6 +83,14 @@ func TestRegistryExposesBuiltinUserSkillAdapters(t *testing.T) {
 			t.Fatalf("%s user Skill dir = %q, want %q", id, got, want)
 		}
 	}
+	mode, err := registry.ProjectSkillsMode(Agy)
+	if err != nil || mode != SkillModeCopy {
+		t.Fatalf("Agy project skills mode = %q, %v; want %q", mode, err, SkillModeCopy)
+	}
+	mode, err = registry.ProjectSkillsMode(Codex)
+	if err != nil || mode != SkillModeSymlink {
+		t.Fatalf("Codex project skills mode = %q, %v; want %q", mode, err, SkillModeSymlink)
+	}
 }
 
 func TestRegistryExposesBuiltinPromptAndMCPAdapters(t *testing.T) {
@@ -89,6 +98,7 @@ func TestRegistryExposesBuiltinPromptAndMCPAdapters(t *testing.T) {
 	for id, relative := range map[ID]string{
 		Codex:  ".codex",
 		Claude: ".claude",
+		Agy:    filepath.Join(".gemini", "config"),
 	} {
 		promptDir, err := registry.UserPromptTargetDir("/tmp/home", id)
 		if err != nil {
@@ -106,12 +116,27 @@ func TestRegistryExposesBuiltinPromptAndMCPAdapters(t *testing.T) {
 	if err != nil || mode != PromptTree || entry != "" {
 		t.Fatalf("Claude prompt adapter = %q %q, %v", mode, entry, err)
 	}
+	mode, entry, err = registry.UserPromptAdapter(Agy)
+	if err != nil || mode != PromptConcat || entry != "AGENTS.md" {
+		t.Fatalf("Agy prompt adapter = %q %q, %v", mode, entry, err)
+	}
 	mcpFile, format, err := registry.MCPProjectFile("/tmp/project", Codex)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := filepath.Join("/tmp/project", ".codex", "config.toml"); mcpFile != want || format != MCPCodexTOML {
 		t.Fatalf("Codex MCP adapter = %q %q, want %q %q", mcpFile, format, want, MCPCodexTOML)
+	}
+	mcpFile, format, err = registry.MCPProjectFile("/tmp/project", Agy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join("/tmp/project", ".agents", "mcp_config.json"); mcpFile != want || format != MCPAgyJSON {
+		t.Fatalf("Agy MCP adapter = %q %q, want %q %q", mcpFile, format, want, MCPAgyJSON)
+	}
+	agentsDir, err := registry.UserAgentsTargetDir("/tmp/home", Agy)
+	if err != nil || agentsDir != filepath.Join("/tmp/home", ".gemini", "config", "agents") {
+		t.Fatalf("Agy user agents dir = %q, %v", agentsDir, err)
 	}
 }
 
@@ -140,5 +165,38 @@ func TestRegistryExposesBuiltinCommandAndHookAdapters(t *testing.T) {
 	hookDir, err := registry.ProjectHooksTargetDir("/tmp/project", Codex)
 	if err != nil || hookDir != filepath.Join("/tmp/project", ".codex", "hooks") {
 		t.Fatalf("ProjectHooksTargetDir() = %q, %v", hookDir, err)
+	}
+}
+
+func TestRegistryValidatesProjectSkillsModeAndCanonicalizesRelativePaths(t *testing.T) {
+	if _, err := NewRegistry(map[ID]Definition{
+		"badmode": {ProjectSkillsDir: ".bad/skills", ProjectSkillsMode: SkillMode("hardlink")},
+	}); err == nil {
+		t.Fatal("NewRegistry accepted unknown projectSkillsMode")
+	}
+	if _, err := NewRegistry(map[ID]Definition{
+		"nodir": {UserSkillsDir: ".nodir/skills", ProjectSkillsMode: SkillModeCopy},
+	}); err == nil {
+		t.Fatal("NewRegistry accepted projectSkillsMode without projectSkillsDir")
+	}
+
+	registry, err := NewRegistry(map[ID]Definition{
+		Agy:      {ProjectSkillsMode: SkillModeSymlink},
+		"custom": {ProjectSkillsDir: "./.agents//skills/", UserSkillsDir: "./.custom/skills/"},
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry override: %v", err)
+	}
+	if mode, err := registry.ProjectSkillsMode(Agy); err != nil || mode != SkillModeSymlink {
+		t.Fatalf("overridden agy mode = %q, %v; want symlink", mode, err)
+	}
+	def, ok := registry.Definition("custom")
+	if !ok || def.ProjectSkillsDir != ".agents/skills" || def.UserSkillsDir != ".custom/skills" {
+		t.Fatalf("normalized custom definition = %+v, %v", def, ok)
+	}
+	for _, d := range registry.Definitions() {
+		if d.ID == "custom" && d.ProjectSkillsDir != ".agents/skills" {
+			t.Fatalf("Definitions() did not preserve normalized path: %+v", d)
+		}
 	}
 }

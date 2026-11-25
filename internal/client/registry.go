@@ -12,21 +12,29 @@ type ID string
 
 type MCPFormat string
 type PromptMode string
+type SkillMode string
 type Capability string
 
 const (
 	Codex  ID = "codex"
 	Claude ID = "claude"
+	Agy    ID = "agy"
 )
 
 const (
 	MCPClaudeJSON MCPFormat = "claude-json"
 	MCPCodexTOML  MCPFormat = "codex-toml"
+	MCPAgyJSON    MCPFormat = "agy-json"
 )
 
 const (
 	PromptTree   PromptMode = "tree"
 	PromptConcat PromptMode = "concat"
+)
+
+const (
+	SkillModeSymlink SkillMode = "symlink"
+	SkillModeCopy    SkillMode = "copy"
 )
 
 const (
@@ -44,6 +52,7 @@ const (
 type Definition struct {
 	ID                  ID
 	ProjectSkillsDir    string
+	ProjectSkillsMode   SkillMode
 	UserSkillsDir       string
 	UserPromptDir       string
 	UserPromptMode      PromptMode
@@ -64,8 +73,13 @@ type Registry struct {
 var clientIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 
 var builtins = []Definition{
-	{ID: Codex, ProjectSkillsDir: ".agents/skills", UserSkillsDir: ".agents/skills", UserPromptDir: ".codex", UserPromptMode: PromptConcat, UserPromptEntry: "AGENTS.md", ProjectCommandsDir: ".codex/prompts", ProjectHooksDir: ".codex/hooks", UserAgentsDir: ".codex/agents", ProjectMCPFile: ".codex/config.toml", ProjectMCPFormat: MCPCodexTOML},
-	{ID: Claude, ProjectSkillsDir: ".claude/skills", UserSkillsDir: ".claude/skills", UserPromptDir: ".claude", UserPromptMode: PromptTree, ProjectCommandsDir: ".claude/commands", ProjectHooksDir: ".claude/hooks", UserAgentsDir: ".claude/agents", UserOutputStylesDir: ".claude/output-styles", ProjectMCPFile: ".mcp.json", ProjectMCPFormat: MCPClaudeJSON},
+	{ID: Codex, ProjectSkillsDir: ".agents/skills", ProjectSkillsMode: SkillModeSymlink, UserSkillsDir: ".agents/skills", UserPromptDir: ".codex", UserPromptMode: PromptConcat, UserPromptEntry: "AGENTS.md", ProjectCommandsDir: ".codex/prompts", ProjectHooksDir: ".codex/hooks", UserAgentsDir: ".codex/agents", ProjectMCPFile: ".codex/config.toml", ProjectMCPFormat: MCPCodexTOML},
+	{ID: Claude, ProjectSkillsDir: ".claude/skills", ProjectSkillsMode: SkillModeSymlink, UserSkillsDir: ".claude/skills", UserPromptDir: ".claude", UserPromptMode: PromptTree, ProjectCommandsDir: ".claude/commands", ProjectHooksDir: ".claude/hooks", UserAgentsDir: ".claude/agents", UserOutputStylesDir: ".claude/output-styles", ProjectMCPFile: ".mcp.json", ProjectMCPFormat: MCPClaudeJSON},
+	// Antigravity (agy) ignores project-scope symlinks that resolve outside the
+	// workspace root, so project Skills must be materialized as managed copies
+	// under its native .agents/skills directory; global Skills, agents, and
+	// concat prompts live under ~/.gemini/config where symlinks work natively.
+	{ID: Agy, ProjectSkillsDir: ".agents/skills", ProjectSkillsMode: SkillModeCopy, UserSkillsDir: ".gemini/config/skills", UserPromptDir: ".gemini/config", UserPromptMode: PromptConcat, UserPromptEntry: "AGENTS.md", UserAgentsDir: ".gemini/config/agents", ProjectMCPFile: ".agents/mcp_config.json", ProjectMCPFormat: MCPAgyJSON},
 }
 
 func NewRegistry(configured map[ID]Definition) (Registry, error) {
@@ -101,11 +115,12 @@ func NewRegistry(configured map[ID]Definition) (Registry, error) {
 	}
 
 	byID := make(map[ID]Definition, len(ordered))
-	for _, definition := range ordered {
+	for index, definition := range ordered {
 		definition = normalizeDefinition(definition)
 		if err := validateDefinition(definition); err != nil {
 			return Registry{}, err
 		}
+		ordered[index] = definition
 		byID[definition.ID] = definition
 	}
 	return Registry{ordered: ordered, byID: byID}, nil
@@ -115,6 +130,9 @@ func mergeDefinition(base, override Definition) Definition {
 	base.ID = override.ID
 	if override.ProjectSkillsDir != "" {
 		base.ProjectSkillsDir = override.ProjectSkillsDir
+	}
+	if override.ProjectSkillsMode != "" {
+		base.ProjectSkillsMode = override.ProjectSkillsMode
 	}
 	if override.UserSkillsDir != "" {
 		base.UserSkillsDir = override.UserSkillsDir
@@ -153,10 +171,29 @@ func mergeDefinition(base, override Definition) Definition {
 }
 
 func normalizeDefinition(definition Definition) Definition {
+	definition.ProjectSkillsDir = cleanRelativePath(definition.ProjectSkillsDir)
+	definition.UserSkillsDir = cleanRelativePath(definition.UserSkillsDir)
+	definition.UserPromptDir = cleanRelativePath(definition.UserPromptDir)
+	definition.UserPromptEntry = cleanRelativePath(definition.UserPromptEntry)
+	definition.ProjectCommandsDir = cleanRelativePath(definition.ProjectCommandsDir)
+	definition.ProjectHooksDir = cleanRelativePath(definition.ProjectHooksDir)
+	definition.UserAgentsDir = cleanRelativePath(definition.UserAgentsDir)
+	definition.UserOutputStylesDir = cleanRelativePath(definition.UserOutputStylesDir)
+	definition.ProjectMCPFile = cleanRelativePath(definition.ProjectMCPFile)
+	if definition.ProjectSkillsDir != "" && definition.ProjectSkillsMode == "" {
+		definition.ProjectSkillsMode = SkillModeSymlink
+	}
 	if definition.UserPromptDir != "" && definition.UserPromptMode == "" {
 		definition.UserPromptMode = PromptTree
 	}
 	return definition
+}
+
+func cleanRelativePath(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	return filepath.ToSlash(filepath.Clean(filepath.FromSlash(raw)))
 }
 
 func DefaultRegistry() Registry {
@@ -248,6 +285,20 @@ func (r Registry) TargetDir(projectRoot string, id ID) (string, error) {
 		return "", fmt.Errorf("client %s does not support skills", id)
 	}
 	return filepath.Join(projectRoot, filepath.FromSlash(definition.ProjectSkillsDir)), nil
+}
+
+func (r Registry) ProjectSkillsMode(id ID) (SkillMode, error) {
+	definition, ok := r.byID[id]
+	if !ok {
+		return "", fmt.Errorf("unknown client %q", id)
+	}
+	if definition.ProjectSkillsDir == "" {
+		return "", fmt.Errorf("client %s does not support skills", id)
+	}
+	if definition.ProjectSkillsMode == "" {
+		return SkillModeSymlink, nil
+	}
+	return definition.ProjectSkillsMode, nil
 }
 
 func (r Registry) UserSkillsTargetDir(userHome string, id ID) (string, error) {
@@ -345,6 +396,15 @@ func validateDefinition(definition Definition) error {
 	if err := validateRelativePath(definition.ProjectSkillsDir, false); err != nil {
 		return fmt.Errorf("client %s projectSkillsDir must stay inside the project: %q", definition.ID, definition.ProjectSkillsDir)
 	}
+	switch definition.ProjectSkillsMode {
+	case "":
+	case SkillModeSymlink, SkillModeCopy:
+		if definition.ProjectSkillsDir == "" {
+			return fmt.Errorf("client %s projectSkillsDir is required when projectSkillsMode is set", definition.ID)
+		}
+	default:
+		return fmt.Errorf("client %s has unknown projectSkillsMode %q", definition.ID, definition.ProjectSkillsMode)
+	}
 	if err := validateRelativePath(definition.UserSkillsDir, false); err != nil {
 		return fmt.Errorf("client %s userSkillsDir must stay inside the user home: %q", definition.ID, definition.UserSkillsDir)
 	}
@@ -400,7 +460,7 @@ func validateDefinition(definition Definition) error {
 		return fmt.Errorf("client %s projectMCPFile is required when projectMCPFormat is set", definition.ID)
 	}
 	switch definition.ProjectMCPFormat {
-	case "", MCPClaudeJSON, MCPCodexTOML:
+	case "", MCPClaudeJSON, MCPCodexTOML, MCPAgyJSON:
 	default:
 		return fmt.Errorf("client %s has unknown projectMCPFormat %q", definition.ID, definition.ProjectMCPFormat)
 	}

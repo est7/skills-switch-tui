@@ -86,6 +86,10 @@ func (m Manager) adoptSkill(path, scope, group string) (Adoption, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return failedAdoption(result, fmt.Errorf("inspect adoption backup: %w", err))
 	}
+	useManagedCopy, err := m.shouldAdoptAsManagedCopy(*unmanaged, scope)
+	if err != nil {
+		return refusedAdoption(result, err)
+	}
 
 	if err := copyAdoptionTree(unmanaged.Path, target.Path); err != nil {
 		cleanupErr := cleanupAdoptionSSOT(target.Path, m.skillsRoot)
@@ -96,20 +100,34 @@ func (m Manager) adoptSkill(path, scope, group string) (Adoption, error) {
 		return finalizeAdoptionFailure(result, backupPath, errors.Join(fmt.Errorf("create adoption backup: %w", err), cleanupErr))
 	}
 
-	var applied *linktransaction.Applied
+	var appliedLink *linktransaction.Applied
+	var appliedCopy *appliedTransaction
 	operationErr := error(nil)
 	if m.beforeAdoptLink != nil {
 		operationErr = m.beforeAdoptLink(unmanaged.Path, backupPath, target.Path)
 	}
 	if operationErr == nil {
-		engine := adoptionLinkEngine()
-		transaction, linkErr := engine.Execute([]linktransaction.Change{
-			linktransaction.Create(unmanaged.Path, target.Path),
-		})
-		if linkErr != nil {
-			operationErr = fmt.Errorf("create managed projection: %w", linkErr)
+		if useManagedCopy {
+			transaction, copyErr := executeSlotChanges([]slotChange{{
+				path:     unmanaged.Path,
+				expected: slotSpec{kind: slotAbsent},
+				desired:  slotSpec{kind: slotCopy, target: target.Path},
+			}}, false)
+			if copyErr != nil {
+				operationErr = fmt.Errorf("create managed projection: %w", copyErr)
+			} else {
+				appliedCopy = transaction
+			}
 		} else {
-			applied = &transaction
+			engine := adoptionLinkEngine()
+			transaction, linkErr := engine.Execute([]linktransaction.Change{
+				linktransaction.Create(unmanaged.Path, target.Path),
+			})
+			if linkErr != nil {
+				operationErr = fmt.Errorf("create managed projection: %w", linkErr)
+			} else {
+				appliedLink = &transaction
+			}
 		}
 	}
 	if operationErr == nil {
@@ -122,9 +140,51 @@ func (m Manager) adoptSkill(path, scope, group string) (Adoption, error) {
 		return result, nil
 	}
 
-	rollbackErr := rollbackAdoption(unmanaged.Path, backupPath, target.Path, m.skillsRoot, applied)
+	rollbackErr := rollbackAdoption(unmanaged.Path, backupPath, target.Path, m.skillsRoot, appliedLink, appliedCopy)
 	combined := errors.Join(operationErr, rollbackErr)
 	return finalizeAdoptionFailure(result, backupPath, combined)
+}
+
+func (m Manager) shouldAdoptAsManagedCopy(unmanaged UnmanagedSkill, scope string) (bool, error) {
+	if unmanaged.Scope != ScopeProject {
+		return false, nil
+	}
+	targetDir := filepath.Dir(unmanaged.Path)
+	copyPeers := m.copyModePeersForDir(targetDir)
+	if len(copyPeers) == 0 {
+		return false, nil
+	}
+	if scope == "shared" {
+		return true, nil
+	}
+	targetClient := client.ID(scope)
+	isCopyOwner := false
+	for _, peer := range copyPeers {
+		if peer == targetClient {
+			isCopyOwner = true
+			break
+		}
+	}
+	if !isCopyOwner {
+		return false, nil
+	}
+	// A client-scoped copy-mode adoption into a shared project directory would
+	// expose an incompatible skill to every other peer reading that directory.
+	peers := m.projectPeersSharingDir(targetDir)
+	incompatiblePeers := make([]catalog.Client, 0, len(peers))
+	for _, peer := range peers {
+		if peer != targetClient {
+			incompatiblePeers = append(incompatiblePeers, peer)
+		}
+	}
+	if len(incompatiblePeers) > 0 {
+		return false, fmt.Errorf(
+			"project directory is shared with %s, which does not support %s-only skills; adopt with --scope shared instead",
+			formatClientNames(incompatiblePeers),
+			targetClient,
+		)
+	}
+	return true, nil
 }
 
 func finalizeAdoptionFailure(result Adoption, backupPath string, err error) (Adoption, error) {
@@ -148,9 +208,9 @@ func (m Manager) unmanagedSkillAt(path string) (*UnmanagedSkill, error) {
 	if err != nil {
 		return nil, err
 	}
-	want := filepath.Clean(path)
+	want := canonicalSlotPath(path)
 	for index := range discovered {
-		if filepath.Clean(discovered[index].Path) == want {
+		if canonicalSlotPath(discovered[index].Path) == want {
 			return &discovered[index], nil
 		}
 	}
@@ -286,10 +346,14 @@ func copyAdoptionFile(source, destination string, mode fs.FileMode) (resultErr e
 	return os.Chmod(destination, mode)
 }
 
-func rollbackAdoption(original, backup, ssot, skillsRoot string, applied *linktransaction.Applied) error {
+func rollbackAdoption(original, backup, ssot, skillsRoot string, appliedLink *linktransaction.Applied, appliedCopy *appliedTransaction) error {
 	rollbackErrors := make([]error, 0)
-	if applied != nil {
-		if err := applied.Restore(); err != nil {
+	if appliedCopy != nil {
+		if err := appliedCopy.Restore(); err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("remove adoption projection: %w", err))
+		}
+	} else if appliedLink != nil {
+		if err := appliedLink.Restore(); err != nil {
 			rollbackErrors = append(rollbackErrors, fmt.Errorf("remove adoption projection: %w", err))
 		}
 	} else if err := removeExactAdoptionLink(original, ssot); err != nil {

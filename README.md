@@ -58,34 +58,13 @@ The built-in client registry owns both project-local and user-global client adap
 
 | Client | Project Skills | User Skills | Project MCP | Project commands/hooks | User agents | User output styles | User system prompts |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `codex` | `.agents/skills` | `~/.agents/skills` | `.codex/config.toml` | `.codex/prompts`, `.codex/hooks` | `.codex/agents` | — | `.codex/` |
-| `claude` | `.claude/skills` | `~/.claude/skills` | `.mcp.json` | `.claude/commands`, `.claude/hooks` | `.claude/agents` | `.claude/output-styles` | `.claude/` |
+| `codex` | `.agents/skills` (symlink) | `~/.agents/skills` | `.codex/config.toml` | `.codex/prompts`, `.codex/hooks` | `.codex/agents` | — | `.codex/` (`AGENTS.md`) |
+| `claude` | `.claude/skills` (symlink) | `~/.claude/skills` | `.mcp.json` | `.claude/commands`, `.claude/hooks` | `.claude/agents` | `.claude/output-styles` | `.claude/` |
+| `agy` | `.agents/skills` (managed copy) | `~/.gemini/config/skills` | `.agents/mcp_config.json` | — | `.gemini/config/agents` | — | `.gemini/config/` (`AGENTS.md`) |
 
-The Antigravity CLI (`agy`) is not a separate client: it shares the `codex` Skill directories. It reads workspace Skills from `.agents/skills` natively; to make it read `~/.agents/skills` too, list that directory in `~/.gemini/config/skills.json`. The path must be absolute — `agy` does not expand `~` there:
+Antigravity (`agy`) ignores project-scope symlinks whose target resolves outside the workspace root, so enabling a project Skill for `agy` materializes a managed directory copy (carrying an internal `.skills-switch-managed.json` ownership and content-hash marker) under `.agents/skills/<name>`. Because `codex` and `agy` share `.agents/skills`, a managed copy is visible to both clients: enabling `codex` alone keeps a lightweight symlink (`agy` stays disabled), enabling `agy` upgrades a managed symlink to a copy (rejected if a peer sharing `.agents/skills`, such as `codex`, does not support the Skill or already has it configured globally — disable the peer's global projection first or use `--scope global --client agy`), and disabling or promoting `codex` alone on an existing shared copy is refused so `agy` is not silently wiped (include `--client agy`, or disable/promote `agy`, to remove the shared copy). `source update` refreshes clean copies automatically while refusing to overwrite locally edited copies (`conflict`). User-global `agy` Skills under `~/.gemini/config/skills` use symlinks and stay isolated from `~/.agents/skills` — remove any `~/.gemini/config/skills.json` entry bridging `~/.agents/skills` if you want `codex` and `agy` global Skills toggled independently.
 
-```json
-{ "entries": [ { "path": "/Users/<you>/.agents/skills" } ] }
-```
-
-Skills that only `agy` should see need their own roots, which `agy` also reads: `.agent/skills` in a workspace and `~/.gemini/config/skills` globally. Register them as a client in `resources/registry.yaml`, then pin the catalog defaults so shared Skills keep targeting only `codex` and `claude` — otherwise a shared Skill enabled for `agy` loads twice:
-
-```yaml
-# resources/registry.yaml
-clients:
-  agy:
-    projectSkillsDir: .agent/skills
-    userSkillsDir: .gemini/config/skills
-```
-
-```yaml
-# resources/skills/catalog.yaml
-defaults:
-  targets: [codex, claude]
-```
-
-Skills under `skills/local/agy/` or `skills/vendor/agy/` then target `agy` alone. Add `.agent/` to your gitignore.
-
-Clients are data, not a closed enum. Built-ins live in the binary; `resources/registry.yaml` can override them or add another client without changing Go code:
+Clients are data, not a closed enum. Built-ins live in the binary; `resources/registry.yaml` can override them (including `projectSkillsMode: symlink|copy` and `projectMCPFormat: claude-json|codex-toml|agy-json`) or add another client without changing Go code:
 
 ```yaml
 version: 1
@@ -294,7 +273,7 @@ Launching the TUI never updates submodules automatically. Press `u` for the sele
 
 Batch updates isolate failures per source, so a reset, clean, or Git failure in one repository does not block independent repositories. Source Git failures include the source id, repository path, failed operation, and underlying Git detail. After an update, the catalog is rediscovered from the new upstream snapshot; added and removed Skills immediately change each source's enabled/total counts.
 
-When an update removes a Skill that was enabled, `source update` reconciles the changed source automatically: it removes dangling catalog-managed links from both the current project scope (when available) and user-global scope. A Skill that is merely no longer discovered but still exists on disk is never removed. Reconciliation failures remain observable and make the command fail instead of silently leaving state inconsistent. JSON output is an object `{updates, pruned, failures}`; every pruned link includes its scope, source-attributed failures include source/path/operation fields, and every failure includes its error. Run `skills prune` at any time to review other orphaned projections (`--yes` removes them), and `doctor` reports them as unhealthy. A link is also orphaned when it is stale: it points into the resources `skills/` tree, outside every registered source, and its target is gone. Moving a source (`source migrate`) or removing it rewrites links only in the project it ran against, so other projects keep such links. A stale link never blocks a Skill: enabling a Skill of the same name replaces it, and promoting the Skill to global removes it.
+When an update changes or removes a Skill that was enabled, `source update` reconciles the changed source automatically: it removes dangling catalog-managed projections (symlinks and clean managed copies) from both the current project scope (when available) and user-global scope, and refreshes clean project-scope managed copies whose upstream contents changed. Locally modified managed copies are never overwritten or auto-pruned; `doctor` reports them as `conflict` (including orphaned modified copies whose upstream Skill was removed). A Skill that is merely no longer discovered but still exists on disk is never removed. Reconciliation failures remain observable and make the command fail instead of silently leaving state inconsistent. JSON output is an object `{updates, pruned, refreshed?, failures}` (`refreshed` is emitted when managed copies were refreshed); every pruned projection includes its scope, source-attributed failures include source/path/operation fields, and every failure includes its error. Run `skills prune` at any time to review other orphaned projections (`--yes` removes clean orphans only), and `doctor` reports them as unhealthy. A projection is also orphaned when it is stale: it points into the resources `skills/` tree, outside every registered source, and its target is gone. Moving a source (`source migrate`) or removing it rewrites projections only in the project it ran against, so other projects keep such projections. A stale projection never blocks a Skill: enabling a Skill of the same name replaces it, and promoting the Skill to global removes it.
 
 `source remove` first retires the source's catalog-managed projections in the current project and user-global scopes, then removes the clean vendor submodule, gitlink, `.gitmodules` entry, and catalog policy. If source removal fails, the retired projections are restored. The command still refuses a dirty vendor checkout; other projects may retain links to the removed source and must be handled in their own scope.
 
@@ -337,7 +316,7 @@ skills-switch doctor
 
 Source-group and multi-client changes are preflighted as one transaction. A conflict prevents every selected projection from changing; an apply failure rolls back already-applied links or configuration files.
 
-Skills from different active sources may intentionally share a name. They are alternative providers for the same project link: enabling one atomically switches a link currently owned by another catalog provider. A real directory or a symlink outside the active catalog remains an unmanaged conflict and is never overwritten.
+Skills from different active sources may intentionally share a name. They are alternative providers for the same project slot: enabling one atomically switches a symlink or clean managed copy (`.skills-switch-managed.json`) currently owned by another catalog provider. An unmanaged directory without `.skills-switch-managed.json`, a locally modified managed copy, or a symlink outside the active catalog remains a conflict and is never overwritten.
 
 Skill scope is selected with `--scope project|global` and defaults to `project`. The two scopes are mutually exclusive by final Skill name and client target: a global projection locks the matching project projection, so project enablement is rejected instead of creating a redundant shadow link. Promoting a catalog-managed project Skill to global atomically removes its project link and creates the user-global link. Disabling the global projection unlocks project scope. `doctor` reports historical global/project duplicates with both the scope and exact path. Such a duplicate appears when a Skill was promoted from another project. In the TUI's project scope, toggling it removes the project copy and keeps the global one; from the CLI, run `skills disable <id> --scope project`. Because Codex's native `~/.agents/skills` target sits beside the default `~/.agents/resources` catalog, `init` keeps the derived `skills/` directory out of the catalog repository through `.gitignore`.
 

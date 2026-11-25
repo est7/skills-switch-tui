@@ -33,6 +33,7 @@ const (
 const (
 	ClientCodex  = client.Codex
 	ClientClaude = client.Claude
+	ClientAgy    = client.Agy
 )
 
 type Skill struct {

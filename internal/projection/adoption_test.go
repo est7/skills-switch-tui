@@ -37,7 +37,10 @@ func TestAdoptSkillsMovesContentToCatalogAndReprojectsOriginal(t *testing.T) {
 	if !reflect.DeepEqual(results, want) {
 		t.Fatalf("AdoptSkills() = %#v, want %#v", results, want)
 	}
-	assertLinkTarget(t, original, ssot)
+	entry, err := inspectEntry(original)
+	if err != nil || entry.kind != entryManagedCopy || entry.resolvedTarget != canonicalPath(ssot) {
+		t.Fatalf("adopted .agents/skills projection = %+v, %v; want managed copy targeting %s", entry, err, canonicalPath(ssot))
+	}
 	if got, err := os.Readlink(filepath.Join(ssot, "script-link")); err != nil || got != "script.sh" {
 		t.Fatalf("copied internal symlink = %q, %v", got, err)
 	}
@@ -48,8 +51,15 @@ func TestAdoptSkillsMovesContentToCatalogAndReprojectsOriginal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := loaded.Skill("local-shared/tools/portable"); !ok {
+	adoptedSkill, ok := loaded.Skill("local-shared/tools/portable")
+	if !ok {
 		t.Fatal("adopted skill is absent from the reloaded catalog")
+	}
+	reloadedManager := NewWithUserHome(projectRoot, t.TempDir(), loaded)
+	for _, clientID := range []catalog.Client{catalog.ClientCodex, catalog.ClientAgy} {
+		if state, err := reloadedManager.State(adoptedSkill, clientID); err != nil || state != StateEnabled {
+			t.Fatalf("%s state after adopt = %q, %v; want enabled", clientID, state, err)
+		}
 	}
 	discovered, err := manager.DiscoverUnmanagedSkills()
 	if err != nil {
@@ -173,7 +183,10 @@ func TestAdoptSkillsContinuesAfterPerItemFailure(t *testing.T) {
 	if info, statErr := os.Lstat(fragile); statErr != nil || !info.IsDir() {
 		t.Fatalf("failed first item was not restored: %v, %v", info, statErr)
 	}
-	assertLinkTarget(t, valid, filepath.Join(skillsRoot, "local", "shared", "valid"))
+	validSSOT := filepath.Join(skillsRoot, "local", "shared", "valid")
+	if entry, entryErr := inspectEntry(valid); entryErr != nil || entry.kind != entryManagedCopy || entry.resolvedTarget != canonicalPath(validSSOT) {
+		t.Fatalf("adopted second item = %+v, %v; want managed copy targeting %s", entry, entryErr, canonicalPath(validSSOT))
+	}
 }
 
 func TestAdoptSkillsReportsStrandedPathsWhenRestoreIsBlocked(t *testing.T) {
@@ -207,6 +220,198 @@ func TestAdoptSkillsReportsStrandedPathsWhenRestoreIsBlocked(t *testing.T) {
 		t.Fatalf("stranded backup missing: %v, %v", info, statErr)
 	}
 	assertMissing(t, ssot)
+}
+
+func TestAdoptSkillsMatchesClientModeForCopyOnlySymlinkOnlyAndGlobalDirs(t *testing.T) {
+	projectRoot := t.TempDir()
+	userHome := t.TempDir()
+	skillsRoot := filepath.Join(t.TempDir(), "skills")
+	if err := os.MkdirAll(skillsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := client.NewRegistry(map[client.ID]client.Definition{
+		"copyonly": {ProjectSkillsDir: ".copyonly/skills", ProjectSkillsMode: client.SkillModeCopy},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyOnlySkill := filepath.Join(projectRoot, ".copyonly", "skills", "standalone")
+	claudeSkill := filepath.Join(projectRoot, ".claude", "skills", "symlinked")
+	agyGlobalSkill := filepath.Join(userHome, ".gemini", "config", "skills", "globaled")
+	writeAdoptionSkill(t, copyOnlySkill, "standalone")
+	writeAdoptionSkill(t, claudeSkill, "symlinked")
+	writeAdoptionSkill(t, agyGlobalSkill, "globaled")
+
+	manager := NewWithUserHome(projectRoot, userHome, catalog.Catalog{Root: skillsRoot, Clients: registry})
+	results, err := manager.AdoptSkills([]string{copyOnlySkill, claudeSkill, agyGlobalSkill}, "shared", "")
+	if err != nil {
+		t.Fatalf("AdoptSkills: %v", err)
+	}
+	for _, r := range results {
+		if r.Status != AdoptionAdopted {
+			t.Fatalf("adoption result = %#v, want adopted", r)
+		}
+	}
+
+	// Standalone copy-mode dir -> managed copy, enabled for copyonly.
+	copyEntry, err := inspectEntry(copyOnlySkill)
+	if err != nil || copyEntry.kind != entryManagedCopy || copyEntry.resolvedTarget != canonicalPath(results[0].SSOTPath) {
+		t.Fatalf("copyonly adopted projection = %+v, %v; want managed copy", copyEntry, err)
+	}
+	loaded, err := catalog.Load(skillsRoot, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded := NewWithUserHome(projectRoot, userHome, loaded)
+	standalone, ok := loaded.Skill("local-shared/standalone/standalone")
+	if !ok {
+		t.Fatal("standalone skill missing from catalog")
+	}
+	if state, err := reloaded.State(standalone, client.ID("copyonly")); err != nil || state != StateEnabled {
+		t.Fatalf("copyonly state after adopt = %q, %v; want enabled", state, err)
+	}
+
+	// Symlink-only project dir and global dir -> symlinks.
+	assertLinkTarget(t, claudeSkill, results[1].SSOTPath)
+	assertLinkTarget(t, agyGlobalSkill, results[2].SSOTPath)
+}
+
+func TestAdoptSkillsCopyModeRollsBackOnInvalidSymlinkMaterialization(t *testing.T) {
+	projectRoot := t.TempDir()
+	skillsRoot := filepath.Join(t.TempDir(), "skills")
+	if err := os.MkdirAll(skillsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(projectRoot, ".agents", "skills", "escaping")
+	writeAdoptionSkill(t, original, "escaping")
+	if err := os.Symlink("/etc/hosts", filepath.Join(original, "abs-link")); err != nil {
+		t.Fatal(err)
+	}
+	want := adoptionTreeSnapshot(t, original)
+
+	manager := adoptionManager(projectRoot, t.TempDir(), skillsRoot)
+	results, err := manager.AdoptSkills([]string{original}, "shared", "")
+	if err == nil || len(results) != 1 || results[0].Status != AdoptionFailed {
+		t.Fatalf("AdoptSkills(escaping symlink) = (%#v, %v); want AdoptionFailed with rollback", results, err)
+	}
+	if got := adoptionTreeSnapshot(t, original); !reflect.DeepEqual(got, want) {
+		t.Fatalf("original tree not restored after copy-mode adopt failure:\n got %#v\nwant %#v", got, want)
+	}
+	assertMissing(t, original+".adopting-backup")
+	assertMissing(t, filepath.Join(skillsRoot, "local", "shared", "escaping"))
+}
+
+func TestAdoptSkillsRespectsScopeOnSharedAgentsDirAndCanonicalizesPath(t *testing.T) {
+	t.Run("codex scope on .agents/skills adopts as symlink keeping agy incompatible", func(t *testing.T) {
+		projectRoot := t.TempDir()
+		userHome := t.TempDir()
+		skillsRoot := filepath.Join(t.TempDir(), "skills")
+		if err := os.MkdirAll(skillsRoot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		original := filepath.Join(projectRoot, ".agents", "skills", "codex-tool")
+		writeAdoptionSkill(t, original, "codex-tool")
+		manager := adoptionManager(projectRoot, userHome, skillsRoot)
+
+		results, err := manager.AdoptSkills([]string{original}, "codex", "")
+		if err != nil || len(results) != 1 || results[0].Status != AdoptionAdopted {
+			t.Fatalf("AdoptSkills(--scope codex) = %#v, %v", results, err)
+		}
+		ssot := filepath.Join(skillsRoot, "local", "codex", "codex-tool")
+		assertLinkTarget(t, original, ssot)
+
+		loaded, err := catalog.Load(skillsRoot, client.DefaultRegistry())
+		if err != nil {
+			t.Fatal(err)
+		}
+		skill, ok := loaded.Skill("local-codex-only/codex-tool/codex-tool")
+		if !ok {
+			t.Fatal("adopted codex-only skill missing from catalog")
+		}
+		reloaded := NewWithUserHome(projectRoot, userHome, loaded)
+		if state, err := reloaded.State(skill, catalog.ClientCodex); err != nil || state != StateEnabled {
+			t.Fatalf("codex state = %q, %v; want enabled", state, err)
+		}
+		if state, err := reloaded.State(skill, catalog.ClientAgy); err != nil || state != StateIncompatible {
+			t.Fatalf("agy state = %q, %v; want incompatible", state, err)
+		}
+	})
+
+	t.Run("agy scope on shared .agents/skills is refused in preflight", func(t *testing.T) {
+		projectRoot := t.TempDir()
+		skillsRoot := filepath.Join(t.TempDir(), "skills")
+		if err := os.MkdirAll(skillsRoot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		original := filepath.Join(projectRoot, ".agents", "skills", "agy-only")
+		writeAdoptionSkill(t, original, "agy-only")
+		manager := adoptionManager(projectRoot, t.TempDir(), skillsRoot)
+
+		results, err := manager.AdoptSkills([]string{original}, "agy", "")
+		if err == nil || len(results) != 1 || results[0].Status != AdoptionRefused {
+			t.Fatalf("AdoptSkills(--scope agy on .agents/skills) = %#v, %v; want refused", results, err)
+		}
+		for _, want := range []string{"codex", "--scope shared"} {
+			if !strings.Contains(results[0].Reason, want) {
+				t.Fatalf("refusal reason %q missing %q", results[0].Reason, want)
+			}
+		}
+		if info, statErr := os.Lstat(original); statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			t.Fatalf("original dir altered after refusal: %v, %v", info, statErr)
+		}
+		assertMissing(t, filepath.Join(skillsRoot, "local", "agy", "agy-only"))
+	})
+
+	t.Run("standalone copy-mode client scope adopts as managed copy", func(t *testing.T) {
+		projectRoot := t.TempDir()
+		skillsRoot := filepath.Join(t.TempDir(), "skills")
+		if err := os.MkdirAll(skillsRoot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		registry, err := client.NewRegistry(map[client.ID]client.Definition{
+			"copyonly": {ProjectSkillsDir: ".copyonly/skills", ProjectSkillsMode: client.SkillModeCopy},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		original := filepath.Join(projectRoot, ".copyonly", "skills", "solo")
+		writeAdoptionSkill(t, original, "solo")
+		manager := NewWithUserHome(projectRoot, t.TempDir(), catalog.Catalog{Root: skillsRoot, Clients: registry})
+
+		results, err := manager.AdoptSkills([]string{original}, "copyonly", "")
+		if err != nil || len(results) != 1 || results[0].Status != AdoptionAdopted {
+			t.Fatalf("AdoptSkills(--scope copyonly) = %#v, %v", results, err)
+		}
+		entry, err := inspectEntry(original)
+		if err != nil || entry.kind != entryManagedCopy || entry.resolvedTarget != canonicalPath(results[0].SSOTPath) {
+			t.Fatalf("copyonly scoped adopt entry = %+v, %v; want managed copy", entry, err)
+		}
+	})
+
+	t.Run("symlinked project root alias matches discovered unmanaged skill", func(t *testing.T) {
+		base := t.TempDir()
+		realProject := filepath.Join(base, "real-project")
+		aliasProject := filepath.Join(base, "alias-project")
+		if err := os.MkdirAll(realProject, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(realProject, aliasProject); err != nil {
+			t.Fatal(err)
+		}
+		skillsRoot := filepath.Join(t.TempDir(), "skills")
+		if err := os.MkdirAll(skillsRoot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeAdoptionSkill(t, filepath.Join(realProject, ".agents", "skills", "aliased"), "aliased")
+
+		// Manager uses realProject while caller passes aliasProject path (mirrors macOS /tmp vs /private/tmp).
+		manager := adoptionManager(realProject, t.TempDir(), skillsRoot)
+		aliasSkillPath := filepath.Join(aliasProject, ".agents", "skills", "aliased")
+		results, err := manager.AdoptSkills([]string{aliasSkillPath}, "shared", "")
+		if err != nil || len(results) != 1 || results[0].Status != AdoptionAdopted {
+			t.Fatalf("AdoptSkills(aliased path) = %#v, %v; want adopted", results, err)
+		}
+	})
 }
 
 func adoptionManager(projectRoot, userHome, skillsRoot string) Manager {

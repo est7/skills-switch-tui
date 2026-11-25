@@ -31,6 +31,7 @@ func (m Manager) DiscoverUnmanagedSkills(scopes ...Scope) ([]UnmanagedSkill, err
 		return nil, err
 	}
 	result := make([]UnmanagedSkill, 0)
+	seenDirs := make(map[string]bool)
 	for _, clientID := range m.clients.IDsFor(client.CapabilitySkills) {
 		for _, scope := range requested {
 			if !m.SupportsScope(clientID, scope) {
@@ -40,6 +41,11 @@ func (m Manager) DiscoverUnmanagedSkills(scopes ...Scope) ([]UnmanagedSkill, err
 			if err != nil {
 				return nil, err
 			}
+			dirKey := canonicalPath(targetDir)
+			if seenDirs[dirKey] {
+				continue
+			}
+			seenDirs[dirKey] = true
 			entries, err := unmanagedSkillEntries(targetDir)
 			if err != nil {
 				return nil, err
@@ -96,6 +102,9 @@ func unmanagedSkillEntries(targetDir string) ([]string, error) {
 	}
 	result := make([]string, 0)
 	for _, entry := range entries {
+		if isStagingEntryName(entry.Name()) {
+			continue
+		}
 		path := filepath.Join(targetDir, entry.Name())
 		info, err := os.Lstat(path)
 		if errors.Is(err, os.ErrNotExist) {
@@ -105,6 +114,9 @@ func unmanagedSkillEntries(targetDir string) ([]string, error) {
 			return nil, fmt.Errorf("inspect skill candidate %s: %w", path, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			continue
+		}
+		if hasManagedCopyMarker(path) {
 			continue
 		}
 		manifestPath := filepath.Join(path, "SKILL.md")

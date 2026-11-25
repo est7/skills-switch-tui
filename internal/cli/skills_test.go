@@ -147,8 +147,11 @@ func TestSkillsAdoptJSONMovesUnmanagedSkillAndReportsStableResult(t *testing.T) 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("skills adopt = %#v, want %#v", got, want)
 	}
-	if target, err := os.Readlink(original); err != nil || target != ssot {
-		t.Fatalf("adopted projection = %q, %v", target, err)
+	if info, err := os.Lstat(original); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		t.Fatalf("adopted .agents/skills projection = info=%v err=%v; want managed copy dir", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(original, ".skills-switch-managed.json")); err != nil {
+		t.Fatalf("adopted .agents/skills projection missing managed copy marker: %v", err)
 	}
 }
 

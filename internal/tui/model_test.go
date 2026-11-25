@@ -385,13 +385,15 @@ func TestSkillToggleAllClientsEnablesAndDisablesEveryCompatibleProjection(t *tes
 		t.Fatalf("enable all clients: %v", model.err)
 	}
 
-	for _, target := range []string{
-		filepath.Join(projectRoot, ".agents", "skills", "portable"),
-		filepath.Join(projectRoot, ".claude", "skills", "portable"),
-	} {
-		if _, err := os.Readlink(target); err != nil {
-			t.Fatalf("all-client toggle did not enable %s: %v", target, err)
-		}
+	// Enabling all clients (codex + claude + agy) materializes .agents/skills as a
+	// managed copy for agy+codex and .claude/skills as a symlink for claude.
+	agentsTarget := filepath.Join(projectRoot, ".agents", "skills", "portable")
+	if info, err := os.Lstat(agentsTarget); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		t.Fatalf("all-client toggle did not materialize managed copy at %s: info=%v err=%v", agentsTarget, info, err)
+	}
+	claudeTarget := filepath.Join(projectRoot, ".claude", "skills", "portable")
+	if _, err := os.Readlink(claudeTarget); err != nil {
+		t.Fatalf("all-client toggle did not enable %s: %v", claudeTarget, err)
 	}
 
 	updated, _ = model.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
@@ -457,8 +459,13 @@ func TestSourceToggleAllClientsEnablesAndDisablesEveryCompatibleProjection(t *te
 	if model.err != nil {
 		t.Fatalf("enable source for all clients: %v", model.err)
 	}
+	// Universal is compatible with codex, claude, and agy (managed copy in .agents/skills,
+	// symlink in .claude/skills); codex-only stays a symlink in .agents/skills.
+	universalAgents := filepath.Join(projectRoot, ".agents", "skills", "universal")
+	if info, err := os.Lstat(universalAgents); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		t.Fatalf("source all-client toggle did not materialize managed copy at %s: info=%v err=%v", universalAgents, info, err)
+	}
 	for _, target := range []string{
-		filepath.Join(projectRoot, ".agents", "skills", "universal"),
 		filepath.Join(projectRoot, ".claude", "skills", "universal"),
 		filepath.Join(projectRoot, ".agents", "skills", "codex-only"),
 	} {
@@ -950,7 +957,7 @@ func TestNarrowViewScrollsDynamicClientColumnsWithSelection(t *testing.T) {
 	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
 	resized, _ := model.Update(tea.WindowSizeMsg{Width: 48, Height: 24})
 	model = resized.(Model)
-	for range 2 {
+	for range len(registry.IDsFor(client.CapabilityProjectSkills)) - 1 {
 		updated, _ := model.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
 		model = updated.(Model)
 	}
@@ -966,6 +973,202 @@ func TestNarrowViewScrollsDynamicClientColumnsWithSelection(t *testing.T) {
 	}
 	if _, err := os.Readlink(filepath.Join(projectRoot, ".pi", "skills", "portable")); err != nil {
 		t.Fatalf("dynamic client toggle was not projected: %v", err)
+	}
+}
+
+func TestTogglingAgyRefreshesSharedCodexCacheAndRefreshesStaleCopy(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	skillPath := filepath.Join(sourcesRoot, "local", "shared", "portable")
+	writeSkill(t, skillPath, "portable")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+	model = selectFirstSkill(model)
+	// Select the agy column (index 2: codex, claude, agy).
+	for range 2 {
+		updated, _ := model.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+		model = updated.(Model)
+	}
+	if model.currentClient() != catalog.ClientAgy {
+		t.Fatalf("currentClient() = %q, want %q", model.currentClient(), catalog.ClientAgy)
+	}
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("enable agy: %v", model.err)
+	}
+	skill := loaded.Sources[0].Skills[0]
+	for _, clientID := range []catalog.Client{catalog.ClientAgy, catalog.ClientCodex} {
+		if cell, _ := model.stateCell(skill, clientID); cell != "●" {
+			t.Fatalf("%s cell after agy enable = %q, want ●", clientID, cell)
+		}
+	}
+
+	// Editing the SSOT makes the copy stale (↻), and Space refreshes it back to ●.
+	if err := os.WriteFile(filepath.Join(skillPath, "SKILL.md"), []byte("---\nname: portable\ndescription: v2\n---\n# v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	model.rebuildStateCache()
+	if cell, _ := model.stateCell(skill, catalog.ClientAgy); cell != "↻" {
+		t.Fatalf("agy stale cell = %q, want ↻", cell)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("refresh stale agy copy: %v", model.err)
+	}
+	if cell, _ := model.stateCell(skill, catalog.ClientAgy); cell != "●" {
+		t.Fatalf("agy cell after stale refresh = %q, want ●", cell)
+	}
+}
+
+func TestToggleAllClientsDisablesStaleCopyWhenDuplicateExists(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	userHome := t.TempDir()
+	skillPath := filepath.Join(sourcesRoot, "local", "shared", "portable")
+	writeSkill(t, skillPath, "portable")
+	loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := projection.NewWithUserHome(projectRoot, userHome, loaded)
+	skill := loaded.Sources[0].Skills[0]
+	// Enable agy (managed copy in .agents/skills) and claude (symlink in .claude/skills),
+	// plus plant a global claude symlink so claude is StateDuplicate.
+	if err := manager.Apply([]projection.Operation{
+		{Skills: []catalog.Skill{skill}, Client: catalog.ClientAgy, Enabled: true, Scope: projection.ScopeProject},
+		{Skills: []catalog.Skill{skill}, Client: catalog.ClientClaude, Enabled: true, Scope: projection.ScopeProject},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claudeGlobal := filepath.Join(userHome, ".claude", "skills", "portable")
+	if err := os.MkdirAll(filepath.Dir(claudeGlobal), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(skillPath, claudeGlobal); err != nil {
+		t.Fatal(err)
+	}
+	// Edit SSOT so agy and codex are StateStale while claude is StateDuplicate.
+	if err := os.WriteFile(filepath.Join(skillPath, "SKILL.md"), []byte("---\nname: portable\ndescription: v2\n---\n# v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(loaded, projectRoot, manager, nil, i18n.New(i18n.English), Resources{UserHome: userHome})
+	model = selectFirstSkill(model)
+	if state, _ := model.skillState(skill, catalog.ClientAgy); state != projection.StateStale {
+		t.Fatalf("agy state = %q, want stale", state)
+	}
+	if state, _ := model.skillState(skill, catalog.ClientClaude); state != projection.StateDuplicate {
+		t.Fatalf("claude state = %q, want duplicate", state)
+	}
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("toggleAllClients(stale+duplicate): %v", model.err)
+	}
+	assertNotExist(t, filepath.Join(projectRoot, ".agents", "skills", "portable"))
+	assertNotExist(t, filepath.Join(projectRoot, ".claude", "skills", "portable"))
+}
+
+func TestToggleAllClientsRespectsSharedDirGlobalLock(t *testing.T) {
+	t.Run("skips copy client when shared peer is global and another client can be enabled", func(t *testing.T) {
+		sourcesRoot := t.TempDir()
+		projectRoot := t.TempDir()
+		userHome := t.TempDir()
+		skillPath := filepath.Join(sourcesRoot, "local", "shared", "portable")
+		writeSkill(t, skillPath, "portable")
+		loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+		if err != nil {
+			t.Fatal(err)
+		}
+		manager := projection.NewWithUserHome(projectRoot, userHome, loaded)
+		skill := loaded.Sources[0].Skills[0]
+		if err := manager.SetEnabledAt([]catalog.Skill{skill}, catalog.ClientCodex, true, projection.ScopeGlobal); err != nil {
+			t.Fatal(err)
+		}
+
+		model := NewModel(loaded, projectRoot, manager, nil, i18n.New(i18n.English), Resources{UserHome: userHome})
+		model = selectFirstSkill(model)
+		updated, _ := model.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+		model = updated.(Model)
+		if model.err != nil {
+			t.Fatalf("toggleAllClients with codex=global: %v", model.err)
+		}
+		// Claude is enabled, agy was skipped, and codex stays StateGlobal (no duplicate).
+		if _, err := os.Readlink(filepath.Join(projectRoot, ".claude", "skills", "portable")); err != nil {
+			t.Fatalf("claude was not enabled: %v", err)
+		}
+		assertNotExist(t, filepath.Join(projectRoot, ".agents", "skills", "portable"))
+		if state, _ := model.skillState(skill, catalog.ClientCodex); state != projection.StateGlobal {
+			t.Fatalf("codex state = %q, want global", state)
+		}
+		if state, _ := model.skillState(skill, catalog.ClientAgy); state != projection.StateDisabled {
+			t.Fatalf("agy state = %q, want disabled", state)
+		}
+	})
+
+	t.Run("surfaces global lock error when no client can be enabled without hitting a lock", func(t *testing.T) {
+		sourcesRoot := t.TempDir()
+		projectRoot := t.TempDir()
+		userHome := t.TempDir()
+		skillPath := filepath.Join(sourcesRoot, "local", "shared", "portable")
+		writeSkill(t, skillPath, "portable")
+		loaded, err := catalog.Load(sourcesRoot, client.DefaultRegistry())
+		if err != nil {
+			t.Fatal(err)
+		}
+		manager := projection.NewWithUserHome(projectRoot, userHome, loaded)
+		skill := loaded.Sources[0].Skills[0]
+		if err := manager.Apply([]projection.Operation{
+			{Skills: []catalog.Skill{skill}, Client: catalog.ClientCodex, Enabled: true, Scope: projection.ScopeGlobal},
+			{Skills: []catalog.Skill{skill}, Client: catalog.ClientClaude, Enabled: true, Scope: projection.ScopeGlobal},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		model := NewModel(loaded, projectRoot, manager, nil, i18n.New(i18n.English), Resources{UserHome: userHome})
+		model = selectFirstSkill(model)
+		updated, _ := model.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+		model = updated.(Model)
+		if model.err == nil || !strings.Contains(model.err.Error(), "globally configured") {
+			t.Fatalf("toggleAllClients when all unlocked clients global = %v, want global lock error", model.err)
+		}
+		assertNotExist(t, filepath.Join(projectRoot, ".agents", "skills", "portable"))
+	})
+}
+
+func TestSharedSkillClientsRefreshesCleanedRelativePaths(t *testing.T) {
+	sourcesRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	writeSkill(t, filepath.Join(sourcesRoot, "local", "shared", "portable"), "portable")
+	registry, err := client.NewRegistry(map[client.ID]client.Definition{
+		"peer": {ProjectSkillsDir: "./.agents/skills/"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := catalog.Load(sourcesRoot, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewModel(loaded, projectRoot, projection.New(projectRoot, loaded), nil, i18n.New(i18n.English))
+	model = selectFirstSkill(model)
+	for range 2 {
+		updated, _ := model.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+		model = updated.(Model)
+	}
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("enable agy: %v", model.err)
+	}
+	if cell, _ := model.stateCell(loaded.Sources[0].Skills[0], client.ID("peer")); cell != "●" {
+		t.Fatalf("shared peer cell after agy enable = %q, want ●", cell)
 	}
 }
 
@@ -1695,17 +1898,21 @@ func TestDiscoverAdoptConfirmationReloadsCatalogAndProjectionState(t *testing.T)
 	if model.err != nil {
 		t.Fatalf("adopt failed: %v", model.err)
 	}
-	if target, err := os.Readlink(original); err != nil {
-		t.Fatalf("adopted client target is not a symlink: %v", err)
-	} else if !strings.Contains(target, filepath.Join("local", "shared", "portable")) {
-		t.Fatalf("adopted symlink target = %q", target)
+	if info, err := os.Lstat(original); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		t.Fatalf("adopted .agents/skills target is not a managed copy dir: info=%v err=%v", info, err)
+	}
+	markerBytes, err := os.ReadFile(filepath.Join(original, ".skills-switch-managed.json"))
+	if err != nil || !strings.Contains(string(markerBytes), filepath.Join("local", "shared", "portable")) {
+		t.Fatalf("adopted managed copy marker = %q, %v", markerBytes, err)
 	}
 	adopted, ok := model.catalog.Skill("local-shared/portable/portable")
 	if !ok {
 		t.Fatal("adopted Skill is absent from the reloaded catalog")
 	}
-	if cell, _ := model.stateCell(adopted, catalog.ClientCodex); cell != "●" {
-		t.Fatalf("adopted Skill cell = %q, want enabled", cell)
+	for _, clientID := range []catalog.Client{catalog.ClientCodex, catalog.ClientAgy} {
+		if cell, _ := model.stateCell(adopted, clientID); cell != "●" {
+			t.Fatalf("adopted Skill %s cell = %q, want enabled", clientID, cell)
+		}
 	}
 	if len(model.discoveries) != 0 {
 		t.Fatalf("discover list was not refreshed: %#v", model.discoveries)

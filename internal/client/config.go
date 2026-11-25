@@ -16,6 +16,7 @@ type registryFile struct {
 
 type registryClientFile struct {
 	ProjectSkillsDir    string     `yaml:"projectSkillsDir,omitempty"`
+	ProjectSkillsMode   SkillMode  `yaml:"projectSkillsMode,omitempty"`
 	UserSkillsDir       string     `yaml:"userSkillsDir,omitempty"`
 	UserPromptDir       string     `yaml:"userPromptDir,omitempty"`
 	UserPromptMode      PromptMode `yaml:"userPromptMode,omitempty"`
@@ -59,6 +60,7 @@ func LoadRegistry(path string) (Registry, error) {
 	for id, entry := range config.Clients {
 		configured[id] = Definition{
 			ProjectSkillsDir:    entry.ProjectSkillsDir,
+			ProjectSkillsMode:   entry.ProjectSkillsMode,
 			UserSkillsDir:       entry.UserSkillsDir,
 			UserPromptDir:       entry.UserPromptDir,
 			UserPromptMode:      entry.UserPromptMode,

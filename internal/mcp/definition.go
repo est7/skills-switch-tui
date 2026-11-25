@@ -21,9 +21,24 @@ func projectDefinition(format client.MCPFormat, server Server) (map[string]any, 
 		return claudeDefinition(server), nil
 	case client.MCPCodexTOML:
 		return codexDefinition(server)
+	case client.MCPAgyJSON:
+		return agyDefinition(server), nil
 	default:
 		return nil, fmt.Errorf("unsupported MCP format %q", format)
 	}
+}
+
+func agyDefinition(server Server) map[string]any {
+	if server.Transport == TransportHTTP {
+		result := map[string]any{"serverUrl": server.URL}
+		putStringMap(result, "headers", server.Headers)
+		return result
+	}
+	result := map[string]any{"command": server.Command}
+	putStrings(result, "args", server.Args)
+	putStringMap(result, "env", server.Env)
+	putString(result, "cwd", server.CWD)
+	return result
 }
 
 func claudeDefinition(server Server) map[string]any {

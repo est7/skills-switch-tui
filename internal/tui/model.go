@@ -1009,6 +1009,32 @@ func projectedInScope(state projection.State) bool {
 	return state == projection.StateEnabled || state == projection.StateDuplicate
 }
 
+// peerGloballyLocked reports whether enabling copy-mode clientID in project
+// scope would conflict with a shared-directory peer already configured globally.
+func (m Model) peerGloballyLocked(clientID client.ID, peerState func(client.ID) projection.State) bool {
+	if m.skillScope != projection.ScopeProject {
+		return false
+	}
+	mode, err := m.catalog.Clients.ProjectSkillsMode(clientID)
+	if err != nil || mode != client.SkillModeCopy {
+		return false
+	}
+	definition, ok := m.catalog.Clients.Definition(clientID)
+	if !ok || definition.ProjectSkillsDir == "" {
+		return false
+	}
+	targetDir := cleanRegistryDir(definition.ProjectSkillsDir)
+	for _, other := range m.catalog.Clients.Definitions() {
+		if other.ID == clientID || cleanRegistryDir(other.ProjectSkillsDir) != targetDir {
+			continue
+		}
+		if peerState(other.ID) == projection.StateGlobal {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Model) toggleAllClients() {
 	if isUserResourceTab(m.tab) {
 		m.toggleAllClientsUserResource()
@@ -1040,9 +1066,6 @@ func (m *Model) toggleAllClients() {
 		client catalog.Client
 	}
 	states := make(map[stateKey]projection.State, len(skills)*len(clients))
-	enable := false
-	compatibleCount := 0
-	hasManagedProjection := false
 	for skillIndex, skill := range skills {
 		for _, clientID := range clients {
 			state, err := m.skillState(skill, clientID)
@@ -1052,17 +1075,46 @@ func (m *Model) toggleAllClients() {
 				return
 			}
 			states[stateKey{skill: skillIndex, client: clientID}] = state
-			if projectedInScope(state) || state == projection.StateIncompatibleEnabled {
+		}
+	}
+	enable := false
+	hasEnableTarget := false
+	hasDuplicate := false
+	hasGlobal := false
+	compatibleCount := 0
+	hasManagedProjection := false
+	for skillIndex, skill := range skills {
+		peerLocked := func(clientID catalog.Client) bool {
+			return m.peerGloballyLocked(clientID, func(peer client.ID) projection.State {
+				return states[stateKey{skill: skillIndex, client: peer}]
+			})
+		}
+		for _, clientID := range clients {
+			state := states[stateKey{skill: skillIndex, client: clientID}]
+			if state == projection.StateDuplicate {
+				hasDuplicate = true
+			}
+			if projectedInScope(state) || state == projection.StateStale || state == projection.StateIncompatibleEnabled {
 				hasManagedProjection = true
 			}
 			if !skill.Supports(clientID) {
 				continue
 			}
 			compatibleCount++
+			if state == projection.StateGlobal || peerLocked(clientID) {
+				hasGlobal = true
+				continue
+			}
 			if !projectedInScope(state) {
 				enable = true
+				hasEnableTarget = true
 			}
 		}
+	}
+	if hasDuplicate {
+		enable = false
+	} else if !enable && !hasManagedProjection && hasGlobal {
+		enable = true
 	}
 	if compatibleCount == 0 && !hasManagedProjection {
 		m.status = m.translator.Text(i18n.NoCompatibleClients, source.ID)
@@ -1082,13 +1134,18 @@ func (m *Model) toggleAllClients() {
 			state := states[stateKey{skill: skillIndex, client: clientID}]
 			if enable {
 				if skill.Supports(clientID) {
-					toEnable = append(toEnable, skill)
+					locked := state == projection.StateGlobal || m.peerGloballyLocked(clientID, func(peer client.ID) projection.State {
+						return states[stateKey{skill: skillIndex, client: peer}]
+					})
+					if !hasEnableTarget || !locked {
+						toEnable = append(toEnable, skill)
+					}
 				} else if state == projection.StateIncompatibleEnabled {
 					toDisable = append(toDisable, skill)
 				}
 				continue
 			}
-			if projectedInScope(state) || state == projection.StateIncompatibleEnabled {
+			if projectedInScope(state) || state == projection.StateStale || state == projection.StateIncompatibleEnabled {
 				toDisable = append(toDisable, skill)
 			}
 		}
@@ -1689,7 +1746,7 @@ func (m Model) skillMatchesFilter(skill catalog.Skill) bool {
 		if m.filter == filterEnabled && (state == projection.StateEnabled || state == projection.StateGlobal) {
 			return true
 		}
-		if m.filter == filterIssues && (state == projection.StateConflict || state == projection.StateBroken || state == projection.StateIncompatibleEnabled || state == projection.StateDuplicate) {
+		if m.filter == filterIssues && (state == projection.StateConflict || state == projection.StateBroken || state == projection.StateStale || state == projection.StateIncompatibleEnabled || state == projection.StateDuplicate) {
 			return true
 		}
 	}

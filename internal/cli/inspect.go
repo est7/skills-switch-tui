@@ -190,14 +190,14 @@ func buildStatus(runtime runtime) (statusOutput, error) {
 				if err != nil {
 					return statusOutput{}, err
 				}
-				switch state {
-				case projection.StateEnabled, projection.StateGlobal:
+				switch {
+				case state == projection.StateEnabled || state == projection.StateGlobal:
 					summary.Enabled++
-				case projection.StateDisabled:
+				case state == projection.StateDisabled:
 					summary.Disabled++
-				case projection.StateIncompatible:
+				case state == projection.StateIncompatible:
 					summary.Incompatible++
-				case projection.StateIncompatibleEnabled, projection.StateConflict, projection.StateBroken, projection.StateDuplicate:
+				case isSkillIssueState(state):
 					summary.Issues++
 				}
 			}
@@ -299,39 +299,58 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 			})
 		}
 		for _, skill := range source.Skills {
-			for _, client := range skillClientIDs(runtime.catalog.Clients, projection.ScopeProject) {
-				state, err := runtime.projection.State(skill, client)
-				if err != nil {
-					return doctorOutput{}, err
-				}
-				if state == projection.StateIncompatibleEnabled || state == projection.StateConflict || state == projection.StateBroken || state == projection.StateDuplicate {
-					path, pathErr := runtime.projection.TargetPath(skill, client)
-					if pathErr != nil {
-						return doctorOutput{}, pathErr
-					}
-					result.Healthy = false
-					detail := projectionHealthDetail(runtime.projection, skill, client, projection.ScopeProject)
-					result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: skill.ID, Client: string(client), Scope: string(projection.ScopeProject), State: string(state), Path: path, Detail: detail})
-				}
-				if runtime.projection.SupportsScope(client, projection.ScopeGlobal) {
-					state, err := runtime.projection.StateAt(skill, client, projection.ScopeGlobal)
+			for _, clientID := range runtime.catalog.Clients.IDsFor(client.CapabilitySkills) {
+				if runtime.projection.SupportsScope(clientID, projection.ScopeProject) {
+					projectHealth, err := runtime.projection.HealthAt(skill, clientID, projection.ScopeProject)
 					if err != nil {
 						return doctorOutput{}, err
 					}
-					if state == projection.StateIncompatibleEnabled || state == projection.StateConflict || state == projection.StateBroken {
-						path, pathErr := runtime.projection.TargetPathAt(skill, client, projection.ScopeGlobal)
-						if pathErr != nil {
-							return doctorOutput{}, pathErr
+					if projectHealth.State != projection.StateDisabled && projectHealth.State != projection.StateIncompatible {
+						projectState := projectHealth.State
+						combinedState, stateErr := runtime.projection.State(skill, clientID)
+						if stateErr != nil {
+							return doctorOutput{}, stateErr
 						}
+						if combinedState == projection.StateDuplicate {
+							projectState = projection.StateDuplicate
+						}
+						if isSkillIssueState(projectState) {
+							result.Healthy = false
+							result.Issues = append(result.Issues, doctorIssue{
+								Kind:     "skill",
+								Resource: skill.ID,
+								Client:   string(clientID),
+								Scope:    string(projection.ScopeProject),
+								State:    string(projectState),
+								Path:     projectHealth.Path,
+								Detail:   healthCauseDetail(projectHealth),
+							})
+						}
+					}
+				}
+				if runtime.projection.SupportsScope(clientID, projection.ScopeGlobal) {
+					globalHealth, err := runtime.projection.HealthAt(skill, clientID, projection.ScopeGlobal)
+					if err != nil {
+						return doctorOutput{}, err
+					}
+					if isSkillIssueState(globalHealth.State) {
 						result.Healthy = false
-						detail := projectionHealthDetail(runtime.projection, skill, client, projection.ScopeGlobal)
-						result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: skill.ID, Client: string(client), Scope: string(projection.ScopeGlobal), State: string(state), Path: path, Detail: detail})
+						result.Issues = append(result.Issues, doctorIssue{
+							Kind:     "skill",
+							Resource: skill.ID,
+							Client:   string(clientID),
+							Scope:    string(projection.ScopeGlobal),
+							State:    string(globalHealth.State),
+							Path:     globalHealth.Path,
+							Detail:   healthCauseDetail(globalHealth),
+						})
 					}
 				}
 			}
 		}
 	}
-	orphans, err := runtime.projection.OrphanedProjections(activeSources(runtime.catalog))
+	active := activeSources(runtime.catalog)
+	orphans, err := runtime.projection.OrphanedProjections(active)
 	if err != nil {
 		return doctorOutput{}, err
 	}
@@ -339,13 +358,36 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 		result.Healthy = false
 		result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: orphan.Name, Client: string(orphan.Client), Scope: string(projection.ScopeProject), State: "orphaned", Path: orphan.Path})
 	}
-	globalOrphans, err := runtime.projection.OrphanedProjectionsAt(activeSources(runtime.catalog), projection.ScopeGlobal)
+	globalOrphans, err := runtime.projection.OrphanedProjectionsAt(active, projection.ScopeGlobal)
 	if err != nil {
 		return doctorOutput{}, err
 	}
 	for _, orphan := range globalOrphans {
 		result.Healthy = false
 		result.Issues = append(result.Issues, doctorIssue{Kind: "skill", Resource: orphan.Name, Client: string(orphan.Client), Scope: string(projection.ScopeGlobal), State: "orphaned", Path: orphan.Path})
+	}
+	seenModifiedPaths := make(map[string]bool)
+	for _, scope := range []projection.Scope{projection.ScopeProject, projection.ScopeGlobal} {
+		modifiedOrphans, err := runtime.projection.OrphanedModifiedCopiesAt(active, scope)
+		if err != nil {
+			return doctorOutput{}, err
+		}
+		for _, conflict := range modifiedOrphans {
+			if seenModifiedPaths[conflict.Path] {
+				continue
+			}
+			seenModifiedPaths[conflict.Path] = true
+			result.Healthy = false
+			result.Issues = append(result.Issues, doctorIssue{
+				Kind:     "skill",
+				Resource: conflict.Name,
+				Client:   string(conflict.Client),
+				Scope:    string(conflict.Scope),
+				State:    string(projection.StateConflict),
+				Path:     conflict.Path,
+				Detail:   orphanedConflictDetail(conflict),
+			})
+		}
 	}
 	for _, name := range runtime.mcpCatalog.Names() {
 		server, _ := runtime.mcpCatalog.Server(name)
@@ -410,15 +452,35 @@ func buildDoctor(runtime runtime) (doctorOutput, error) {
 	return result, nil
 }
 
-func projectionHealthDetail(manager projection.Manager, skill catalog.Skill, clientID catalog.Client, scope projection.Scope) string {
-	health, err := manager.HealthAt(skill, clientID, scope)
-	if err != nil {
-		return err.Error()
+func isSkillIssueState(state projection.State) bool {
+	switch state {
+	case projection.StateIncompatibleEnabled,
+		projection.StateConflict,
+		projection.StateBroken,
+		projection.StateStale,
+		projection.StateDuplicate:
+		return true
+	default:
+		return false
 	}
+}
+
+func healthCauseDetail(health projection.Health) string {
 	if health.Cause != nil {
 		return health.Cause.Error()
 	}
 	return ""
+}
+
+func orphanedConflictDetail(conflict projection.OrphanedConflict) string {
+	cause := "managed skill copy was modified locally"
+	if conflict.Cause != nil {
+		cause = conflict.Cause.Error()
+	}
+	if conflict.Target != "" {
+		return fmt.Sprintf("orphaned %s (target: %s); inspect and remove manually", cause, conflict.Target)
+	}
+	return fmt.Sprintf("orphaned %s; inspect and remove manually", cause)
 }
 
 func writeJSON(command *cobra.Command, value any) error {

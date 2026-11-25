@@ -131,7 +131,7 @@ func TestPruneRemovesStaleLinksOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(orphans) != 1 || orphans[0].Name != "legacy" || orphans[0].Target != f.legacyPath {
+	if len(orphans) != 1 || orphans[0].Name != "legacy" || orphans[0].Target != canonicalPath(f.legacyPath) {
 		t.Fatalf("orphans = %#v, want only the stale legacy link", orphans)
 	}
 	refreshed, err := f.manager.OrphanedProjectionsAfterRefreshAt(nil, ScopeProject)

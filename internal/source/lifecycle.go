@@ -20,9 +20,10 @@ type Lifecycle struct {
 }
 
 type UpdateOutcome struct {
-	Results []UpdateResult
-	Catalog catalog.Catalog
-	Pruned  []projection.Orphan
+	Results   []UpdateResult
+	Catalog   catalog.Catalog
+	Pruned    []projection.Orphan
+	Refreshed []projection.RefreshedCopy
 }
 
 func (l Lifecycle) Update(ctx context.Context, sources []catalog.Source, dryRun bool) (UpdateOutcome, error) {
@@ -86,7 +87,11 @@ func (l Lifecycle) reconcileUpdated(results []UpdateResult) (UpdateOutcome, erro
 	}
 	pruned, pruneErr := manager.PruneOrphans(orphans)
 	outcome.Pruned = pruned
-	return outcome, pruneErr
+	var refreshErr error
+	if l.ProjectRoot != "" {
+		outcome.Refreshed, refreshErr = manager.RefreshCopies(refreshed, projection.ScopeProject)
+	}
+	return outcome, errors.Join(pruneErr, refreshErr)
 }
 
 type MigrateOutcome struct {
@@ -190,6 +195,7 @@ func (l Lifecycle) Remove(ctx context.Context, source catalog.Source) error {
 	if err != nil {
 		return fmt.Errorf("retire source projections before removal: %w", err)
 	}
+	defer retirement.Commit()
 	if err := l.Manager.Remove(ctx, source); err != nil {
 		if restoreErr := retirement.Restore(); restoreErr != nil {
 			return errors.Join(err, fmt.Errorf("restore source projections after failed removal: %w", restoreErr))

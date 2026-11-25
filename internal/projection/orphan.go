@@ -11,18 +11,10 @@ import (
 	"github.com/est7/skills-switch-tui/internal/client"
 )
 
-// Orphan is a managed projection symlink that dangles: it points into a source's
-// directory at a target that no longer exists on disk. This is the state a
-// project is left in when an upstream source drops a skill the project had
-// enabled. A link whose target still exists but is merely no longer discovered
-// (for example after a discovery scope was narrowed) is deliberately not an
-// orphan — that is a scan/config concern, and removing such a link would delete
-// a projection whose skill is still present.
-//
-// A stale link — one into the resources skills root, outside every registered
-// source, whose target is gone — is an orphan as well: its provider left the
-// catalog, typically because its source was relocated or removed while this
-// project was not the one being operated on.
+// Orphan is a managed projection (symlink or clean managed copy) whose
+// upstream provider no longer exists on disk. This is the state a project is
+// left in when an upstream source drops a skill the project had enabled, or
+// when a source is relocated or removed while another project is untouched.
 type Orphan struct {
 	Client catalog.Client
 	Scope  Scope
@@ -31,25 +23,6 @@ type Orphan struct {
 	Target string
 }
 
-// OrphanedProjections reports managed symlinks in the project that point into
-// one of the given sources but dangle — their target no longer exists on disk,
-// the state left behind when an upstream source drops a skill the project had
-// enabled. A link whose target still exists is never reported, even if the
-// source no longer discovers it, so narrowing a discovery scope can never cause
-// a still-present skill's projection to be removed.
-//
-// Detection is scoped to each source's own directory by matching a symlink's
-// recorded target against source.Path, not by resolving it on disk. A deleted
-// target still dangles at its old path, so string-prefix attribution keeps it
-// bound to the source that used to own it; links belonging to other sources (or
-// to nothing under a source) are never considered.
-//
-// A source with no discovered skills is skipped entirely. An empty source means
-// "unavailable / not checked out" — for example an uninitialized submodule —
-// never "every skill was removed", so a missing checkout can never be mistaken
-// for a wholesale upstream deletion and trigger mass cleanup. Callers that want
-// to clean after an update pass only the sources they just refreshed, which are
-// known to be present.
 func (m Manager) OrphanedProjections(sources []catalog.Source) ([]Orphan, error) {
 	return m.OrphanedProjectionsAt(sources, ScopeProject)
 }
@@ -66,14 +39,82 @@ func (m Manager) OrphanedProjectionsAt(sources []catalog.Source, scope Scope) ([
 	return append(orphans, stale...), nil
 }
 
-// OrphanedProjectionsAfterRefreshAt is the update-only variant of orphan
-// detection. A source that was successfully refreshed is known to be available,
-// so zero discovered Skills means the upstream repository genuinely removed its
-// last Skill and dangling projections may be retired. The checkout directory is
-// revalidated before scanning to keep a missing submodule from becoming a mass
-// deletion signal.
 func (m Manager) OrphanedProjectionsAfterRefreshAt(sources []catalog.Source, scope Scope) ([]Orphan, error) {
 	return m.orphanedProjectionsAt(sources, scope, true)
+}
+
+// OrphanedConflict is a managed copy whose upstream provider is no longer live
+// in the catalog (or whose marker is corrupt) and that was modified locally so
+// PruneOrphans will not delete it automatically.
+type OrphanedConflict struct {
+	Client catalog.Client
+	Scope  Scope
+	Name   string
+	Path   string
+	Target string
+	Cause  error
+}
+
+// OrphanedModifiedCopiesAt reports locally modified (or corrupt-marker) managed
+// copies in scope whose skill name is not covered by any live skill in sources.
+// Doctor uses this so modified orphaned copies stay visible as conflicts even
+// though PruneOrphans refuses to delete them.
+func (m Manager) OrphanedModifiedCopiesAt(sources []catalog.Source, scope Scope) ([]OrphanedConflict, error) {
+	if scope == ScopeGlobal && m.userHome == "" {
+		return nil, errors.New("global skill scope requires a user home")
+	}
+	liveNames := make(map[string]bool)
+	for _, source := range sources {
+		for _, skill := range source.Skills {
+			liveNames[skill.Name] = true
+		}
+	}
+	capability := client.CapabilityProjectSkills
+	if scope == ScopeGlobal {
+		capability = client.CapabilityGlobalSkills
+	}
+	conflicts := make([]OrphanedConflict, 0)
+	seenDirs := make(map[string]bool)
+	for _, clientID := range m.clients.IDsFor(capability) {
+		targetDir, err := m.targetDirAt(clientID, scope)
+		if err != nil {
+			continue
+		}
+		dirKey := canonicalPath(targetDir)
+		if seenDirs[dirKey] {
+			continue
+		}
+		seenDirs[dirKey] = true
+		entries, err := os.ReadDir(targetDir)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read projection directory %s: %w", targetDir, err)
+		}
+		for _, dirEntry := range entries {
+			if isStagingEntryName(dirEntry.Name()) || liveNames[dirEntry.Name()] {
+				continue
+			}
+			entryPath := filepath.Join(targetDir, dirEntry.Name())
+			entry, err := inspectEntry(entryPath)
+			if err != nil {
+				return nil, fmt.Errorf("inspect projection %s: %w", entryPath, err)
+			}
+			if entry.kind != entryModifiedManagedCopy {
+				continue
+			}
+			conflicts = append(conflicts, OrphanedConflict{
+				Client: clientID,
+				Scope:  scope,
+				Name:   dirEntry.Name(),
+				Path:   entryPath,
+				Target: entry.resolvedTarget,
+				Cause:  entry.cause,
+			})
+		}
+	}
+	return conflicts, nil
 }
 
 func (m Manager) orphanedProjectionsAt(sources []catalog.Source, scope Scope, refreshed bool) ([]Orphan, error) {
@@ -82,7 +123,7 @@ func (m Manager) orphanedProjectionsAt(sources []catalog.Source, scope Scope, re
 	}
 	orphans := make([]Orphan, 0)
 	for _, source := range sources {
-		sourceRoot := filepath.Clean(source.Path)
+		sourceRoot := canonicalPath(source.Path)
 		if sourceRoot == "" || sourceRoot == "." {
 			continue
 		}
@@ -99,25 +140,23 @@ func (m Manager) orphanedProjectionsAt(sources []catalog.Source, scope Scope, re
 		}
 		live := make(map[string]bool, len(source.Skills))
 		for _, skill := range source.Skills {
-			live[filepath.Clean(skill.Path)] = true
+			live[canonicalPath(skill.Path)] = true
 		}
 		capability := client.CapabilityProjectSkills
 		if scope == ScopeGlobal {
 			capability = client.CapabilityGlobalSkills
 		}
+		seenDirs := make(map[string]bool)
 		for _, clientID := range m.clients.IDsFor(capability) {
-			var targetDir string
-			var err error
-			if scope == ScopeGlobal {
-				targetDir, err = m.clients.UserSkillsTargetDir(m.userHome, clientID)
-			} else {
-				targetDir, err = m.clients.TargetDir(m.projectRoot, clientID)
-			}
+			targetDir, err := m.targetDirAt(clientID, scope)
 			if err != nil {
-				// Client declares no project skills directory; it cannot hold
-				// projections to orphan.
 				continue
 			}
+			dirKey := canonicalPath(targetDir)
+			if seenDirs[dirKey] {
+				continue
+			}
+			seenDirs[dirKey] = true
 			entries, err := os.ReadDir(targetDir)
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -125,44 +164,35 @@ func (m Manager) orphanedProjectionsAt(sources []catalog.Source, scope Scope, re
 			if err != nil {
 				return nil, fmt.Errorf("read projection directory %s: %w", targetDir, err)
 			}
-			for _, entry := range entries {
-				linkPath := filepath.Join(targetDir, entry.Name())
-				info, err := os.Lstat(linkPath)
+			for _, dirEntry := range entries {
+				if isStagingEntryName(dirEntry.Name()) {
+					continue
+				}
+				entryPath := filepath.Join(targetDir, dirEntry.Name())
+				entry, err := inspectEntry(entryPath)
 				if err != nil {
-					return nil, fmt.Errorf("inspect projection %s: %w", linkPath, err)
+					return nil, fmt.Errorf("inspect projection %s: %w", entryPath, err)
 				}
-				if info.Mode()&os.ModeSymlink == 0 {
-					// Never treat a user-owned regular file or directory as a
-					// managed projection.
+				if entry.kind != entrySymlink && entry.kind != entryManagedCopy {
+					// Never treat a user-owned regular file, directory, or
+					// locally modified copy as an orphan.
 					continue
 				}
-				target, err := os.Readlink(linkPath)
-				if err != nil {
-					return nil, fmt.Errorf("read projection %s: %w", linkPath, err)
-				}
-				resolved := target
-				if !filepath.IsAbs(resolved) {
-					resolved = filepath.Join(targetDir, resolved)
-				}
-				resolved = filepath.Clean(resolved)
-				if !underRoot(resolved, sourceRoot) {
+				if !underRoot(entry.resolvedTarget, sourceRoot) {
 					continue
 				}
-				if live[resolved] {
+				if live[entry.resolvedTarget] {
 					continue
 				}
-				if _, statErr := os.Stat(resolved); !errors.Is(statErr, os.ErrNotExist) {
-					// Target still exists on disk (or its state is uncertain):
-					// the skill was not removed upstream, so this link is not an
-					// orphan and must never be auto-removed.
+				if _, statErr := os.Stat(entry.resolvedTarget); !errors.Is(statErr, os.ErrNotExist) {
 					continue
 				}
 				orphans = append(orphans, Orphan{
 					Client: clientID,
 					Scope:  scope,
-					Name:   entry.Name(),
-					Path:   linkPath,
-					Target: resolved,
+					Name:   dirEntry.Name(),
+					Path:   entryPath,
+					Target: entry.resolvedTarget,
 				})
 			}
 		}
@@ -170,10 +200,6 @@ func (m Manager) orphanedProjectionsAt(sources []catalog.Source, scope Scope, re
 	return orphans, nil
 }
 
-// staleProjectionsAt reports the stale links in every client directory of
-// scope. They lie outside every registered source, so they never overlap the
-// per-source orphans. The post-update cleanup deliberately leaves them alone:
-// an update concerns only the sources it refreshed.
 func (m Manager) staleProjectionsAt(scope Scope) ([]Orphan, error) {
 	if scope == ScopeGlobal && m.userHome == "" {
 		return nil, errors.New("global skill scope requires a user home")
@@ -183,11 +209,17 @@ func (m Manager) staleProjectionsAt(scope Scope) ([]Orphan, error) {
 		capability = client.CapabilityGlobalSkills
 	}
 	stale := make([]Orphan, 0)
+	seenDirs := make(map[string]bool)
 	for _, clientID := range m.clients.IDsFor(capability) {
 		targetDir, err := m.targetDirAt(clientID, scope)
 		if err != nil {
 			continue
 		}
+		dirKey := canonicalPath(targetDir)
+		if seenDirs[dirKey] {
+			continue
+		}
+		seenDirs[dirKey] = true
 		entries, err := os.ReadDir(targetDir)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -195,75 +227,73 @@ func (m Manager) staleProjectionsAt(scope Scope) ([]Orphan, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read projection directory %s: %w", targetDir, err)
 		}
-		for _, entry := range entries {
-			if entry.Type()&os.ModeSymlink == 0 {
+		for _, dirEntry := range entries {
+			if isStagingEntryName(dirEntry.Name()) {
 				continue
 			}
-			linkPath := filepath.Join(targetDir, entry.Name())
-			target, err := os.Readlink(linkPath)
+			entryPath := filepath.Join(targetDir, dirEntry.Name())
+			entry, err := inspectEntry(entryPath)
 			if err != nil {
-				return nil, fmt.Errorf("read projection %s: %w", linkPath, err)
+				return nil, fmt.Errorf("inspect projection %s: %w", entryPath, err)
 			}
-			if !filepath.IsAbs(target) {
-				target = filepath.Join(targetDir, target)
-			}
-			target = filepath.Clean(target)
-			if !m.isStaleTarget(target) {
+			if entry.kind != entrySymlink && entry.kind != entryManagedCopy {
 				continue
 			}
-			stale = append(stale, Orphan{Client: clientID, Scope: scope, Name: entry.Name(), Path: linkPath, Target: target})
+			if !m.isStaleTarget(entry.resolvedTarget) {
+				continue
+			}
+			stale = append(stale, Orphan{Client: clientID, Scope: scope, Name: dirEntry.Name(), Path: entryPath, Target: entry.resolvedTarget})
 		}
 	}
 	return stale, nil
 }
 
-// PruneOrphans removes the given orphan symlinks. Before unlinking each one it
-// re-verifies the path is still the exact symlink that was detected, pointing at
-// the same target, so a link a user replaced between detection and removal is
-// preserved — the same preflight discipline Apply uses. Removal of independent
-// links is best-effort: a failure or a concurrently changed link is collected
-// and reported without aborting the rest, and the returned slice lists exactly
-// the links removed.
+// PruneOrphans removes the given orphan symlinks and clean managed copies.
+// Before removing each entry it re-verifies that the path still matches the
+// exact projection detected, preserving anything modified or replaced by a
+// user in the meantime.
 func (m Manager) PruneOrphans(orphans []Orphan) ([]Orphan, error) {
 	removed := make([]Orphan, 0, len(orphans))
 	var failures []error
 	for _, orphan := range orphans {
-		info, err := os.Lstat(orphan.Path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
+		entry, err := inspectEntry(orphan.Path)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("inspect %s: %w", orphan.Path, err))
 			continue
 		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			failures = append(failures, fmt.Errorf("preserve %s: no longer a symlink", orphan.Path))
+		wantTarget := canonicalPath(orphan.Target)
+		switch entry.kind {
+		case entryAbsent:
 			continue
+		case entrySymlink:
+			if entry.resolvedTarget != wantTarget {
+				failures = append(failures, fmt.Errorf("preserve %s: target changed since detection", orphan.Path))
+				continue
+			}
+			if err := os.Remove(orphan.Path); err != nil {
+				failures = append(failures, fmt.Errorf("remove %s: %w", orphan.Path, err))
+				continue
+			}
+			removed = append(removed, orphan)
+		case entryManagedCopy:
+			if entry.resolvedTarget != wantTarget {
+				failures = append(failures, fmt.Errorf("preserve %s: target changed since detection", orphan.Path))
+				continue
+			}
+			if err := os.RemoveAll(orphan.Path); err != nil {
+				failures = append(failures, fmt.Errorf("remove %s: %w", orphan.Path, err))
+				continue
+			}
+			removed = append(removed, orphan)
+		case entryModifiedManagedCopy:
+			failures = append(failures, fmt.Errorf("preserve %s: %v", orphan.Path, entry.cause))
+		default:
+			failures = append(failures, fmt.Errorf("preserve %s: no longer a managed projection", orphan.Path))
 		}
-		target, err := os.Readlink(orphan.Path)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("read %s: %w", orphan.Path, err))
-			continue
-		}
-		resolved := target
-		if !filepath.IsAbs(resolved) {
-			resolved = filepath.Join(filepath.Dir(orphan.Path), resolved)
-		}
-		if filepath.Clean(resolved) != orphan.Target {
-			failures = append(failures, fmt.Errorf("preserve %s: target changed since detection", orphan.Path))
-			continue
-		}
-		if err := os.Remove(orphan.Path); err != nil {
-			failures = append(failures, fmt.Errorf("remove %s: %w", orphan.Path, err))
-			continue
-		}
-		removed = append(removed, orphan)
 	}
 	return removed, errors.Join(failures...)
 }
 
-// underRoot reports whether path is a strict descendant of root. The source root
-// itself is not a projection target, so an exact match is excluded.
 func underRoot(path, root string) bool {
 	if path == root {
 		return false

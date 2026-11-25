@@ -380,8 +380,14 @@ func newUpdateCommand(options *rootOptions) *cobra.Command {
 			outcome, updateErr := lifecycle.Update(command.Context(), selected, dryRun)
 			results := outcome.Results
 			pruned := outcome.Pruned
+			refreshed := outcome.Refreshed
 			if outputJSON {
-				return errors.Join(updateErr, writeJSON(command, updateOutput{Updates: results, Pruned: toPrunedLinks(pruned), Failures: updateFailures(updateErr)}))
+				return errors.Join(updateErr, writeJSON(command, updateOutput{
+					Updates:   results,
+					Pruned:    toPrunedLinks(pruned),
+					Refreshed: refreshed,
+					Failures:  updateFailures(updateErr),
+				}))
 			}
 			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n",
@@ -407,7 +413,11 @@ func newUpdateCommand(options *rootOptions) *cobra.Command {
 			if err := writer.Flush(); err != nil {
 				return errors.Join(updateErr, err)
 			}
-			return errors.Join(updateErr, renderPrunedProjections(command, runtime.translator, pruned))
+			return errors.Join(
+				updateErr,
+				renderPrunedProjections(command, runtime.translator, pruned),
+				renderRefreshedProjections(command, runtime.translator, refreshed),
+			)
 		},
 	}
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "inspect updates without changing submodules")
@@ -416,9 +426,10 @@ func newUpdateCommand(options *rootOptions) *cobra.Command {
 }
 
 type updateOutput struct {
-	Updates  []source.UpdateResult `json:"updates"`
-	Pruned   []prunedLink          `json:"pruned"`
-	Failures []updateFailure       `json:"failures"`
+	Updates   []source.UpdateResult      `json:"updates"`
+	Pruned    []prunedLink               `json:"pruned"`
+	Refreshed []projection.RefreshedCopy `json:"refreshed,omitempty"`
+	Failures  []updateFailure            `json:"failures"`
 }
 
 type updateFailure struct {
@@ -499,6 +510,23 @@ func renderPrunedProjections(command *cobra.Command, translator i18n.Translator,
 	}
 	fmt.Fprintln(command.OutOrStdout(), translator.Text(i18n.UpdatePrunedSummary, len(pruned)))
 	return writeOrphanTable(command, translator, pruned)
+}
+
+func renderRefreshedProjections(command *cobra.Command, translator i18n.Translator, refreshed []projection.RefreshedCopy) error {
+	if len(refreshed) == 0 {
+		return nil
+	}
+	fmt.Fprintln(command.OutOrStdout(), translator.Text(i18n.UpdateRefreshedSummary, len(refreshed)))
+	writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
+	fmt.Fprintf(writer, "%s\t%s\t%s\n",
+		translator.Text(i18n.ClientHeader),
+		translator.Text(i18n.ResourceHeader),
+		translator.Text(i18n.PathHeader),
+	)
+	for _, item := range refreshed {
+		fmt.Fprintf(writer, "%s\t%s\t%s\n", item.Client, item.Name, item.Path)
+	}
+	return writer.Flush()
 }
 
 func writeOrphanTable(command *cobra.Command, translator i18n.Translator, orphans []projection.Orphan) error {

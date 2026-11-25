@@ -543,10 +543,14 @@ func (m Model) cell(item row, client catalog.Client) (string, lipgloss.Style) {
 	compatible := 0
 	enabled := 0
 	global := 0
+	hasStale := false
 	for _, skill := range source.Skills {
 		state, err := m.skillState(skill, client)
 		if err != nil || state == projection.StateConflict || state == projection.StateBroken || state == projection.StateIncompatibleEnabled || state == projection.StateDuplicate {
 			return "!", m.styles.issue
+		}
+		if state == projection.StateStale {
+			hasStale = true
 		}
 		if !skill.Supports(client) {
 			continue
@@ -558,6 +562,9 @@ func (m Model) cell(item row, client catalog.Client) (string, lipgloss.Style) {
 		if state == projection.StateGlobal {
 			global++
 		}
+	}
+	if hasStale {
+		return "↻", m.styles.issue
 	}
 	if compatible == 0 {
 		return "·", m.styles.incompatible
@@ -586,6 +593,8 @@ func (m Model) stateCell(skill catalog.Skill, client catalog.Client) (string, li
 		return "○", m.styles.disabled
 	case projection.StateIncompatible:
 		return "·", m.styles.incompatible
+	case projection.StateStale:
+		return "↻", m.styles.issue
 	case projection.StateIncompatibleEnabled, projection.StateConflict, projection.StateDuplicate:
 		return "!", m.styles.issue
 	case projection.StateBroken:
